@@ -36,9 +36,9 @@ var remoteConn net.Conn
 var clientType = -1
 
 var g_ClientMap map[string]*Client
+var g_Id2UDPSession map[string]*UDPMakeSession
 var markName = ""
 var bForceQuit = false
-var currDelayTime = 0
 
 func handleResponse(conn net.Conn, clientId string, action string, content string) {
 	//log.Println("got", clientId, action)
@@ -57,13 +57,27 @@ func handleResponse(conn net.Conn, clientId string, action string, content strin
 		}
 	case "query_addrlist_a":
 		outip := content
-		go reportAddrList(clientId, true, outip)
+		arr := strings.Split(clientId, "-")
+		id := arr[0]
+		sessionId := arr[1]
+		g_Id2UDPSession[id] = &UDPMakeSession{id: id, sessionId: sessionId}
+		go g_Id2UDPSession[id].reportAddrList(true, outip)
 	case "query_addrlist_b":
-		go reportAddrList(clientId, false, content)
+		arr := strings.Split(clientId, "-")
+		id := arr[0]
+		sessionId := arr[1]
+		g_Id2UDPSession[id] = &UDPMakeSession{id: id, sessionId: sessionId}
+		go g_Id2UDPSession[id].reportAddrList(false, content)
 	case "tell_bust_a":
-		go beginMakeHole(clientId, content)
+		session, bHave := g_Id2UDPSession[clientId]
+		if bHave {
+			go session.beginMakeHole(content)
+		}
 	case "tell_bust_b":
-		go beginMakeHole(clientId, "")
+		session, bHave := g_Id2UDPSession[clientId]
+		if bHave {
+			go session.beginMakeHole("")
+		}
 	case "csmode_s_tunnel_close":
 		arr := strings.Split(clientId, "-")
 		clientId = arr[0]
@@ -120,7 +134,7 @@ func handleResponse(conn net.Conn, clientId string, action string, content strin
 			client.bUdp = false
 		}
 		if client.Listen() {
-			common.Write(remoteConn, clientId, "makeholeok", "")
+			common.Write(remoteConn, clientId, "makeholeok", "csmode")
 		}
 	case "csmode_msg_c":
 		arr := strings.Split(clientId, "-")
@@ -149,18 +163,68 @@ func handleResponse(conn net.Conn, clientId string, action string, content strin
 	}
 }
 
-func disconnect() {
-	if remoteConn != nil {
-		remoteConn.Close()
-		remoteConn = nil
-	}
+type UDPMakeSession struct {
+	id        string
+	sessionId string
+	buster    bool
+	engine    *nat.AttemptEngine
+	delay     int
 }
 
-func reportAddrList(clientId string, buster bool, outip string) {
-	client, bHave := g_ClientMap[clientId]
-	if bHave {
-		client.Quit()
+func (session *UDPMakeSession) beginMakeHole(content string) {
+	engine := session.engine
+	addrList := content
+	if session.buster {
+		engine.SetOtherAddrList(addrList)
 	}
+	log.Println("begin bust", session.id, session.buster)
+	if clientType == 1 && !session.buster {
+		log.Println("retry bust!")
+	}
+	report := func() {
+		if session.buster {
+			if session.delay > 0 {
+				log.Println("try to delay", session.delay, "seconds")
+				time.Sleep(time.Duration(session.delay) * time.Second)
+			}
+			go common.Write(remoteConn, session.id, "success_bust_a", "")
+		}
+	}
+	oldSession := session
+	conn, err := engine.GetConn(report)
+	session, _bHave := g_Id2UDPSession[session.id]
+	if session != oldSession {
+		return
+	}
+	if !_bHave {
+		return
+	}
+	delete(g_Id2UDPSession, session.id)
+	if err == nil {
+		log.Println("udp bust ok,is server?", session.buster, session.sessionId)
+		if !session.buster {
+			common.Write(remoteConn, session.id, "makeholeok", "")
+		}
+		client := &Client{id: session.sessionId, engine: session.engine, buster: session.buster, ready: true, bUdp: true, conn: conn}
+		g_ClientMap[session.sessionId] = client
+		go client.Run()
+		if clientType == 1 {
+			if session.sessionId != "" {
+				client.Listen()
+			}
+		}
+	} else {
+		delete(g_ClientMap, session.sessionId)
+		log.Println("cannot connect", err.Error())
+		if !session.buster && err.Error() != "quit" {
+			common.Write(remoteConn, session.id, "makeholefail", "")
+		}
+	}
+	println("debug", len(g_Id2UDPSession), len(g_ClientMap))
+}
+
+func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
+	id := session.id
 	var otherAddrList string
 	if !buster {
 		arr := strings.SplitN(outip, ":", 2)
@@ -169,9 +233,9 @@ func reportAddrList(clientId string, buster bool, outip string) {
 		arr := strings.SplitN(outip, ":", 2)
 		var delayTime string
 		outip, delayTime = arr[0], arr[1]
-		currDelayTime, _ = strconv.Atoi(delayTime)
-		if currDelayTime < 0 {
-			currDelayTime = 0
+		session.delay, _ = strconv.Atoi(delayTime)
+		if session.delay < 0 {
+			session.delay = 0
 		}
 	}
 	outip += ";" + *addInitAddr
@@ -182,9 +246,9 @@ func reportAddrList(clientId string, buster bool, outip string) {
 		return
 	}
 	addrList := engine.GetAddrList()
-	common.Write(remoteConn, clientId, "report_addrlist", addrList)
-	client = &Client{id: clientId, engine: engine, buster: buster, ready: false, bUdp: true}
-	g_ClientMap[clientId] = client
+	common.Write(remoteConn, id, "report_addrlist", addrList)
+	session.engine = engine
+	session.buster = buster
 	if !buster {
 		engine.SetOtherAddrList(otherAddrList)
 	}
@@ -229,6 +293,7 @@ func main() {
 			return true
 		}
 		g_ClientMap = make(map[string]*Client)
+		g_Id2UDPSession = make(map[string]*UDPMakeSession)
 		//var err error
 		if *bUseSSL {
 			_remoteConn, err := tls.Dial("tcp", *serverAddr, &tls.Config{InsecureSkipVerify: true})
@@ -304,6 +369,13 @@ func connect() {
 	}
 	log.Println("init client", string(clientInfoStr))
 	common.Write(remoteConn, "0", "init", string(clientInfoStr))
+}
+
+func disconnect() {
+	if remoteConn != nil {
+		remoteConn.Close()
+		remoteConn = nil
+	}
 }
 
 type Client struct {
@@ -449,59 +521,6 @@ func (sc *Client) RemoteAddr() net.Addr               { return nil }
 func (sc *Client) SetDeadline(t time.Time) error      { return nil }
 func (sc *Client) SetReadDeadline(t time.Time) error  { return nil }
 func (sc *Client) SetWriteDeadline(t time.Time) error { return nil }
-
-func beginMakeHole(clientId string, content string) {
-	client, bHave := g_ClientMap[clientId]
-	if !bHave {
-		println("error, no client,id is", clientId)
-		return
-	}
-	engine := client.engine
-	addrList := content
-	if client.buster {
-		engine.SetOtherAddrList(addrList)
-	}
-	log.Println("begin bust", clientId, client.buster)
-	if !client.buster {
-		println("retry bust!")
-	}
-	report := func() {
-		if client.buster {
-			if currDelayTime > 0 {
-				log.Println("try to delay", currDelayTime, "seconds")
-				time.Sleep(time.Duration(currDelayTime) * time.Second)
-			}
-			go common.Write(remoteConn, clientId, "success_bust_a", "")
-		}
-	}
-	oldClient := client
-	conn, err := engine.GetConn(report)
-	client, bHave = g_ClientMap[clientId]
-	if client != oldClient {
-		return
-	}
-	if bHave && client.ready {
-		return
-	}
-	if err == nil {
-		client.ready = true
-		log.Println("udp bust ok,is server?", client.buster)
-		if !client.buster {
-			common.Write(remoteConn, client.id, "makeholeok", "")
-		}
-		client.conn = conn
-		go client.Run()
-		if clientType == 1 {
-			client.Listen()
-		}
-	} else {
-		log.Println("cannot connect", err.Error())
-		//client.Quit()
-		if bHave && !client.buster && err.Error() != "quit" {
-			common.Write(remoteConn, client.id, "makeholefail", "")
-		}
-	}
-}
 
 func handleLocalPortResponse(client *Client, conn net.Conn, id string) {
 	arr := make([]byte, 1000)
