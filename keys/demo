@@ -1,0 +1,6 @@
+# server
+go run server.go -ssl -cert keys/server.crt -key keys/server.key
+# client A
+go run client.go -reg v -local :22 -ssl
+# client B
+go run client.go -link v -local :8888 -ssl
