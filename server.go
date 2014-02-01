@@ -58,14 +58,14 @@ func getClientInfoByName(serverName string, cb_ok func(*ClientInfo), cb_fail fun
 	}
 }
 
-func (session *Session) restartSession() {
+func (session *Session) restartSession(serverName string) {
 	log.Println("restart session", session.id)
 	session.method = "restart"
 	session.quit <- true
 	tmp := session.clientA
 	session.clientA = session.clientB
 	session.clientB = tmp
-	session.startSession()
+	session.startSession(serverName, session.id)
 }
 
 func (session *Session) String() string {
@@ -114,9 +114,13 @@ func (session *Session) loop() {
 	}()
 }
 
-func (session *Session) startSession() {
-	log.Println("start session", session.id, session.setting.Mode)
-	beginMakeHole(session, 0, "")
+func (session *Session) startSession(serverName, sessionId string) {
+	log.Println("start session", session.id, session.setting.Mode, serverName)
+	udpSession := &UDPMakeSession{id: common.GetId("makehole"), clientA: session.clientA, clientB: session.clientB, sessionId: sessionId, serverName: serverName, status: "init"}
+	getClientInfoByName(serverName, func(server *ClientInfo) {
+		server.id2MakeSession[udpSession.id] = udpSession
+	}, func() {})
+	udpSession.beginMakeHole(0, "")
 	session.overTime = time.Now().Add(60 * time.Second).Unix()
 	session.loop()
 }
@@ -133,12 +137,12 @@ func (s *ClientInfo) getSession(conn net.Conn) *Session {
 func (s *ClientInfo) addClient(conn net.Conn, clientInfo common.ClientSetting) {
 	id := common.GetId(s.serverName)
 	s.clientMap[conn] = &Session{clientA: conn, clientB: s.conn, method: "udp", overTime: 0, status: "init", id: id, setting: clientInfo, quit: make(chan bool)}
+	s.id2Session[id] = s.clientMap[conn]
 	if s.clientMap[conn].setting.Mode == 2 {
 		s.clientMap[conn].startCSMode()
 	} else {
-		s.clientMap[conn].startSession()
+		s.clientMap[conn].startSession(s.serverName, id)
 	}
-	s.id2Session[id] = s.clientMap[conn]
 }
 
 func (s *ClientInfo) loop() {
@@ -175,6 +179,65 @@ func (s *ClientInfo) delClient(conn net.Conn) string {
 	return ""
 }
 
+type UDPMakeSession struct {
+	id         string
+	clientA    net.Conn
+	clientB    net.Conn
+	sessionId  string
+	status     string
+	serverName string
+}
+
+func (udpsession *UDPMakeSession) beginMakeHole(step int, content string) {
+	var session *Session = nil
+	if udpsession.sessionId != "" {
+		getClientInfoByName(udpsession.serverName, func(server *ClientInfo) {
+			session = server.id2Session[udpsession.sessionId]
+		}, func() {})
+	}
+	if session != nil && session.method == "cs" {
+		return
+	}
+	id := udpsession.id
+	clientA := udpsession.clientA
+	clientB := udpsession.clientB
+	if step == 0 {
+		log.Println("===>>tell a to report addrlist", clientA.RemoteAddr().String(), udpsession.serverName, udpsession.id)
+		delay := 0
+		if session != nil {
+			delay = session.setting.Delay
+		}
+		common.Write(clientA, id+"-"+udpsession.sessionId, "query_addrlist_a", clientA.RemoteAddr().(*net.TCPAddr).IP.String()+":"+strconv.Itoa(delay))
+		if session != nil {
+			session.status = "tella"
+		}
+		udpsession.status = "tella"
+	} else if step == 1 {
+		if udpsession.status == "tella" {
+			udpsession.status = "atellb"
+			if session != nil {
+				session.status = "atellb"
+			}
+			log.Println("===>>tell b to report addlist,give b the a's addrlist", clientB.RemoteAddr().String(), udpsession.serverName, udpsession.id)
+			common.Write(clientB, id+"-"+udpsession.sessionId, "query_addrlist_b", clientB.RemoteAddr().(*net.TCPAddr).IP.String()+":"+content)
+		} else if udpsession.status == "atellb" {
+			udpsession.status = "bust_start_a"
+			if session != nil {
+				session.status = "bust_start_a"
+			}
+			log.Println("=====>>tell a the b 's addrlist, and a start bust", clientA.RemoteAddr().String(), udpsession.serverName, udpsession.id)
+			common.Write(clientA, id, "tell_bust_a", content)
+		}
+	} else if step == 2 {
+		udpsession.status = "bust_start_b"
+		if session != nil {
+			session.status = "bust_start_b"
+		}
+		log.Println("======>>tell b start bust", clientB.RemoteAddr().String(), udpsession.serverName, udpsession.id)
+		common.Write(clientB, id, "tell_bust_b", content)
+	}
+}
+
 type ClientInfo struct {
 	conn       net.Conn
 	clientMap  map[net.Conn]*Session
@@ -185,8 +248,9 @@ type ClientInfo struct {
 
 	quit chan bool
 
-	isServer   bool
-	serverName string // is serverName != "", this client is a server!
+	isServer       bool
+	serverName     string // is serverName != "", this client is a server!
+	id2MakeSession map[string]*UDPMakeSession
 }
 
 type AdminInfo struct {
@@ -420,6 +484,7 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 				getClientInfoByConn(conn, func(info *ClientInfo) {
 					info.serverName = serverName
 					info.isServer = true
+					info.id2MakeSession = make(map[string]*UDPMakeSession)
 				}, func() {})
 				common.Write(conn, "0", "show", "register service ok!")
 			})
@@ -451,51 +516,71 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 		})
 	case "makeholefail":
 		getServerInfoByConn(conn, func(server *ClientInfo) {
-			log.Println("<<=====make hole fail", server.serverName, conn.RemoteAddr().String(), id)
-			session, bHave := server.id2Session[id]
+			udpsession, bHave := server.id2MakeSession[id]
 			if bHave {
-				session.status = "fail"
-				if session.method == "udp" {
-					session.restartSession()
-				} else if session.method == "restart" {
-					if session.setting.Mode == 0 {
-						tmp := session.clientA
-						session.clientA = session.clientB
-						session.clientB = tmp
-						session.startCSMode()
+				log.Println("<<=====make hole fail", conn.RemoteAddr().String(), udpsession.serverName, udpsession.sessionId)
+				sessionId := udpsession.sessionId
+				session, _bHave := server.id2Session[sessionId]
+				if _bHave {
+					session.status = "fail"
+					if session.method == "udp" {
+						session.restartSession(server.serverName)
+					} else if session.method == "restart" {
+						if session.setting.Mode == 0 {
+							tmp := session.clientA
+							session.clientA = session.clientB
+							session.clientB = tmp
+							session.startCSMode()
+						} else {
+							server.delClient(session.clientB)
+						}
 					} else {
-						server.delClient(session.clientB)
+						server.delClient(session.clientA)
 					}
-				} else {
-					server.delClient(session.clientA)
 				}
+				delete(server.id2MakeSession, id)
 			}
+			common.RmId("makehole", id)
 		}, func() {
 		})
 	case "makeholeok":
 		getServerInfoByConn(conn, func(server *ClientInfo) {
-			log.Println("<<=====make hole ok", server.serverName, conn.RemoteAddr().String())
-			session, bHave := server.id2Session[id]
-			if bHave {
-				session.status = "ok"
+			if content == "csmode" {
+				session, _bHave := server.id2Session[id]
+				if _bHave {
+					log.Println("<<=====make hole ok", conn.RemoteAddr().String(), server.serverName, session.id)
+					session.status = "ok"
+				}
 			}
+			udpsession, bHave := server.id2MakeSession[id]
+			if bHave {
+				log.Println("<<=====make hole ok", conn.RemoteAddr().String(), udpsession.serverName, udpsession.sessionId)
+				sessionId := udpsession.sessionId
+				session, _bHave := server.id2Session[sessionId]
+				if _bHave {
+					session.status = "ok"
+				}
+				delete(server.id2MakeSession, id)
+			}
+			common.RmId("makehole", id)
 		}, func() {
 		})
 	case "report_addrlist":
 		getServerInfoByConn(conn, func(server *ClientInfo) {
-			session, bHave := server.id2Session[id]
-			//log.Println("test", session, id, server.serverName)
+			udpsession, bHave := server.id2MakeSession[id]
+			//log.Println("test", udpsession, id, server.serverName)
 			if bHave {
-				beginMakeHole(session, 1, content)
+				log.Println("<<===report addr list ok", conn.RemoteAddr().String(), udpsession.serverName, udpsession.id)
+				udpsession.beginMakeHole(1, content)
 			}
 		}, func() {
 		})
 	case "success_bust_a":
 		getServerInfoByConn(conn, func(server *ClientInfo) {
-			log.Println("<<=====success_bust_a", server.serverName, conn.RemoteAddr().String())
-			session, bHave := server.id2Session[id]
+			udpsession, bHave := server.id2MakeSession[id]
 			if bHave {
-				beginMakeHole(session, 2, content)
+				log.Println("<<=====success_bust_a", conn.RemoteAddr().String(), udpsession.serverName, udpsession.sessionId)
+				udpsession.beginMakeHole(2, content)
 			}
 		}, func() {
 		})
@@ -615,33 +700,5 @@ func shutdown() {
 			log.Println("shutdown client", client.serverName)
 			common.Write(conn, "0", "showandquit", "server shutdown")
 		}
-	}
-}
-
-func beginMakeHole(session *Session, step int, content string) {
-	if session.method == "cs" {
-		return
-	}
-	id := session.id
-	clientA := session.clientA
-	clientB := session.clientB
-	if step == 0 {
-		log.Println("===>>tell a to report addrlist", clientA.RemoteAddr().String())
-		common.Write(clientA, id, "query_addrlist_a", clientA.RemoteAddr().(*net.TCPAddr).IP.String()+":"+strconv.Itoa(session.setting.Delay))
-		session.status = "tella"
-	} else if step == 1 {
-		if session.status == "tella" {
-			session.status = "atellb"
-			log.Println("===>>tell b to report addlist,give b the a's addrlist", clientB.RemoteAddr().String(), content)
-			common.Write(clientB, id, "query_addrlist_b", clientB.RemoteAddr().(*net.TCPAddr).IP.String()+":"+content)
-		} else if session.status == "atellb" {
-			session.status = "bust_start_a"
-			log.Println("=====>>tell a the b 's addrlist, and a start bust", clientA.RemoteAddr().String(), content)
-			common.Write(clientA, id, "tell_bust_a", content)
-		}
-	} else if step == 2 {
-		session.status = "bust_start_b"
-		log.Println("======>>tell b start bust", clientB.RemoteAddr().String())
-		common.Write(clientB, id, "tell_bust_b", content)
 	}
 }

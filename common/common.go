@@ -6,7 +6,7 @@ import (
 	"strconv"
 )
 
-const Version = 0.2
+const Version = 0.3
 
 type ClientSetting struct {
 	Name       string
