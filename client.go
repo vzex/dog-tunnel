@@ -220,7 +220,6 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 			common.Write(remoteConn, session.id, "makeholefail", "")
 		}
 	}
-	println("debug", len(g_Id2UDPSession), len(g_ClientMap))
 }
 
 func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
