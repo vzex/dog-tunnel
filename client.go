@@ -541,7 +541,10 @@ func handleLocalPortResponse(client *Client, conn net.Conn, id string) {
 	}
 	// log.Println("handlerlocal down")
 	conn.Close()
-	common.Write(client.conn, id, "tunnel_close_s", "")
+	_, bHave := client.local_conns[id]
+	if bHave {
+		common.Write(client.conn, id, "tunnel_close_s", "")
+	}
 }
 
 func handleLocalServerResponse(client *Client, conn net.Conn, sessionId string) {
