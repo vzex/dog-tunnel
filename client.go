@@ -407,6 +407,12 @@ func (sc *Client) OnTunnelRecv(sessionId string, action string, content string) 
 		} else {
 			log.Println("cannot tunnel msg")
 		}
+	case "tunnel_close_s":
+		conn, bHave := sc.serve_conns[sessionId]
+		if bHave {
+			conn.Close()
+			delete(sc.serve_conns, sessionId)
+		}
 	case "tunnel_msg_c":
 		conn, bHave := sc.local_conns[sessionId]
 		if bHave {
@@ -535,6 +541,7 @@ func handleLocalPortResponse(client *Client, conn net.Conn, id string) {
 	}
 	// log.Println("handlerlocal down")
 	conn.Close()
+	common.Write(client.conn, id, "tunnel_close_s", "")
 }
 
 func handleLocalServerResponse(client *Client, conn net.Conn, sessionId string) {
