@@ -2,18 +2,25 @@ package common
 
 import (
 	"bufio"
+	"crypto/md5"
+	"fmt"
+	"io"
 	"net"
 	"strconv"
 )
 
-const Version = 0.3
+const Version = 0.42
 
 type ClientSetting struct {
+	AccessKey string
+	ClientKey string
+
 	Name       string
 	ClientType string
 	Version    float32
 	Delay      int
 	Mode       int
+	PipeNum    int
 }
 
 func Write(conn net.Conn, id string, action string, content string) error {
@@ -105,6 +112,16 @@ func ReadFromUDP(conn *net.UDPConn, addr *net.UDPAddr, data []byte, callback Rea
 	return false
 }
 
+func Md5(msg string) string {
+	h := md5.New()
+	io.WriteString(h, msg)
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func HashPasswd(pass string) string {
+	return Md5(pass + "testzc222sf")
+}
+
 type _reuseTbl struct {
 	tbl map[string]bool
 }
@@ -135,6 +152,7 @@ func GetId(name string) string {
 }
 
 func RmId(name, id string) {
+	return
 	if currIdMap == nil {
 		currIdMap = make(map[string]int)
 		currIdMap[name] = 0
