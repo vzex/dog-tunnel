@@ -1,8 +1,9 @@
 package main
 
 import (
+	"./admin"
+	"./auth"
 	"./common"
-	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -13,449 +14,59 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
-type Session struct {
-	id       string
-	clientA  net.Conn
-	clientB  net.Conn
-	status   string
-	overTime int64
-	method   string
-	setting  common.ClientSetting
-	quit     chan bool
-}
-
-func getServerInfoByConn(conn net.Conn, cb_ok func(*ClientInfo), cb_fail func()) {
-	info, bHave := g_Conn2ClientInfo[conn]
-	if bHave {
-		if info.isServer {
-			cb_ok(info)
-		} else {
-			serverName := info.serverName
-			getClientInfoByName(serverName, cb_ok, cb_fail)
-		}
-	} else {
-		cb_fail()
-	}
-}
-func getClientInfoByConn(conn net.Conn, cb_ok func(*ClientInfo), cb_fail func()) {
-	info, bHave := g_Conn2ClientInfo[conn]
-	if bHave {
-		cb_ok(info)
-	} else {
-		cb_fail()
-	}
-}
-func getClientInfoByName(serverName string, cb_ok func(*ClientInfo), cb_fail func()) {
-	conn, bHave := g_ServerName2Conn[serverName]
-	if bHave {
-		getClientInfoByConn(conn, cb_ok, cb_fail)
-		return
-	} else {
-		cb_fail()
-	}
-}
-
-func (session *Session) restartSession(serverName string) {
-	log.Println("restart session", session.id)
-	session.method = "restart"
-	session.quit <- true
-	tmp := session.clientA
-	session.clientA = session.clientB
-	session.clientB = tmp
-	session.startSession(serverName, session.id)
-}
-
-func (session *Session) String() string {
-	return fmt.Sprintf("%s|delay:%d|status:%s|method:%s|clientA:%s|clientB:%s|", session.id, session.setting.Delay, session.status, session.method, session.clientA.RemoteAddr().String(), session.clientB.RemoteAddr().String())
-}
-
-func (session *Session) down() {
-	if session.quit != nil {
-		close(session.quit)
-		session.quit = nil
-	}
-	session.status = "down"
-}
-
-func (session *Session) startCSMode() {
-	//make sure clientA and clientB not exchanged
-	session.method = "cs"
-	clientConn := session.clientA
-	session.status = "csmode_begin"
-	common.Write(clientConn, session.id, "csmode_c_begin", "")
-	session.loop()
-}
-
-func (session *Session) loop() {
-	go func() {
-		checkChan := time.Tick(10 * time.Second)
-	out:
-		for {
-			select {
-			case <-checkChan:
-				//println("check lop session status", session.status)
-				if time.Now().Unix() > session.overTime {
-					if session.status != "ok" {
-						if session.method == "udp" || session.method == "cs" {
-							session.clientA.Close()
-						} else {
-							session.clientB.Close()
-						}
-					}
-				}
-			case <-session.quit:
-				log.Println("session loop quit", session.id)
-				break out
-			}
-		}
-	}()
-}
-
-func (session *Session) startSession(serverName, sessionId string) {
-	log.Println("start session", session.id, session.setting.Mode, serverName)
-	udpSession := &UDPMakeSession{id: common.GetId("makehole"), clientA: session.clientA, clientB: session.clientB, sessionId: sessionId, serverName: serverName, status: "init"}
-	getClientInfoByName(serverName, func(server *ClientInfo) {
-		server.id2MakeSession[udpSession.id] = udpSession
-	}, func() {})
-	udpSession.beginMakeHole(0, "")
-	session.overTime = time.Now().Add(60 * time.Second).Unix()
-	session.loop()
-}
-
-func (s *ClientInfo) getSession(conn net.Conn) *Session {
-	session, bHave := s.clientMap[conn]
-	if bHave {
-		return session
-	} else {
-		return nil
-	}
-}
-
-func (s *ClientInfo) addClient(conn net.Conn, clientInfo common.ClientSetting) {
-	id := common.GetId(s.serverName)
-	s.clientMap[conn] = &Session{clientA: conn, clientB: s.conn, method: "udp", overTime: 0, status: "init", id: id, setting: clientInfo, quit: make(chan bool)}
-	s.id2Session[id] = s.clientMap[conn]
-	if s.clientMap[conn].setting.Mode == 2 {
-		s.clientMap[conn].startCSMode()
-	} else {
-		s.clientMap[conn].startSession(s.serverName, id)
-	}
-}
-
-func (s *ClientInfo) loop() {
-	go func() {
-		checkChan := time.Tick(10 * time.Second)
-	out:
-		for {
-			select {
-			case <-checkChan:
-				if time.Now().Unix()-s.responseTime > 300 {
-					log.Println("timeout,client loop quit", s.conn.RemoteAddr().String())
-					break out
-				}
-			case <-s.quit:
-				break out
-			}
-		}
-		s.conn.Close()
-	}()
-}
-
-func (s *ClientInfo) delClient(conn net.Conn) string {
-	session, bHave := s.clientMap[conn]
-	if bHave {
-		common.Write(conn, "0", "showandquit", "server kick you out")
-		id := session.id
-		session.down()
-		log.Println("remove client session", id)
-		delete(s.id2Session, id)
-		delete(s.clientMap, conn)
-		common.RmId(s.serverName, id)
-		return id
-	}
-	return ""
-}
-
-type UDPMakeSession struct {
-	id         string
-	clientA    net.Conn
-	clientB    net.Conn
-	sessionId  string
-	status     string
-	serverName string
-}
-
-func (udpsession *UDPMakeSession) beginMakeHole(step int, content string) {
-	var session *Session = nil
-	if udpsession.sessionId != "" {
-		getClientInfoByName(udpsession.serverName, func(server *ClientInfo) {
-			session = server.id2Session[udpsession.sessionId]
-		}, func() {})
-	}
-	if session != nil && session.method == "cs" {
-		return
-	}
-	id := udpsession.id
-	clientA := udpsession.clientA
-	clientB := udpsession.clientB
-	if step == 0 {
-		log.Println("===>>tell a to report addrlist", clientA.RemoteAddr().String(), udpsession.serverName, udpsession.id)
-		delay := 0
-		if session != nil {
-			delay = session.setting.Delay
-		}
-		common.Write(clientA, id+"-"+udpsession.sessionId, "query_addrlist_a", clientA.RemoteAddr().(*net.TCPAddr).IP.String()+":"+strconv.Itoa(delay))
-		if session != nil {
-			session.status = "tella"
-		}
-		udpsession.status = "tella"
-	} else if step == 1 {
-		if udpsession.status == "tella" {
-			udpsession.status = "atellb"
-			if session != nil {
-				session.status = "atellb"
-			}
-			log.Println("===>>tell b to report addlist,give b the a's addrlist", clientB.RemoteAddr().String(), udpsession.serverName, udpsession.id)
-			common.Write(clientB, id+"-"+udpsession.sessionId, "query_addrlist_b", clientB.RemoteAddr().(*net.TCPAddr).IP.String()+":"+content)
-		} else if udpsession.status == "atellb" {
-			udpsession.status = "bust_start_a"
-			if session != nil {
-				session.status = "bust_start_a"
-			}
-			log.Println("=====>>tell a the b 's addrlist, and a start bust", clientA.RemoteAddr().String(), udpsession.serverName, udpsession.id)
-			common.Write(clientA, id, "tell_bust_a", content)
-		}
-	} else if step == 2 {
-		udpsession.status = "bust_start_b"
-		if session != nil {
-			session.status = "bust_start_b"
-		}
-		log.Println("======>>tell b start bust", clientB.RemoteAddr().String(), udpsession.serverName, udpsession.id)
-		common.Write(clientB, id, "tell_bust_b", content)
-	}
-}
-
-type ClientInfo struct {
-	conn       net.Conn
-	clientMap  map[net.Conn]*Session
-	id2Session map[string]*Session
-
-	userName     string
-	responseTime int64
-
-	quit chan bool
-
-	isServer       bool
-	serverName     string // is serverName != "", this client is a server!
-	id2MakeSession map[string]*UDPMakeSession
-}
-
-type AdminInfo struct {
-	conn net.Conn
-}
-
-var g_ServerName2Conn map[string]net.Conn
-var g_Conn2ClientInfo map[net.Conn]*ClientInfo
-var g_Conn2Admin map[net.Conn]*AdminInfo
-
 var listenAddr = flag.String("addr", "0.0.0.0:8000", "server addr")
 var bUseSSL = flag.Bool("ssl", false, "use ssl")
+var bUseHttps = flag.Bool("https", false, "use https")
 var certFile = flag.String("cert", "", "cert file")
 var keyFile = flag.String("key", "", "key file")
 
 var adminAddr = flag.String("admin", "", "admin addr")
 var bShowVersion = flag.Bool("version", false, "show version")
 
+var db_user = flag.String("dbuser", "root", "db user")
+var db_pass = flag.String("dbpass", "", "db password")
+var db_host = flag.String("dbhost", "127.0.0.1:3306", "db host")
+
 func handleClient(conn net.Conn) {
-	g_Conn2ClientInfo[conn] = &ClientInfo{conn: conn, clientMap: make(map[net.Conn]*Session), id2Session: make(map[string]*Session), isServer: false, quit: make(chan bool), responseTime: time.Now().Unix()}
+	common.Conn2ClientInfo[conn] = &common.ClientInfo{Conn: conn, ClientMap: make(map[net.Conn]*common.Session), Id2Session: make(map[string]*common.Session), IsServer: false, Quit: make(chan bool), ResponseTime: time.Now().Unix()}
 	log.Println("client linked success", conn.RemoteAddr().String())
-	g_Conn2ClientInfo[conn].loop()
+	common.Conn2ClientInfo[conn].Loop()
 	common.Read(conn, handleResponse)
-	client, bHave := g_Conn2ClientInfo[conn]
+	client, bHave := common.Conn2ClientInfo[conn]
 	if bHave {
-		close(client.quit)
-		if client.isServer {
-			for conn, session := range client.clientMap {
+		close(client.Quit)
+		if client.IsServer {
+			for conn, session := range client.ClientMap {
 				conn.Close()
-				common.RmId(client.serverName, session.id)
+				common.RmId(client.ServerName, session.Id)
 			}
-			delete(g_ServerName2Conn, client.serverName)
-			log.Println("unregister serverName", client.serverName)
+			delete(common.ServerName2Conn, client.ServerName)
+			log.Println("unregister service Name", client.ServerName)
+			user, _ := auth.GetUser(client.UserName)
+			if user != nil {
+				user.OnLogout()
+			}
 		} else {
-			getServerInfoByConn(conn, func(server *ClientInfo) {
-				id := server.delClient(conn)
+			common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
+				id := server.DelClient(conn)
 				log.Println("send quit")
-				common.Write(server.conn, id, "clientquit", "")
+				common.Write(server.Conn, id, "clientquit", "")
 			}, func() {})
 		}
-		delete(g_Conn2ClientInfo, conn)
+		delete(common.Conn2ClientInfo, conn)
 	}
 	conn.Close()
 	log.Println("client disconnected", conn.RemoteAddr().String())
 }
 
-type cmdHandler func(args []string) (result string, bSuccess bool)
-
-var g_AdminCommands map[string]cmdHandler
-
-func addAdminCmd(cmd string, callback cmdHandler) {
-	g_AdminCommands[cmd] = callback
-}
-
-func initAdminPort() {
-	g_AdminCommands = make(map[string]cmdHandler)
-	addAdminCmd("servers", _adminGetServers)
-	addAdminCmd("sessions", _adminGetSession)
-	addAdminCmd("kicksession", _adminKickSession)
-	addAdminCmd("kickserver", _adminKickServer)
-}
-
-func _adminKickServer(args []string) (result string, bSuccess bool) {
-	if len(args) < 1 {
-		result = "please spec serverName"
-		bSuccess = false
-		return
-	}
-	conn, bHave := g_ServerName2Conn[args[0]]
-	if bHave {
-		common.Write(conn, "0", "showandquit", "admin kick you out")
-		result = "kick server ok"
-	} else {
-		bSuccess = false
-		result = "donnot have this serverName"
-		return
-	}
-	bSuccess = true
-	return
-}
-
-func _adminGetServers(args []string) (result string, bSuccess bool) {
-	for _, server := range g_Conn2ClientInfo {
-		if server.isServer {
-			result += server.serverName + "\n"
-		}
-	}
-	bSuccess = true
-	return
-}
-
-func _adminKickSession(args []string) (result string, bSuccess bool) {
-	if len(args) < 2 {
-		result = "please spec serverName and session id"
-		bSuccess = false
-		return
-	}
-	conn, bHave := g_ServerName2Conn[args[0]]
-	if bHave {
-		server, bHave2 := g_Conn2ClientInfo[conn]
-		if bHave2 {
-			session, bHave := server.id2Session[args[1]]
-			if bHave {
-				if session.clientA != conn {
-					common.Write(session.clientA, "0", "showandquit", "admin kick you out")
-				} else if session.clientB != conn {
-					common.Write(session.clientB, "0", "showandquit", "admin kick you out")
-				}
-				result = "kick session ok"
-			} else {
-				result = "no need kick"
-			}
-		} else {
-			bSuccess = false
-			result = "donnot have this conn"
-		}
-	} else {
-		bSuccess = false
-		result = "donnot have this serverName"
-		return
-	}
-	bSuccess = true
-	return
-}
-
-func _adminGetSession(args []string) (result string, bSuccess bool) {
-	if len(args) < 1 {
-		result = "please spec serverName"
-		bSuccess = false
-		return
-	}
-	conn, bHave := g_ServerName2Conn[args[0]]
-	if bHave {
-		server, bHave2 := g_Conn2ClientInfo[conn]
-		if bHave2 {
-			for _, session := range server.id2Session {
-				result += session.String() + "\n"
-			}
-		} else {
-			bSuccess = false
-			result = "donnot have this conn"
-		}
-	} else {
-		bSuccess = false
-		result = "donnot have this serverName"
-		return
-	}
-	bSuccess = true
-	return
-}
-
-func processAdminCommand(command string) (result string, bSuccess bool) {
-	arr := strings.Split(command, " ")
-	cmd := arr[0]
-	args := []string{}
-	result = ""
-	bSuccess = true
-	for i := 1; i < len(arr); i++ {
-		if strings.Trim(arr[i], " ") != "" {
-			args = append(args, arr[i])
-		}
-	}
-	callback, bHave := g_AdminCommands[cmd]
-	if bHave {
-		result, bSuccess = callback(args)
-	} else {
-		result = "unknown command:" + cmd
-		maybe := ""
-		for k := range g_AdminCommands {
-			if strings.Index(k, command) >= 0 {
-				maybe += k + "\n"
-			}
-		}
-		if maybe != "" {
-			result += ",maybe:\n" + maybe
-		}
-		bSuccess = false
-	}
-	return
-}
-
-func handleAdmin(conn net.Conn) {
-	g_Conn2Admin[conn] = &AdminInfo{conn: conn}
-	scanner := bufio.NewScanner(conn)
-	//scanner.Split(split)
-	for scanner.Scan() {
-		command := scanner.Text()
-		res, bSuccess := processAdminCommand(command)
-		if bSuccess {
-			res = "+" + res
-		} else {
-			res = "-" + res
-		}
-		res += "\n"
-		l := len(res)
-		conn.Write([]byte(strconv.Itoa(l) + "\n" + res))
-	}
-	delete(g_Conn2Admin, conn)
-	conn.Close()
-}
-
 func handleResponse(conn net.Conn, id string, action string, content string) {
 	//log.Println("got", id, action, content)
-	getClientInfoByConn(conn, func(client *ClientInfo) {
-		client.responseTime = time.Now().Unix()
+	common.GetClientInfoByConn(conn, func(client *common.ClientInfo) {
+		client.ResponseTime = time.Now().Unix()
 	}, func() {
 	})
 	switch action {
@@ -475,153 +86,246 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 			common.Write(conn, "0", "showandquit", "client version:"+c_version+" not eq with server:"+s_version)
 			return
 		}
-		serverName := clientInfo.Name
+		ServerName := clientInfo.Name
 		if clientInfo.ClientType == "reg" {
-			getClientInfoByName(serverName, func(server *ClientInfo) {
-				common.Write(conn, "0", "showandquit", "already have the serverName!")
+			var user *auth.User
+			if clientInfo.AccessKey == "" {
+				user, _ = auth.GetUser("test")
+			} else {
+				user, _ = auth.GetUserByKey(clientInfo.AccessKey)
+			}
+			//fmt.Printf("%+v\n", user)
+			if user == nil {
+				common.Write(conn, "0", "showandquit", "invalid user accessKey:"+clientInfo.AccessKey+"!!!")
+				return
+			}
+			if !user.CheckOnlineServiceNum() {
+				common.Write(conn, "0", "showandquit", "online service num cannot overstep "+strconv.Itoa(user.MaxOnlineServerNum))
+				return
+			}
+			if !user.CheckIpLimit(conn.RemoteAddr().(*net.TCPAddr).IP.String()) {
+				common.Write(conn, "0", "showandquit", "ip limit service num cannot overstep "+strconv.Itoa(user.MaxSameIPServers))
+				return
+			}
+			common.GetClientInfoByName(ServerName, func(server *common.ClientInfo) {
+				common.Write(conn, "0", "showandretry", "already have the ServerName!")
 			}, func() {
-				g_ServerName2Conn[serverName] = conn
-				getClientInfoByConn(conn, func(info *ClientInfo) {
-					info.serverName = serverName
-					info.isServer = true
-					info.id2MakeSession = make(map[string]*UDPMakeSession)
+				common.ServerName2Conn[ServerName] = conn
+				common.GetClientInfoByConn(conn, func(info *common.ClientInfo) {
+					info.ServerName = ServerName
+					info.IsServer = true
+					info.Id2MakeSession = make(map[string]*common.UDPMakeSession)
+					info.UserName = user.UserName
+					info.ClientKey = clientInfo.ClientKey
 				}, func() {})
-				common.Write(conn, "0", "show", "register service ok!")
+				user.OnLogin()
+				log.Println("client reg service success", conn.RemoteAddr().String(), user.UserName, ServerName)
+				common.Write(conn, "0", "show", "register service ok, user:"+user.UserName)
 			})
 		} else if clientInfo.ClientType == "link" {
 			if clientInfo.Mode < 0 || clientInfo.Mode > 2 {
 				clientInfo.Mode = 0
 			}
-			serverName := clientInfo.Name
-			getClientInfoByConn(conn, func(client *ClientInfo) {
-				client.serverName = serverName
+			ServerName := clientInfo.Name
+			bAuth := true
+			common.GetClientInfoByName(ServerName, func(info *common.ClientInfo) {
+				user, _ := auth.GetUser(info.UserName)
+				//fmt.Printf("%+v\n", user)
+				if user == nil {
+					common.Write(conn, "0", "showandquit", "invalid user:"+info.UserName+"!!!")
+					bAuth = false
+					return
+				}
+				if info.ClientKey != clientInfo.ClientKey {
+					common.Write(conn, "0", "showandquit", "clientkey invalid!!!")
+					bAuth = false
+					return
+				}
+				if !user.CheckSessionNum(len(info.ClientMap)) {
+					common.Write(conn, "0", "showandquit", "pipenum cannot overstep "+strconv.Itoa(user.MaxPipeNum))
+					bAuth = false
+					return
+				}
+				if !user.CheckPipeNum(clientInfo.PipeNum) {
+					common.Write(conn, "0", "showandquit", "pipenum cannot overstep "+strconv.Itoa(user.MaxPipeNum))
+					bAuth = false
+					return
+				}
+			}, func() {
+				common.Write(conn, "0", "showandquit", "serverName invalid!!!")
+				bAuth = false
+			})
+			if !bAuth {
+				return
+			}
+			common.GetClientInfoByConn(conn, func(client *common.ClientInfo) {
+				client.ServerName = ServerName
 			}, func() {
 			})
-			getClientInfoByName(serverName, func(server *ClientInfo) {
-				server.addClient(conn, clientInfo)
+			common.GetClientInfoByName(ServerName, func(server *common.ClientInfo) {
+				log.Println("client link service success", conn.RemoteAddr().String(), ServerName)
+				server.AddClient(conn, clientInfo)
 			}, func() {
 				common.Write(conn, "0", "showandquit", "donnt have this service name")
 			})
 		}
 	case "tunnel_error":
-		getServerInfoByConn(conn, func(server *ClientInfo) {
-			log.Println("<<=====tunnel_error", server.serverName, conn.RemoteAddr().String())
-			session, bHave := server.id2Session[id]
+		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
+			log.Println("<<=====tunnel_error", server.ServerName, conn.RemoteAddr().String())
+			session, bHave := server.Id2Session[id]
 			if bHave {
-				session.status = "fail"
-				common.Write(session.clientA, "0", "showandquit", content)
-				server.delClient(session.clientA)
+				session.Status = "fail"
+				common.Write(session.ClientA, "0", "showandquit", content)
+				server.DelClient(session.ClientA)
 			}
 		}, func() {
 		})
 	case "makeholefail":
-		getServerInfoByConn(conn, func(server *ClientInfo) {
-			udpsession, bHave := server.id2MakeSession[id]
+		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
+			udpsession, bHave := server.Id2MakeSession[id]
 			if bHave {
-				log.Println("<<=====make hole fail", conn.RemoteAddr().String(), udpsession.serverName, udpsession.sessionId)
-				sessionId := udpsession.sessionId
-				session, _bHave := server.id2Session[sessionId]
+				log.Println("<<=====make hole fail", conn.RemoteAddr().String(), udpsession.ServerName, udpsession.SessionId, id)
+				sessionId := udpsession.SessionId
+				session, _bHave := server.Id2Session[sessionId]
 				if _bHave {
-					session.status = "fail"
-					if session.method == "udp" {
-						session.restartSession(server.serverName)
-					} else if session.method == "restart" {
-						if session.setting.Mode == 0 {
-							tmp := session.clientA
-							session.clientA = session.clientB
-							session.clientB = tmp
-							session.startCSMode()
+					session.Status = "fail"
+					session.MakeHoleResponseN++
+					session.MakeHoleHasFail = true
+					if session.MakeHoleResponseN == session.Setting.PipeNum {
+						if session.Method == "udp" {
+							session.RestartSession(server.ServerName)
+						} else if session.Method == "restart" {
+							if session.Setting.Mode == 0 {
+								tmp := session.ClientA
+								session.ClientA = session.ClientB
+								session.ClientB = tmp
+								session.StartCSMode()
+							} else {
+								server.DelClient(session.ClientB)
+							}
 						} else {
-							server.delClient(session.clientB)
+							server.DelClient(session.ClientA)
 						}
-					} else {
-						server.delClient(session.clientA)
 					}
 				}
-				delete(server.id2MakeSession, id)
+				udpsession.Remove(false)
 			}
-			common.RmId("makehole", id)
 		}, func() {
 		})
 	case "makeholeok":
-		getServerInfoByConn(conn, func(server *ClientInfo) {
+		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
 			if content == "csmode" {
-				session, _bHave := server.id2Session[id]
+				session, _bHave := server.Id2Session[id]
 				if _bHave {
-					log.Println("<<=====make hole ok", conn.RemoteAddr().String(), server.serverName, session.id)
-					session.status = "ok"
+					log.Println("<<=====make hole ok", conn.RemoteAddr().String(), server.ServerName, session.Id)
+					session.Status = "ok"
+					session.MakeHoleResponseN++
 				}
 			}
-			udpsession, bHave := server.id2MakeSession[id]
+			udpsession, bHave := server.Id2MakeSession[id]
 			if bHave {
-				log.Println("<<=====make hole ok", conn.RemoteAddr().String(), udpsession.serverName, udpsession.sessionId)
-				sessionId := udpsession.sessionId
-				session, _bHave := server.id2Session[sessionId]
+				log.Println("<<=====make hole ok", conn.RemoteAddr().String(), udpsession.ServerName, udpsession.SessionId, id)
+				sessionId := udpsession.SessionId
+				session, _bHave := server.Id2Session[sessionId]
 				if _bHave {
-					session.status = "ok"
+					session.MakeHoleResponseN++
+					if session.MakeHoleResponseN == session.Setting.PipeNum {
+						if !session.MakeHoleHasFail {
+							session.Status = "ok"
+						}
+					}
 				}
-				delete(server.id2MakeSession, id)
+				udpsession.Remove(false)
 			}
-			common.RmId("makehole", id)
 		}, func() {
 		})
 	case "report_addrlist":
-		getServerInfoByConn(conn, func(server *ClientInfo) {
-			udpsession, bHave := server.id2MakeSession[id]
-			//log.Println("test", udpsession, id, server.serverName)
+		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
+			udpsession, bHave := server.Id2MakeSession[id]
+			//log.Println("test", udpsession, id, server.ServerName)
 			if bHave {
-				log.Println("<<===report addr list ok", conn.RemoteAddr().String(), udpsession.serverName, udpsession.id)
-				udpsession.beginMakeHole(1, content)
+				log.Println("<<===report addr list ok", conn.RemoteAddr().String(), udpsession.ServerName, udpsession.Id)
+				udpsession.BeginMakeHole(1, content)
 			}
 		}, func() {
 		})
 	case "success_bust_a":
-		getServerInfoByConn(conn, func(server *ClientInfo) {
-			udpsession, bHave := server.id2MakeSession[id]
+		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
+			udpsession, bHave := server.Id2MakeSession[id]
 			if bHave {
-				log.Println("<<=====success_bust_a", conn.RemoteAddr().String(), udpsession.serverName, udpsession.sessionId)
-				udpsession.beginMakeHole(2, content)
+				log.Println("<<=====success_bust_a", conn.RemoteAddr().String(), udpsession.ServerName, udpsession.SessionId, id)
+				udpsession.BeginMakeHole(2, content)
 			}
 		}, func() {
 		})
 	// for c/s mode
 	case "tunnel_close":
-		getServerInfoByConn(conn, func(server *ClientInfo) {
-			session := server.getSession(conn)
+		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
+			session := server.GetSession(conn)
 			if session != nil {
-				common.Write(session.clientB, session.id+"-"+id, "csmode_s_tunnel_close", content)
+				common.Write(session.ClientB, session.Id+"-"+id, "csmode_s_tunnel_close", content)
 			} else {
 				println("no session")
 			}
 		}, func() {
 		})
 	case "tunnel_open":
-		getServerInfoByConn(conn, func(server *ClientInfo) {
-			session := server.getSession(conn)
+		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
+			session := server.GetSession(conn)
 			if session != nil {
-				common.Write(session.clientB, session.id+"-"+id, "csmode_s_tunnel_open", content)
+				common.Write(session.ClientB, session.Id+"-"+id, "csmode_s_tunnel_open", content)
 			} else {
 				println("no session")
 			}
 		}, func() {
 		})
 	case "tunnel_msg_c":
-		getServerInfoByConn(conn, func(server *ClientInfo) {
-			session := server.getSession(conn)
+		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
+			user, _ := auth.GetUser(server.UserName)
+			if user == nil {
+				common.Write(conn, "0", "showandquit", "cannot get userinfo of this service "+server.UserName)
+				return
+			}
+			if !user.UpdateCSMode(len(content)) {
+				common.Write(conn, "0", "showandquit", "reach today's csmode data limit")
+				return
+			}
+			session := server.GetSession(conn)
 			if session != nil {
-				common.Write(session.clientB, session.id+"-"+id, "csmode_msg_c", content)
+				common.Write(session.ClientB, session.Id+"-"+id, "csmode_msg_c", content)
 			} else {
 				println("no session")
 			}
 		}, func() {
 		})
 	case "tunnel_msg_s":
-		getServerInfoByConn(conn, func(server *ClientInfo) {
+		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
+			user, _ := auth.GetUser(server.UserName)
+			if user == nil {
+				common.Write(conn, "0", "showandquit", "cannot get userinfo of this service"+server.UserName)
+				return
+			}
+			if !user.UpdateCSMode(len(content)) {
+				common.Write(conn, "0", "show", "reach today's csmode data limit")
+				return
+			}
 			arr := strings.Split(id, "-")
 			clientId := arr[0]
-			session, bHave := server.id2Session[clientId]
+			session, bHave := server.Id2Session[clientId]
 			if bHave {
-				common.Write(session.clientA, id, "csmode_msg_s", content)
+				common.Write(session.ClientA, id, "csmode_msg_s", content)
+			} else {
+				println("no session")
+			}
+		}, func() {
+		})
+	case "tunnel_close_s":
+		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
+			arr := strings.Split(id, "-")
+			clientId := arr[0]
+			session, bHave := server.Id2Session[clientId]
+			if bHave {
+				common.Write(session.ClientA, id, "csmode_c_tunnel_close", content)
 			} else {
 				println("no session")
 			}
@@ -639,9 +343,9 @@ func main() {
 		fmt.Printf("%.2f\n", common.Version)
 		return
 	}
-	g_Conn2ClientInfo = make(map[net.Conn]*ClientInfo)
-	g_ServerName2Conn = make(map[string]net.Conn)
-	g_Conn2Admin = make(map[net.Conn]*AdminInfo)
+	common.Conn2ClientInfo = make(map[net.Conn]*common.ClientInfo)
+	common.ServerName2Conn = make(map[string]net.Conn)
+	common.Conn2Admin = make(map[net.Conn]*common.AdminInfo)
 	listener, err := net.Listen("tcp", *listenAddr)
 	if err != nil {
 		log.Println("cannot listen addr:" + err.Error())
@@ -668,37 +372,44 @@ func main() {
 			go handleClient(conn)
 		}
 	}()
+	err = auth.Init(*db_user, *db_pass, *db_host)
+	if err != nil {
+		log.Println("mysql client fail", err.Error())
+		return
+	}
+	defer auth.DeInit()
 	log.Println("master start success")
 	if *adminAddr != "" {
-		adminListener, err := net.Listen("tcp", *adminAddr)
+		cert, key := "", ""
+		if *bUseHttps {
+			cert, key = *certFile, *keyFile
+		}
+		err := admin.InitAdminPort(*adminAddr, cert, key)
 		if err != nil {
-			log.Println("cannot listen admin addr:" + err.Error())
+			log.Println("admin service start fail", err.Error())
 			return
 		}
-		initAdminPort()
-		go func() {
-			for {
-				conn, err := adminListener.Accept()
-				if err != nil {
-					continue
-				}
-				go handleAdmin(conn)
-			}
-		}()
 		log.Println("admin service start success")
 	}
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, os.Kill)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 	log.Println("received signal,shutdown")
 	shutdown()
 }
 
 func shutdown() {
-	for conn, client := range g_Conn2ClientInfo {
-		if !client.isServer {
-			log.Println("shutdown client", client.serverName)
+	for conn, client := range common.Conn2ClientInfo {
+		if !client.IsServer {
+			log.Println("shutdown client", client.ServerName)
 			common.Write(conn, "0", "showandquit", "server shutdown")
+		} else {
+			log.Println("unregister service Name", client.ServerName)
+			user, _ := auth.GetUser(client.UserName)
+			if user != nil {
+				user.OnLogout()
+			}
+			//donnot showandquit,because client_server need to reconnect
 		}
 	}
 }

@@ -12,7 +12,7 @@ import (
 )
 
 var stunserver = flag.String("stun", "",
-	"STUN server to query for reflexive address,stun.l.google.com:19302")
+	"STUN server to query for reflexive address,ex:stun.l.google.com:19302")
 
 var lanNets = []*net.IPNet{
 	{net.IPv4(10, 0, 0, 0), net.CIDRMask(8, 32)},
