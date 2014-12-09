@@ -137,9 +137,9 @@ func test(mode int) {
 			
 			if (sn != uint32(next)) {
 				// 如果收到的包不连续
-                                for i:=0;i<8 ;i++ {
+                                //for i:=0;i<8 ;i++ {
                                         //println("---", i, buffer[i])
-                                }
+                                //}
 				println("ERROR sn ", count, "<->", next, sn)
                                 return
 			}
@@ -151,7 +151,7 @@ func test(mode int) {
 
 			println("[RECV] mode=", mode, " sn=",sn, " rtt=", rtt)
 		}
-		if (next > 1000) { break }
+		if (next > 100) { break }
 	}
 
 	ts1 = iclock() - ts1
@@ -159,9 +159,6 @@ func test(mode int) {
         names := []string{ "default", "normal", "fast" }
 	fmt.Printf("%s mode result (%dms):\n", names[mode], ts1)
 	fmt.Printf("avgrtt=%d maxrtt=%d\n", int(sumrtt / uint32(count)), maxrtt)
-	fmt.Printf("press enter to next ...\n")
-	var ch byte
-        fmt.Scanf("%c", &ch)
 }
 
 func TestNetwork(t *testing.T) {

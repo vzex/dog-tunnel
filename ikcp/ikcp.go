@@ -297,9 +297,9 @@ func Ikcp_recv(kcp *ikcpcb, buffer []byte, _len int32) int32 {
                 _recover = 1
         }
 
-        if kcp.user[0] == 0 {
+        //if kcp.user[0] == 0 {
                 //fmt.Println("have!!!!")
-        }
+        //}
         // merge fragment
         _len = 0
         for p := kcp.rcv_queue.Front(); p != nil; {
@@ -323,9 +323,9 @@ func Ikcp_recv(kcp *ikcpcb, buffer []byte, _len int32) int32 {
                         kcp.rcv_queue.Remove(p)
                         p = q
                         kcp.nrcv_que--
-                        if kcp.user[0] == 0 {
+                        //if kcp.user[0] == 0 {
                                 //fmt.Println("remove from recvqueue", kcp.rcv_queue.Len(), kcp.user, "rcv q:", kcp.nrcv_que)
-                        }
+                        //}
                 } else {
                         p = p.Next()
                 }
@@ -344,9 +344,9 @@ func Ikcp_recv(kcp *ikcpcb, buffer []byte, _len int32) int32 {
                         kcp.nrcv_buf--
                         kcp.rcv_queue.PushBack(seg)
                         kcp.nrcv_que++
-                        if kcp.user[0] == 0 {
+                        //if kcp.user[0] == 0 {
                                 //fmt.Println("insert from recvqueue", kcp.rcv_queue.Len(), kcp.user, "rcv q:", kcp.nrcv_que)
-                        }
+                        //}
                         kcp.rcv_nxt++
                 }	else {
                         break
@@ -424,9 +424,9 @@ func Ikcp_send(kcp *ikcpcb, buffer []byte, _len int) int {
                 seg._len = uint32(size)
                 seg.frg = uint32(count - i - 1)
                 kcp.snd_queue.PushBack(seg)
-                if kcp.user[0] == 0 {
+                //if kcp.user[0] == 0 {
                         //fmt.Println(kcp.user, "send", kcp.snd_queue.Len())
-                }
+                //}
                 kcp.nsnd_que++
                 if (buffer!=nil) {
                         buffer = buffer[size:]
@@ -462,14 +462,14 @@ func ikcp_shrink_buf(kcp *ikcpcb) {
                 p := kcp.snd_buf.Front()
                 seg := p.Value.(*IKCPSEG)
                 kcp.snd_una = seg.sn
-                if kcp.user[0] == 0 {
+                //if kcp.user[0] == 0 {
                         //println("set snd_una:", seg.sn)
-                }
+                //}
         } else {
                 kcp.snd_una = kcp.snd_nxt
-                if kcp.user[0] == 0 {
+                //if kcp.user[0] == 0 {
                         //println("set2 snd_una:", kcp.snd_nxt)
-                }
+                //}
         }
 }
 
@@ -581,9 +581,9 @@ func ikcp_parse_data(kcp *ikcpcb, newseg *IKCPSEG) {
                         p=q
                         kcp.nrcv_buf--
                         kcp.rcv_queue.PushBack(seg)
-                        if kcp.user[0] == 0 {
+                        //if kcp.user[0] == 0 {
                                 //fmt.Println("insert from recvqueue2", kcp.rcv_queue.Len(), kcp.user)
-                        }
+                        //}
                         kcp.nrcv_que++
                         kcp.rcv_nxt++
                 }	else {
@@ -846,9 +846,9 @@ func Ikcp_flush(kcp *ikcpcb) {
                 ////fmt.Printf("timediff %d,%d,%d,%d\n", kcp.snd_nxt, kcp.snd_una, cwnd, _itimediff(kcp.snd_nxt, kcp.snd_una + cwnd));
                 t++
                 if _itimediff(kcp.snd_nxt, kcp.snd_una + cwnd) >= 0 { 
-                        if kcp.user[0] == 0 {
+                        //if kcp.user[0] == 0 {
                                 ////fmt.Println("=======", kcp.snd_nxt, kcp.snd_una, cwnd)
-                        }
+                        //}
                         break 
                 }
                 newseg := p.Value.(*IKCPSEG)
@@ -856,9 +856,9 @@ func Ikcp_flush(kcp *ikcpcb) {
                 kcp.snd_queue.Remove(p)
                 p = q
                 kcp.snd_buf.PushBack(newseg)
-                if kcp.user[0] == 0 {
+                //if kcp.user[0] == 0 {
                         //println("debug check2:", t, kcp.snd_queue.Len(), kcp.snd_buf.Len(), kcp.nsnd_que)
-                }
+                //}
                 kcp.nsnd_que--
                 kcp.nsnd_buf++
 
