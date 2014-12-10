@@ -563,6 +563,7 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 				var ansmsg ansMsg
 				url := hello.url
 				needcache := false
+				usecache := false
 				if *dnsCacheNum > 0 && hello.atyp == 3 {
 					host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
 					cache := common.GetCacheContainer("dns")
@@ -572,35 +573,42 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 					} else {
 						url = cacheInfo.(*dnsInfo).Ip + fmt.Sprintf(":%d", hello.dst_port2)
 						cacheInfo.SetCacheTime(-1)
+						usecache = true
 					}
 				}
-				s_conn, err := net.DialTimeout(hello.reqtype, url, 30*time.Second)
-				if err != nil {
-					if *dnsCacheNum > 0 && hello.atyp == 3 {
-						host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
-						cache := common.GetCacheContainer("dns")
-						cache.DelCache(host)
+				for {
+					s_conn, err := net.DialTimeout(hello.reqtype, url, 30*time.Second)
+					if err != nil {
+						if usecache {
+							host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
+							cache := common.GetCacheContainer("dns")
+							cache.DelCache(host)
+							url = hello.url
+							usecache = false
+							continue
+						}
+						log.Println("connect to local server fail:", err.Error())
+						//msg := "cannot connect to bind addr" + *localAddr
+						ansmsg.gen(&hello, 4)
+						go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
+						//common.Write(pipe, sessionId, "tunnel_error", msg)
+						return
+					} else {
+						if needcache {
+							cache := common.GetCacheContainer("dns")
+							host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
+							cache.AddCache(host, &dnsInfo{Ip:strings.Split(s_conn.RemoteAddr().String(), ":")[0]}, int64(*dnsCacheNum*60))
+							log.Println("add host", host, "to dns cache")
+						}
+						session.localConn = s_conn
+						go handleLocalPortResponse(sc, sessionId)
+						ansmsg.gen(&hello, 0)
+						go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
+						session.status = "ok"
+						session.recvMsg = string(tail)
+						callback()
+						return
 					}
-					log.Println("connect to local server fail:", err.Error())
-					//msg := "cannot connect to bind addr" + *localAddr
-					ansmsg.gen(&hello, 4)
-					go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
-					//common.Write(pipe, sessionId, "tunnel_error", msg)
-					return
-				} else {
-					if needcache {
-						cache := common.GetCacheContainer("dns")
-					        host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
-						cache.AddCache(host, &dnsInfo{Ip:strings.Split(s_conn.RemoteAddr().String(), ":")[0]}, int64(*dnsCacheNum*60))
-						log.Println("add host", host, "to dns cache")
-					}
-					session.localConn = s_conn
-					go handleLocalPortResponse(sc, sessionId)
-					ansmsg.gen(&hello, 0)
-					go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
-					session.status = "ok"
-					session.recvMsg = string(tail)
-					callback()
 				}
 			}()
 		} else {
