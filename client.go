@@ -39,10 +39,28 @@ var clientMode = flag.Int("mode", 0, "connect mode:0 if p2p fail, use c/s mode;1
 var bUseSSL = flag.Bool("ssl", true, "use ssl")
 var bShowVersion = flag.Bool("version", false, "show version")
 var bLoadSettingFromFile = flag.Bool("f", false, "load setting from file(~/.dtunnel)")
+var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 
 var remoteConn net.Conn
 var clientType = -1
 
+type dnsInfo struct {
+	Ip string
+	overTime, cacheTime int64
+}
+func (u *dnsInfo) IsAlive() bool {
+        return time.Now().Unix() < u.overTime
+}
+
+func (u *dnsInfo) SetCacheTime(t int64) {
+        if t >= 0 {
+                u.cacheTime = t
+        } else {
+                t = u.cacheTime
+        }
+        u.overTime = t + time.Now().Unix()
+}
+func(u *dnsInfo) DeInit() {}
 var g_ClientMap map[string]*Client
 var g_Id2UDPSession map[string]*UDPMakeSession
 var markName = ""
@@ -543,7 +561,20 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 		if bOk {
 			go func() {
 				var ansmsg ansMsg
-				s_conn, err := net.DialTimeout(hello.reqtype, hello.url, 10*time.Second)
+				url := hello.url
+				needcache := false
+				if *dnsCacheNum > 0 && hello.atyp == 3 {
+					host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
+					cache := common.GetCacheContainer("dns")
+					cacheInfo := cache.GetCache(host)
+					if cacheInfo == nil {
+						needcache = true
+					} else {
+						url = cacheInfo.(*dnsInfo).Ip + fmt.Sprintf(":%d", hello.dst_port2)
+						cacheInfo.SetCacheTime(-1)
+					}
+				}
+				s_conn, err := net.DialTimeout(hello.reqtype, url, 30*time.Second)
 				if err != nil {
 					log.Println("connect to local server fail:", err.Error())
 					//msg := "cannot connect to bind addr" + *localAddr
@@ -552,6 +583,13 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 					//common.Write(pipe, sessionId, "tunnel_error", msg)
 					return
 				} else {
+					if needcache {
+						cache := common.GetCacheContainer("dns")
+					        host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
+						cache.AddCache(host, &dnsInfo{Ip:strings.Split(s_conn.RemoteAddr().String(), ":")[0]}, int64(*dnsCacheNum*60))
+						cacheInfo := cache.GetCache(host)
+						log.Println("add host", host, "to dns cache", cacheInfo)
+					}
 					session.localConn = s_conn
 					go handleLocalPortResponse(sc, sessionId)
 					ansmsg.gen(&hello, 0)
@@ -672,7 +710,11 @@ func (msg *reqMsg) read(bytes []byte) (bool, []byte) {
 		msg.url = string(msg.dst_addr[1 : 1+msg.dst_addr[0]])
 		msg.url += fmt.Sprintf(":%d", msg.dst_port2)
 	case 4: //ipv6
-		log.Println("IPV6")
+		msg.url = fmt.Sprintf("%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3],
+				msg.dst_addr[4], msg.dst_addr[5], msg.dst_addr[6], msg.dst_addr[7],
+				msg.dst_addr[8], msg.dst_addr[9], msg.dst_addr[10], msg.dst_addr[11],
+				msg.dst_addr[12], msg.dst_addr[13], msg.dst_addr[14], msg.dst_addr[15],
+				msg.dst_port2)
 	}
 	log.Println(msg.reqtype, msg.url, msg.atyp, msg.dst_port2)
 	return true, buf[2:]
