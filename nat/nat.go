@@ -8,13 +8,13 @@ import (
 	"time"
 )
 
-func Init(outIpList string, buster bool) (*AttemptEngine, error) {
+func Init(outIpList string, buster bool, id int) (*AttemptEngine, error) {
 	sock, err := net.ListenUDP("udp", &net.UDPAddr{})
 	if err != nil {
 		return nil, err
 	}
 
-	engine := &AttemptEngine{sock: sock, buster: buster}
+        engine := &AttemptEngine{sock: sock, buster: buster, id : id}
 	if err := engine.init(outIpList); err != nil {
 		return nil, err
 	}
@@ -31,6 +31,7 @@ type attempt struct {
 }
 
 type AttemptEngine struct {
+        id             int
 	buster         bool
 	sock           *net.UDPConn
 	attempts       []attempt
@@ -202,7 +203,7 @@ func (e *AttemptEngine) read() error {
 			} else if packet.Class == stun.ClassSuccess {
 				if e.p2pconn == nil {
 					debug("make conn success", from.String(), e.local_attempts[i].localaddr.String())
-					e.p2pconn = newConn(e.sock, e.local_attempts[i].Addr, e.local_attempts[i].localaddr)
+					e.p2pconn = newConn(e.sock, e.local_attempts[i].Addr, e.local_attempts[i].localaddr, e.id)
 					for j := range e.attempts {
 						my_remote_addr := e.attempts[j].Addr
 						response, err := stun.InformReady(packet.Tid[:], my_remote_addr, nil)

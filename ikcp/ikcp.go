@@ -151,7 +151,7 @@ void ikcp_allocator(void* (*new_malloc)(size_t), void (*new_free)(void*))
 
 // allocate a new kcp segment
 */
-func ikcp_segment_new(kcp *ikcpcb, size int32) *IKCPSEG {
+func ikcp_segment_new(kcp *Ikcpcb, size int32) *IKCPSEG {
         newInfo := &IKCPSEG{}
         newInfo.data = make([]byte, size)
         return newInfo
@@ -160,32 +160,32 @@ func ikcp_segment_new(kcp *ikcpcb, size int32) *IKCPSEG {
 // delete a segment
 
 // write log
-func Ikcp_log(kcp *ikcpcb, mask int32 , head string, args...interface{}) {
+func Ikcp_log(kcp *Ikcpcb, mask int32 , head string, args...interface{}) {
         //if ((mask & kcp.logmask) == 0 || kcp.writelog == 0) { return }
        //fmt.Printf(head, args...)
 }
 
 // check log mask
-func ikcp_canlog(kcp *ikcpcb , mask int32) int32 {
+func ikcp_canlog(kcp *Ikcpcb , mask int32) int32 {
         if ((mask & kcp.logmask) == 0 || kcp.writelog == nil) { return 0 }
         return 1
 }
 
 // output segment
-func ikcp_output(kcp *ikcpcb , data []byte, size int32) int32 {
+func ikcp_output(kcp *Ikcpcb , data []byte, size int32) int32 {
         if ikcp_canlog(kcp, IKCP_LOG_OUTPUT)!= 0 {
                 Ikcp_log(kcp, IKCP_LOG_OUTPUT, "[RO] %ld bytes", int32(size))
         }
         if (size == 0) { return 0}
-        return kcp.output(data, size, kcp, kcp.user)
+        return kcp.Output(data, size, kcp, kcp.user)
 }
 
 
 //---------------------------------------------------------------------
 // create a new kcpcb
 //---------------------------------------------------------------------
-func Ikcp_create(conv uint32, user []byte) (*ikcpcb) {
-        kcp := &ikcpcb{}
+func Ikcp_create(conv uint32, user interface{}) (*Ikcpcb) {
+        kcp := &Ikcpcb{}
         kcp.conv = conv
         kcp.user = user
         kcp.snd_una = 0
@@ -236,7 +236,7 @@ func Ikcp_create(conv uint32, user []byte) (*ikcpcb) {
         kcp.nocwnd = 0
         kcp.xmit = 0
         kcp.dead_link = IKCP_DEADLINK
-        kcp.output = nil
+        kcp.Output = nil
         kcp.writelog = nil
 
         return kcp
@@ -246,7 +246,7 @@ func Ikcp_create(conv uint32, user []byte) (*ikcpcb) {
 //---------------------------------------------------------------------
 // release a new kcpcb
 //---------------------------------------------------------------------
-func Ikcp_release(kcp *ikcpcb ) {
+func Ikcp_release(kcp *Ikcpcb ) {
         if (kcp!=nil) {
                 kcp.snd_buf = nil
                 kcp.rcv_buf = nil
@@ -268,7 +268,7 @@ func Ikcp_release(kcp *ikcpcb ) {
 //---------------------------------------------------------------------
 // recv data
 //---------------------------------------------------------------------
-func Ikcp_recv(kcp *ikcpcb, buffer []byte, _len int32) int32 {
+func Ikcp_recv(kcp *Ikcpcb, buffer []byte, _len int32) int32 {
         ispeek := 1
         if _len >= 0 {
                 ispeek = 0
@@ -367,7 +367,7 @@ func Ikcp_recv(kcp *ikcpcb, buffer []byte, _len int32) int32 {
 //---------------------------------------------------------------------
 // send data
 //---------------------------------------------------------------------
-func Ikcp_peeksize(kcp *ikcpcb) int32 {
+func Ikcp_peeksize(kcp *Ikcpcb) int32 {
         length := 0
 
         if kcp.rcv_queue.Len() == 0 {
@@ -392,7 +392,7 @@ func Ikcp_peeksize(kcp *ikcpcb) int32 {
 //---------------------------------------------------------------------
 // send data
 //---------------------------------------------------------------------
-func Ikcp_send(kcp *ikcpcb, buffer []byte, _len int) int {
+func Ikcp_send(kcp *Ikcpcb, buffer []byte, _len int) int {
         var seg *IKCPSEG
         var count, i int32
 
@@ -441,7 +441,7 @@ func Ikcp_send(kcp *ikcpcb, buffer []byte, _len int) int {
 //---------------------------------------------------------------------
 // parse ack
 //---------------------------------------------------------------------
-func Ikcp_update_ack(kcp *ikcpcb, rtt int32) {
+func Ikcp_update_ack(kcp *Ikcpcb, rtt int32) {
         rto := 0
         if (kcp.rx_srtt == 0) {
                 kcp.rx_srtt = uint32(rtt)
@@ -457,7 +457,7 @@ func Ikcp_update_ack(kcp *ikcpcb, rtt int32) {
         kcp.rx_rto = _ibound_(kcp.rx_minrto, uint32(rto), IKCP_RTO_MAX)
 }
 
-func ikcp_shrink_buf(kcp *ikcpcb) {
+func ikcp_shrink_buf(kcp *Ikcpcb) {
         if kcp.snd_buf.Len() > 0 {
                 p := kcp.snd_buf.Front()
                 seg := p.Value.(*IKCPSEG)
@@ -473,7 +473,7 @@ func ikcp_shrink_buf(kcp *ikcpcb) {
         }
 }
 
-func ikcp_parse_ack(kcp *ikcpcb, sn uint32) {
+func ikcp_parse_ack(kcp *Ikcpcb, sn uint32) {
         if _itimediff(sn, kcp.snd_una) < 0 || _itimediff(sn, kcp.snd_nxt) >= 0 {
         //        //fmt.Printf("wi %d,%d  %d,%d\n", sn, kcp.snd_una, sn, kcp.snd_nxt)
                 return
@@ -492,7 +492,7 @@ func ikcp_parse_ack(kcp *ikcpcb, sn uint32) {
         }
 }
 
-func ikcp_parse_una(kcp *ikcpcb, una uint32) {
+func ikcp_parse_una(kcp *Ikcpcb, una uint32) {
         for p:= kcp.snd_buf.Front(); p != nil; {
                 seg := p.Value.(*IKCPSEG)
                 if (_itimediff(una, seg.sn) > 0) {
@@ -510,7 +510,7 @@ func ikcp_parse_una(kcp *ikcpcb, una uint32) {
 //---------------------------------------------------------------------
 // ack append
 //---------------------------------------------------------------------
-func ikcp_ack_push(kcp *ikcpcb, sn, ts uint32) {
+func ikcp_ack_push(kcp *Ikcpcb, sn, ts uint32) {
         newsize := kcp.ackcount + 1
 
         if (newsize > kcp.ackblock) {
@@ -535,7 +535,7 @@ func ikcp_ack_push(kcp *ikcpcb, sn, ts uint32) {
         kcp.ackcount++
 }
 
-func ikcp_ack_get(kcp *ikcpcb, p int32, sn, ts *uint32) {
+func ikcp_ack_get(kcp *Ikcpcb, p int32, sn, ts *uint32) {
         if (sn!=nil) { *sn = kcp.acklist[p * 2 + 0]}
         if (ts!=nil) { *ts = kcp.acklist[p * 2 + 1]}
 }
@@ -544,7 +544,7 @@ func ikcp_ack_get(kcp *ikcpcb, p int32, sn, ts *uint32) {
 //---------------------------------------------------------------------
 // parse data
 //---------------------------------------------------------------------
-func ikcp_parse_data(kcp *ikcpcb, newseg *IKCPSEG) {
+func ikcp_parse_data(kcp *Ikcpcb, newseg *IKCPSEG) {
         var p *list.Element
         sn := newseg.sn
         repeat := 0
@@ -597,7 +597,7 @@ func ikcp_parse_data(kcp *ikcpcb, newseg *IKCPSEG) {
 //---------------------------------------------------------------------
 // input data
 //---------------------------------------------------------------------
-func Ikcp_input(kcp *ikcpcb , data []byte, size int) int {
+func Ikcp_input(kcp *Ikcpcb , data []byte, size int) int {
         una := kcp.snd_una
         if (ikcp_canlog(kcp, IKCP_LOG_INPUT)!=0) {
                 Ikcp_log(kcp, IKCP_LOG_INPUT, "[RI] %d bytes", size)
@@ -734,7 +734,7 @@ func ikcp_encode_seg(ptr []byte, seg *IKCPSEG) ([]byte) {
         return ptr
 }
 
-func ikcp_wnd_unused(kcp *ikcpcb) int32 {
+func ikcp_wnd_unused(kcp *Ikcpcb) int32 {
         if (kcp.nrcv_que < kcp.rcv_wnd) {
                 return int32(kcp.rcv_wnd - kcp.nrcv_que)
         }
@@ -745,7 +745,7 @@ func ikcp_wnd_unused(kcp *ikcpcb) int32 {
 //---------------------------------------------------------------------
 // Ikcp_flush
 //---------------------------------------------------------------------
-func Ikcp_flush(kcp *ikcpcb) {
+func Ikcp_flush(kcp *Ikcpcb) {
         current := kcp.current
         buffer := kcp.buffer
         ptr := buffer
@@ -981,7 +981,7 @@ func Ikcp_flush(kcp *ikcpcb) {
 //---------------------------------------------------------------------
 // input update
 //---------------------------------------------------------------------
-func Ikcp_update(kcp *ikcpcb, current uint32) {
+func Ikcp_update(kcp *Ikcpcb, current uint32) {
         var slap int32
 
         kcp.current = current
@@ -1008,7 +1008,7 @@ func Ikcp_update(kcp *ikcpcb, current uint32) {
 }
 
 
-func Ikcp_check(kcp *ikcpcb, current uint32) uint32 {
+func Ikcp_check(kcp *Ikcpcb, current uint32) uint32 {
         ts_flush := kcp.ts_flush
         tm_flush := 0x7fffffff
         tm_packet := 0x7fffffff
@@ -1048,7 +1048,7 @@ func Ikcp_check(kcp *ikcpcb, current uint32) uint32 {
 
 
 
-func Ikcp_setmtu(kcp *ikcpcb , mtu int32) int32 {
+func Ikcp_setmtu(kcp *Ikcpcb , mtu int32) int32 {
         if mtu < 50 || mtu < int32(IKCP_OVERHEAD) {
                 return -1
         }
@@ -1062,7 +1062,7 @@ func Ikcp_setmtu(kcp *ikcpcb , mtu int32) int32 {
         return 0
 }
 
-func ikcp_interval(kcp *ikcpcb , interval int32) int32 {
+func ikcp_interval(kcp *Ikcpcb , interval int32) int32 {
         if (interval > 5000) {
                 interval = 5000 
         } else if (interval < 10) {
@@ -1072,7 +1072,7 @@ func ikcp_interval(kcp *ikcpcb , interval int32) int32 {
         return 0
 }
 
-func Ikcp_nodelay(kcp *ikcpcb , nodelay, interval, resend, nc int32) int32 {
+func Ikcp_nodelay(kcp *Ikcpcb , nodelay, interval, resend, nc int32) int32 {
         if (nodelay >= 0) {
                 kcp.nodelay = uint32(nodelay)
                 if (nodelay!=0) {
@@ -1099,7 +1099,7 @@ func Ikcp_nodelay(kcp *ikcpcb , nodelay, interval, resend, nc int32) int32 {
 }
 
 
-func Ikcp_wndsize(kcp *ikcpcb, sndwnd, rcvwnd int32) int32 {
+func Ikcp_wndsize(kcp *Ikcpcb, sndwnd, rcvwnd int32) int32 {
         if (kcp!=nil) {
                 if (sndwnd > 0) {
                         kcp.snd_wnd = uint32(sndwnd)
@@ -1111,7 +1111,7 @@ func Ikcp_wndsize(kcp *ikcpcb, sndwnd, rcvwnd int32) int32 {
         return 0
 }
 
-func Ikcp_waitsnd(kcp *ikcpcb ) int32 {
+func Ikcp_waitsnd(kcp *Ikcpcb ) int32 {
         return int32(kcp.nsnd_buf + kcp.nsnd_que)
 }
 

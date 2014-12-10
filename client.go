@@ -284,7 +284,8 @@ func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
 		}
 	}
 	outip += ";" + *addInitAddr
-	engine, err := nat.Init(outip, buster)
+        _id, _ := strconv.Atoi(id)
+	engine, err := nat.Init(outip, buster, _id)
 	if err != nil {
 		println("init error", err.Error())
 		disconnect()
