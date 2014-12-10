@@ -59,7 +59,7 @@ func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 }
 
 func (c *Conn) onUpdate() {
-	updateChan := time.Tick(20 * time.Millisecond)
+	updateChan := time.Tick(20* time.Millisecond)
 out:
 	for {
 		select {
@@ -73,29 +73,32 @@ out:
 }
 func (c *Conn) Read(b []byte) (int, error) {
         if !c.closed {
-                hr := ikcp.Ikcp_recv(c.kcp, c.tmp, 2000)
-                if hr > 0 {
-                        debug("read", hr)
-                        copy(b, c.tmp[:hr])
-                        return int(hr), nil
-                }
                 for {
-                        n, addr, err := c.conn.ReadFrom(c.tmp)
-                        //debug("want read!", n, addr, err)
-                        // Generic non-address related errors.
-                        if addr == nil && err != nil {
-                                debug("error!", err.Error())
-                                return 0, err
+                        hr := ikcp.Ikcp_recv(c.kcp, c.tmp, 2000)
+                        if hr > 0 {
+                                debug("read", hr)
+                                copy(b, c.tmp[:hr])
+                                return int(hr), nil
                         }
-                        if addr.Network() != c.remote.Network() || addr.String() != c.remote.String() {
-                                continue
+                        bHave := false
+                        for {
+                                n, addr, err := c.conn.ReadFrom(c.tmp)
+                                //debug("want read!", n, addr, err)
+                                // Generic non-address related errors.
+                                if addr == nil && err != nil {
+                                        debug("error!", err.Error())
+                                        return 0, err
+                                }
+                                //debug("redirect", n)
+                                ikcp.Ikcp_input(c.kcp, c.tmp[:n], n)
+                                bHave = true
+                                break
                         }
-                        //debug("redirect", n)
-                        ikcp.Ikcp_input(c.kcp, c.tmp[:n], n)
-                        break
-                }
+                        if !bHave {
+                                time.Sleep(10 * time.Millisecond)
+                        }
 
-                return 0, nil
+                }
         }
         return 0, errors.New("force quit")
 }
