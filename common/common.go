@@ -78,6 +78,9 @@ func Read(conn net.Conn, callback ReadCallBack) {
 	scanner.Split(split)
 	for scanner.Scan() {
 	}
+        if scanner.Err() != nil {
+                println(scanner.Err().Error())
+        }
 }
 
 //udp
