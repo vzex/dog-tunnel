@@ -30,17 +30,18 @@ type IKCPCB struct {
 		acklist []uint32
 		ackcount uint32
 		ackblock uint32
-		user []byte
+		user interface{}
 		buffer []byte
 		fastresend int32
 		nocwnd int32
 		logmask int32
-		output func (buf []byte, _len int32, kcp *ikcpcb, user []byte) (int32)
-		writelog func (log []byte, kcp *ikcpcb, user []byte)
+		writelog func (log []byte, kcp *Ikcpcb, user []byte)
+
+		Output func (buf []byte, _len int32, kcp *Ikcpcb, user interface{}) (int32)
 }
 
 
-type ikcpcb IKCPCB
+type Ikcpcb struct {IKCPCB}
 
 const IKCP_LOG_OUTPUT =	1
 const IKCP_LOG_INPUT = 2

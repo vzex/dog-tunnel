@@ -9,7 +9,7 @@ import (
 	"strconv"
 )
 
-const Version = 0.42
+const Version = 0.50
 
 type ClientSetting struct {
 	AccessKey string

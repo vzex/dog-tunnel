@@ -11,8 +11,9 @@ import "testing"
 var vnet *LatencySimulator 
 
 // 模拟网络：模拟发送一个 udp包
-func udp_output(buf []byte, _len int32, kcp *ikcpcb, user []byte) int32 {
-        var id uint32 = uint32(user[0])
+func udp_output(buf []byte, _len int32, kcp *Ikcpcb, user interface{}) int32 {
+        arr := (user).([]byte)
+        var id uint32 = uint32(arr[0])
         //println("send!!!!", id, _len)
 	if vnet.send(int(id), buf, int(_len)) != 1 {
                 //println("wocao !!!", id, _len)
@@ -34,8 +35,8 @@ func test(mode int) {
         kcp2 := Ikcp_create(0x11223344, b)
 
 	// 设置kcp的下层输出，这里为 udp_output，模拟udp网络输出函数
-	kcp1.output = udp_output
-	kcp2.output = udp_output
+	kcp1.Output = udp_output
+	kcp2.Output = udp_output
 
         current := uint32(iclock())
         slap := current + 20
