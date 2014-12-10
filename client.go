@@ -576,6 +576,11 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 				}
 				s_conn, err := net.DialTimeout(hello.reqtype, url, 30*time.Second)
 				if err != nil {
+					if *dnsCacheNum > 0 && hello.atyp == 3 {
+						host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
+						cache := common.GetCacheContainer("dns")
+						cache.DelCache(host)
+					}
 					log.Println("connect to local server fail:", err.Error())
 					//msg := "cannot connect to bind addr" + *localAddr
 					ansmsg.gen(&hello, 4)
@@ -587,8 +592,7 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 						cache := common.GetCacheContainer("dns")
 					        host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
 						cache.AddCache(host, &dnsInfo{Ip:strings.Split(s_conn.RemoteAddr().String(), ":")[0]}, int64(*dnsCacheNum*60))
-						cacheInfo := cache.GetCache(host)
-						log.Println("add host", host, "to dns cache", cacheInfo)
+						log.Println("add host", host, "to dns cache")
 					}
 					session.localConn = s_conn
 					go handleLocalPortResponse(sc, sessionId)
