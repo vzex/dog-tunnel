@@ -790,6 +790,11 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		}
 	case "tunnel_close_s":
 		sc.removeSession(sessionId)
+	case "ping", "pingback":
+		//log.Println("recv", action)
+		if action == "ping" {
+			common.Write(pipe, sessionId, "pingback", "")
+		}
 	case "tunnel_msg_c":
 		if conn != nil {
 			//log.Println("tunnel", len(content), sessionId)
@@ -855,6 +860,22 @@ func (sc *Client) MultiListen() bool {
 			return false
 		}
 		go func() {
+			quit := false
+			ping := time.Tick(time.Second*5)
+			go func() {
+			out:
+				for {
+					select {
+					case <- ping:
+						if quit {
+							break out
+						}
+						for _, pipe := range sc.pipes {
+							common.Write(pipe, "-1", "ping", "")
+						}
+					}
+				}
+			}()
 			for {
 				conn, err := g_LocalConn.Accept()
 				if err != nil {
@@ -873,6 +894,7 @@ func (sc *Client) MultiListen() bool {
 				log.Println("client", sc.id, "create session", sessionId)
 				go handleLocalServerResponse(sc, sessionId)
 			}
+			quit = true
 		}()
 		mode := "p2p mode"
 		if !sc.bUdp {
