@@ -24,21 +24,13 @@ import (
 	"time"
 )
 
-var accessKey = flag.String("key", "", "please login into dog-tunnel.tk to get accesskey")
-var clientKey = flag.String("clientkey", "", "when other client linkt to the reg client, need clientkey, or empty")
-
-var serverAddr = flag.String("remote", "dog-tunnel.tk:8008", "connect remote server")
 var addInitAddr = flag.String("addip", "127.0.0.1", "addip for bust,xx.xx.xx.xx;xx.xx.xx.xx;")
 var pipeNum = flag.Int("pipen", 1, "pipe num for transmission")
 
-var serveName = flag.String("reg", "", "reg the name for client link, must assign reg or link")
-
-var linkName = flag.String("link", "", "name for link, must assign reg or link")
-var localAddr = flag.String("local", "", "addr for listen or connect(value \"socks5\" means tcp socks5 proxy for reg),depends on link or reg")
+var serviceAddr = flag.String("service", "", "listen addr for client connect")
+var localAddr = flag.String("local", "", "if local not empty, treat me as client, this is the addr for local listen, otherwise, treat as server")
+var remoteAction = flag.String("action", "socks5", "for client control server, if action is socks5,remote is socks5 server, if is addr like 127.0.0.1:22, remote server is a port redirect server")
 var bVerbose = flag.Bool("v", false, "verbose mode")
-var delayTime = flag.Int("delay", 2, "if bust fail, try to make some delay seconds")
-var clientMode = flag.Int("mode", 0, "connect mode:0 if p2p fail, use c/s mode;1 just p2p mode;2 just c/s mode")
-var bUseSSL = flag.Bool("ssl", true, "use ssl")
 var bShowVersion = flag.Bool("version", false, "show version")
 var bLoadSettingFromFile = flag.Bool("f", false, "load setting from file(~/.dtunnel)")
 var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
@@ -47,7 +39,7 @@ var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 var aesKey *cipher.Block
 
 var remoteConn net.Conn
-var clientType = -1
+var clientType = 1
 
 type dnsInfo struct {
 	Ip                  string
@@ -76,152 +68,6 @@ var bForceQuit = false
 
 func isCommonSessionId(id string) bool {
 	return id == "common"
-}
-
-func handleResponse(conn net.Conn, clientId string, action string, content string) {
-	//log.Println("got", clientId, action)
-	switch action {
-	case "aeskey":
-		fmt.Println("init aeskey for client", clientId, content)
-		block, _ := aes.NewCipher([]byte(content))
-		g_ClientMapKey[clientId] = &block
-	case "show":
-		fmt.Println(time.Now().Format("2006-01-02 15:04:05"), content)
-	case "showandretry":
-		fmt.Println(time.Now().Format("2006-01-02 15:04:05"), content)
-		remoteConn.Close()
-	case "showandquit":
-		fmt.Println(time.Now().Format("2006-01-02 15:04:05"), content)
-		remoteConn.Close()
-		bForceQuit = true
-	case "clientquit":
-		client := g_ClientMap[clientId]
-		log.Println("clientquit!!!", clientId, client)
-		if client != nil {
-			client.Quit()
-		}
-	case "remove_udpsession":
-		log.Println("server force remove udpsession", clientId)
-		delete(g_Id2UDPSession, clientId)
-	case "query_addrlist_a":
-		outip := content
-		arr := strings.Split(clientId, "-")
-		id := arr[0]
-		sessionId := arr[1]
-		pipeType := arr[2]
-		g_Id2UDPSession[id] = &UDPMakeSession{id: id, sessionId: sessionId, pipeType: pipeType}
-		go g_Id2UDPSession[id].reportAddrList(true, outip)
-	case "query_addrlist_b":
-		arr := strings.Split(clientId, "-")
-		id := arr[0]
-		sessionId := arr[1]
-		pipeType := arr[2]
-		g_Id2UDPSession[id] = &UDPMakeSession{id: id, sessionId: sessionId, pipeType: pipeType}
-		go g_Id2UDPSession[id].reportAddrList(false, content)
-	case "tell_bust_a":
-		session, bHave := g_Id2UDPSession[clientId]
-		if bHave {
-			go session.beginMakeHole(content)
-		}
-	case "tell_bust_b":
-		session, bHave := g_Id2UDPSession[clientId]
-		if bHave {
-			go session.beginMakeHole("")
-		}
-	case "csmode_c_tunnel_close":
-		log.Println("receive close msg from server")
-		arr := strings.Split(clientId, "-")
-		clientId = arr[0]
-		sessionId := arr[1]
-		client, bHave := g_ClientMap[clientId]
-		if bHave {
-			client.removeSession(sessionId)
-		}
-	case "csmode_s_tunnel_close":
-		arr := strings.Split(clientId, "-")
-		clientId = arr[0]
-		sessionId := arr[1]
-		client, bHave := g_ClientMap[clientId]
-		if bHave {
-			client.removeSession(sessionId)
-		}
-	case "csmode_s_tunnel_open":
-		oriId := clientId
-		arr := strings.Split(oriId, "-")
-		clientId = arr[0]
-		sessionId := arr[1]
-		client, bHave := g_ClientMap[clientId]
-		if !bHave {
-			client = &Client{id: clientId, pipes: make(map[int]net.Conn), engine: nil, buster: true, sessions: make(map[string]*clientSession), ready: true, bUdp: false}
-			client.pipes[0] = remoteConn
-			g_ClientMap[clientId] = client
-		} else {
-			client.pipes[0] = remoteConn
-			client.ready = true
-			client.bUdp = false
-		}
-		//log.Println("client init csmode", clientId, sessionId)
-		if *localAddr != "socks5" {
-			s_conn, err := net.DialTimeout("tcp", *localAddr, 10*time.Second)
-			if err != nil {
-				log.Println("connect to local server fail:", err.Error())
-				msg := "cannot connect to bind addr" + *localAddr
-				common.Write(remoteConn, clientId, "tunnel_error", msg)
-				//remoteConn.Close()
-				return
-			} else {
-				client.sessions[sessionId] = &clientSession{pipe: remoteConn, localConn: s_conn}
-				go handleLocalPortResponse(client, oriId)
-			}
-		} else {
-			client.sessions[sessionId] = &clientSession{pipe: remoteConn, localConn: nil, status: "init", recvMsg: ""}
-		}
-	case "csmode_c_begin":
-		client, bHave := g_ClientMap[clientId]
-		if !bHave {
-			client = &Client{id: clientId, pipes: make(map[int]net.Conn), engine: nil, buster: false, sessions: make(map[string]*clientSession), ready: true, bUdp: false}
-			client.pipes[0] = remoteConn
-			g_ClientMap[clientId] = client
-		} else {
-			client.pipes[0] = remoteConn
-			client.ready = true
-			client.bUdp = false
-		}
-		if client.MultiListen() {
-			common.Write(remoteConn, clientId, "makeholeok", "csmode")
-		}
-	case "csmode_msg_c":
-		oriId := clientId
-		arr := strings.Split(clientId, "-")
-		clientId = arr[0]
-		sessionId := arr[1]
-		client, bHave := g_ClientMap[clientId]
-		if bHave {
-			session := client.getSession(sessionId)
-			if session != nil && session.localConn != nil {
-				session.localConn.Write([]byte(content))
-			} else if session != nil && *localAddr == "socks5" {
-				session.processSockProxy(client, oriId, content, func() {
-					if len(session.recvMsg) > 0 && session.localConn != nil {
-						session.localConn.Write([]byte(session.recvMsg))
-					}
-				})
-			}
-		}
-	case "csmode_msg_s":
-		arr := strings.Split(clientId, "-")
-		clientId = arr[0]
-		sessionId := arr[1]
-		client, bHave := g_ClientMap[clientId]
-		if bHave {
-			session := client.getSession(sessionId)
-			if session != nil && session.localConn != nil {
-				session.localConn.Write([]byte(content))
-			} else {
-				log.Println("cs:cannot tunnel msg", sessionId)
-			}
-		}
-	}
 }
 
 type UDPMakeSession struct {
@@ -423,29 +269,23 @@ func main() {
 	if !*bVerbose {
 		log.SetOutput(ioutil.Discard)
 	}
-	if *serveName == "" && *linkName == "" {
-		println("you must assign reg or link")
-		return
-	}
-	if *serveName != "" && *linkName != "" {
-		println("you must assign reg or link, not both of them")
+	if *serviceAddr == "" {
+		println("you must assign service arg")
 		return
 	}
 	if *localAddr == "" {
-		println("you must assign the local addr")
-		return
-	}
-	if *serveName != "" {
-		clientType = 0
-	} else {
-		clientType = 1
+                clientType = 0
 	}
 	if *bEncrypt {
 		if clientType != 1 {
-			println("only link size need encrypt")
+			println("only client side need encrypt")
 			return
 		}
 	}
+        if *remoteAction == "" && clientType == 1 {
+                println("must have action")
+                return
+        }
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
