@@ -42,7 +42,6 @@ var bUseSSL = flag.Bool("ssl", true, "use ssl")
 var bShowVersion = flag.Bool("version", false, "show version")
 var bLoadSettingFromFile = flag.Bool("f", false, "load setting from file(~/.dtunnel)")
 var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
-var bStandalone = flag.Bool("standalone", false, "p2p mode, auto disconnect from server when ready(client side)")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 
 var aesKey *cipher.Block
@@ -441,9 +440,9 @@ func main() {
 	} else {
 		clientType = 1
 	}
-	if *bEncrypt || *bStandalone {
+	if *bEncrypt {
 		if clientType != 1 {
-			println("only link size need encrypt or standlone")
+			println("only link size need encrypt")
 			return
 		}
 	}
