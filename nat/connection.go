@@ -44,6 +44,7 @@ type Conn struct {
         kcp                *ikcp.Ikcpcb
         
         tmp                     []byte
+        encode, decode func([]byte)[]byte
 }
 
 func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
@@ -76,8 +77,13 @@ func (c *Conn) Read(b []byte) (int, error) {
                 for {
                         hr := ikcp.Ikcp_recv(c.kcp, c.tmp, 2000)
                         if hr > 0 {
-                                debug("read", hr)
                                 copy(b, c.tmp[:hr])
+                                if c.decode != nil {
+                                        d:= c.decode(b[:hr])
+                                        copy(b, d)
+                                        hr = int32(len(d))
+                                }
+                                debug("read", hr)
                                 return int(hr), nil
                         }
                         bHave := false
@@ -107,6 +113,9 @@ func (c *Conn) Read(b []byte) (int, error) {
 func (c *Conn) Write(b []byte) (int, error) {
         if c.closed {return 0, errors.New("eof")}
 
+        if c.encode != nil {
+                b = c.encode(b)
+        }
         sendL := len(b)
         debug("try write", sendL)
         ikcp.Ikcp_send(c.kcp, b, sendL)
@@ -142,4 +151,9 @@ func (c *Conn) SetReadDeadline(t time.Time) error {
 
 func (c *Conn) SetWriteDeadline(t time.Time) error {
         return c.conn.SetWriteDeadline(t)
+}
+
+func (c *Conn) SetCrypt(encode, decode func([]byte)[]byte) {
+        c.encode = encode
+        c.decode = decode
 }

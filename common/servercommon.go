@@ -156,6 +156,9 @@ func (s *ClientInfo) AddClient(conn net.Conn, clientInfo ClientSetting) {
 	if s.ClientMap[conn].Setting.Mode == 2 {
 		s.ClientMap[conn].StartCSMode()
 	} else {
+		if clientInfo.AesKey != "" {
+			Write(s.Conn, id, "aeskey", clientInfo.AesKey)
+		}
 		n := clientInfo.PipeNum
 		s.ClientMap[conn].StartSession(n, s.ServerName, id)
 	}

@@ -248,11 +248,6 @@ func Ikcp_create(conv uint32, user interface{}) (*Ikcpcb) {
 //---------------------------------------------------------------------
 func Ikcp_release(kcp *Ikcpcb ) {
         if (kcp!=nil) {
-                kcp.snd_buf = nil
-                kcp.rcv_buf = nil
-                kcp.snd_queue = nil
-                kcp.rcv_queue = nil
-
                 kcp.nrcv_buf = 0
                 kcp.nsnd_buf = 0
                 kcp.nrcv_que = 0

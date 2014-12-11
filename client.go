@@ -4,6 +4,8 @@ import (
 	"./common"
 	"./nat"
 	"bufio"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -39,29 +41,36 @@ var clientMode = flag.Int("mode", 0, "connect mode:0 if p2p fail, use c/s mode;1
 var bUseSSL = flag.Bool("ssl", true, "use ssl")
 var bShowVersion = flag.Bool("version", false, "show version")
 var bLoadSettingFromFile = flag.Bool("f", false, "load setting from file(~/.dtunnel)")
+var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
+var bStandalone = flag.Bool("standalone", false, "p2p mode, auto disconnect from server when ready(client side)")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
+
+var aesKey *cipher.Block
 
 var remoteConn net.Conn
 var clientType = -1
 
 type dnsInfo struct {
-	Ip string
+	Ip                  string
 	overTime, cacheTime int64
 }
+
 func (u *dnsInfo) IsAlive() bool {
-        return time.Now().Unix() < u.overTime
+	return time.Now().Unix() < u.overTime
 }
 
 func (u *dnsInfo) SetCacheTime(t int64) {
-        if t >= 0 {
-                u.cacheTime = t
-        } else {
-                t = u.cacheTime
-        }
-        u.overTime = t + time.Now().Unix()
+	if t >= 0 {
+		u.cacheTime = t
+	} else {
+		t = u.cacheTime
+	}
+	u.overTime = t + time.Now().Unix()
 }
-func(u *dnsInfo) DeInit() {}
+func (u *dnsInfo) DeInit() {}
+
 var g_ClientMap map[string]*Client
+var g_ClientMapKey map[string]*cipher.Block
 var g_Id2UDPSession map[string]*UDPMakeSession
 var markName = ""
 var bForceQuit = false
@@ -73,6 +82,10 @@ func isCommonSessionId(id string) bool {
 func handleResponse(conn net.Conn, clientId string, action string, content string) {
 	//log.Println("got", clientId, action)
 	switch action {
+	case "aeskey":
+		fmt.Println("init aeskey for client", clientId, content)
+		block, _ := aes.NewCipher([]byte(content))
+		g_ClientMapKey[clientId] = &block
 	case "show":
 		fmt.Println(time.Now().Format("2006-01-02 15:04:05"), content)
 	case "showandretry":
@@ -244,7 +257,55 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 		}
 	}
 	oldSession := session
-	conn, err := engine.GetConn(report)
+	var aesBlock *cipher.Block
+	if clientType == 1 {
+		aesBlock = aesKey
+	} else {
+		aesBlock, _ = g_ClientMapKey[session.id]
+	}
+	var conn net.Conn
+	var err error
+	if aesBlock == nil {
+		conn, err = engine.GetConn(report, nil, nil)
+	} else {
+		conn, err = engine.GetConn(report, func(s []byte) []byte {
+			if aesBlock == nil {
+				return s
+			} else {
+				padLen := aes.BlockSize - (len(s) % aes.BlockSize)
+				for i := 0; i < padLen; i++ {
+					s = append(s, byte(padLen))
+				}
+				srcLen := len(s)
+				encryptText := make([]byte, srcLen+aes.BlockSize)
+				iv := encryptText[srcLen:]
+				for i := 0; i < len(iv); i++ {
+					iv[i] = byte(i)
+				}
+				mode := cipher.NewCBCEncrypter(*aesBlock, iv)
+				mode.CryptBlocks(encryptText[:srcLen], s)
+				return encryptText
+			}
+		}, func(s []byte) []byte {
+			if aesBlock == nil {
+				return s
+			} else {
+				if len(s) < aes.BlockSize*2 || len(s)%aes.BlockSize != 0 {
+					return []byte{}
+				}
+				srcLen := len(s) - aes.BlockSize
+				decryptText := make([]byte, srcLen)
+				iv := s[srcLen:]
+				mode := cipher.NewCBCDecrypter(*aesBlock, iv)
+				mode.CryptBlocks(decryptText, s[:srcLen])
+				paddingLen := int(decryptText[srcLen-1])
+				if paddingLen > 16 {
+					return []byte{}
+				}
+				return decryptText[:srcLen-paddingLen]
+			}
+		})
+	}
 	session, _bHave := g_Id2UDPSession[session.id]
 	if session != oldSession {
 		return
@@ -279,6 +340,7 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 		}
 	} else {
 		delete(g_ClientMap, session.sessionId)
+		delete(g_ClientMapKey, session.sessionId)
 		log.Println("cannot connect", err.Error())
 		if !session.buster && err.Error() != "quit" {
 			common.Write(remoteConn, session.id, "makeholefail", "")
@@ -302,7 +364,7 @@ func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
 		}
 	}
 	outip += ";" + *addInitAddr
-        _id, _ := strconv.Atoi(id)
+	_id, _ := strconv.Atoi(id)
 	engine, err := nat.Init(outip, buster, _id)
 	if err != nil {
 		println("init error", err.Error())
@@ -379,6 +441,12 @@ func main() {
 	} else {
 		clientType = 1
 	}
+	if *bEncrypt || *bStandalone {
+		if clientType != 1 {
+			println("only link size need encrypt or standlone")
+			return
+		}
+	}
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -403,6 +471,7 @@ func main() {
 			return true
 		}
 		g_ClientMap = make(map[string]*Client)
+		g_ClientMapKey = make(map[string]*cipher.Block)
 		g_Id2UDPSession = make(map[string]*UDPMakeSession)
 		//var err error
 		if *bUseSSL {
@@ -470,7 +539,13 @@ func connect() {
 	if *pipeNum <= 0 {
 		*pipeNum = 1
 	}
-	clientInfo := common.ClientSetting{Version: common.Version, Delay: *delayTime, Mode: *clientMode, PipeNum: *pipeNum, AccessKey: *accessKey, ClientKey: *clientKey}
+	clientInfo := common.ClientSetting{Version: common.Version, Delay: *delayTime, Mode: *clientMode, PipeNum: *pipeNum, AccessKey: *accessKey, ClientKey: *clientKey, AesKey: ""}
+	if *bEncrypt {
+		clientInfo.AesKey = string([]byte(fmt.Sprintf("asd4%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:16])
+		log.Println("debug aeskey", clientInfo.AesKey)
+		key, _ := aes.NewCipher([]byte(clientInfo.AesKey))
+		aesKey = &key
+	}
 	if *bLoadSettingFromFile {
 		var setting fileSetting
 		err := loadSettings(&setting)
@@ -597,7 +672,7 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 						if needcache {
 							cache := common.GetCacheContainer("dns")
 							host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
-							cache.AddCache(host, &dnsInfo{Ip:strings.Split(s_conn.RemoteAddr().String(), ":")[0]}, int64(*dnsCacheNum*60))
+							cache.AddCache(host, &dnsInfo{Ip: strings.Split(s_conn.RemoteAddr().String(), ":")[0]}, int64(*dnsCacheNum*60))
 							log.Println("add host", host, "to dns cache")
 						}
 						session.localConn = s_conn
@@ -723,10 +798,10 @@ func (msg *reqMsg) read(bytes []byte) (bool, []byte) {
 		msg.url += fmt.Sprintf(":%d", msg.dst_port2)
 	case 4: //ipv6
 		msg.url = fmt.Sprintf("%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3],
-				msg.dst_addr[4], msg.dst_addr[5], msg.dst_addr[6], msg.dst_addr[7],
-				msg.dst_addr[8], msg.dst_addr[9], msg.dst_addr[10], msg.dst_addr[11],
-				msg.dst_addr[12], msg.dst_addr[13], msg.dst_addr[14], msg.dst_addr[15],
-				msg.dst_port2)
+			msg.dst_addr[4], msg.dst_addr[5], msg.dst_addr[6], msg.dst_addr[7],
+			msg.dst_addr[8], msg.dst_addr[9], msg.dst_addr[10], msg.dst_addr[11],
+			msg.dst_addr[12], msg.dst_addr[13], msg.dst_addr[14], msg.dst_addr[15],
+			msg.dst_port2)
 	}
 	log.Println(msg.reqtype, msg.url, msg.atyp, msg.dst_port2)
 	return true, buf[2:]
@@ -780,7 +855,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 			log.Println("tunnel error", content, sessionId)
 		}
 		sc.removeSession(sessionId)
-	//case "serve_begin":
+		//case "serve_begin":
 	case "tunnel_msg_s":
 		if conn != nil {
 			//println("tunnel msg", sessionId, len(content))
@@ -833,6 +908,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 func (sc *Client) Quit() {
 	log.Println("client quit", sc.id)
 	delete(g_ClientMap, sc.id)
+	delete(g_ClientMapKey, sc.id)
 	for id, _ := range sc.sessions {
 		sc.removeSession(id)
 	}
@@ -861,12 +937,12 @@ func (sc *Client) MultiListen() bool {
 		}
 		go func() {
 			quit := false
-			ping := time.Tick(time.Second*5)
+			ping := time.Tick(time.Second * 5)
 			go func() {
 			out:
 				for {
 					select {
-					case <- ping:
+					case <-ping:
 						if quit {
 							break out
 						}
@@ -899,6 +975,7 @@ func (sc *Client) MultiListen() bool {
 		mode := "p2p mode"
 		if !sc.bUdp {
 			mode = "c/s mode"
+			delete(g_ClientMapKey, sc.id)
 		}
 		println("service start success,please connect", *localAddr, mode)
 	}

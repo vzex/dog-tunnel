@@ -21,6 +21,7 @@ type ClientSetting struct {
 	Delay      int
 	Mode       int
 	PipeNum    int
+	AesKey     string
 }
 
 func Write(conn net.Conn, id string, action string, content string) error {

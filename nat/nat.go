@@ -76,10 +76,10 @@ func (e *AttemptEngine) Fail() {
 	}
 }
 
-func (e *AttemptEngine) GetConn(f func()) (net.Conn, error) {
+func (e *AttemptEngine) GetConn(f func(), encode, decode func([]byte)[]byte) (net.Conn, error) {
 	var conn net.Conn
 	var err error
-	if conn, err = e.run(f); err != nil {
+	if conn, err = e.run(f, encode, decode); err != nil {
 		return nil, err
 	}
 	return conn, nil
@@ -230,7 +230,7 @@ func (e *AttemptEngine) read() error {
 	return nil
 }
 
-func (e *AttemptEngine) run(f func()) (net.Conn, error) {
+func (e *AttemptEngine) run(f func(), encode, decode func([]byte)[]byte) (net.Conn, error) {
 	bInform := false
 	beginTime := time.Now().Unix()
 	for {
@@ -263,6 +263,7 @@ func (e *AttemptEngine) run(f func()) (net.Conn, error) {
 			}
 		}
 		if e.status == "over" {
+                        e.p2pconn.(*Conn).SetCrypt(encode, decode)
 			return e.p2pconn, nil
 		}
 	}
