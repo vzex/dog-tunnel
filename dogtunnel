@@ -1,0 +1,9 @@
+#!/bin/bash
+
+BASE_DIR=`dirname $0`
+if [ -L $0 ]
+then
+	BASE_DIR=`dirname $(readlink $0)`
+fi
+cd $BASE_DIR
+go run client.go -remote dog-tunnel.tk:8008 -key test -ssl -local :8888 -delay 2 -stun stun.l.google.com:19302 $@
