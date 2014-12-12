@@ -1,9 +1,11 @@
-流程
-服务端监听端口
-客户端生成随机数用于创建session
-客户端间隔10ms一次向服务端发送连接请求，带上随机数，自己保留一个临时session，连续10s，超时销毁
-服务端收到后，返回随机数给客户端确认，连续发10s，保留临时session，超时销毁
-客户端收到后，会话建立成功，再次回传10s最终确认消息给服务端，带随机数。
-服务端收到后也创建会话成功，没成功状态下如果收到客户端其他消息也算成功
-之后可基于kcp通讯
+udp make session flow :
+	s -> c1 : query_addrlist_a
+	c1 -> s : report_addrlist
+	s -> c2 : query_addrlist_b  c2 have c1's addresses
+	c2 -> s : report_addrlist
+	s -> c1 : tell_bust_a  c1 have c2's addresses
+	c1 -> s : success_bust_a
+	s -> c2 : tell_bust_b
+	c2 -> s : makeholeok or makeholefail
+
 author: vzex@163.com
