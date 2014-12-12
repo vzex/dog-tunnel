@@ -4,7 +4,8 @@ import (
 	"./common"
 	"./nat"
 	"bufio"
-	_"crypto/aes"
+        "errors"
+	"crypto/aes"
 	"crypto/cipher"
 	_ "crypto/tls"
 	"encoding/json"
@@ -37,7 +38,6 @@ var bLoadSettingFromFile = flag.Bool("f", false, "load setting from file(~/.dtun
 var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 
-var aesKey *cipher.Block
 
 var remoteConn net.Conn
 var clientType = 1
@@ -67,26 +67,27 @@ var g_Id2UDPSession map[string]*UDPMakeSession
 var markName = ""
 var bForceQuit = false
 
-func isCommonSessionId(id string) bool {
-	return id == "common"
-}
-
 type UDPMakeSession struct {
 	id int
 	idstr string
 	status string
 	overTime int64
 	quitcheck chan bool
+	recvChan chan string
 	sock *net.UDPConn
 	remote *net.UDPAddr
 	send	string
 	kcp *ikcp.Ikcpcb
+        encode, decode func([]byte)[]byte
+        closed bool
+        action string
 }
 func iclock() int32 {
         return int32((time.Now().UnixNano()/1000000) & 0xffffffff)
 }
 
 func udp_output(buf []byte, _len int32, kcp *ikcp.Ikcpcb, user interface{}) int32 {
+        //log.Println("send udp", _len)
         c := user.(*UDPMakeSession)
         c.sock.WriteTo(buf[:_len], c.remote)
         return 0
@@ -96,24 +97,10 @@ var tempBuff []byte
 var g_MakeSession map[string]*UDPMakeSession
 func ServerCheck(sock *net.UDPConn) {
 	println("begin check")
-	go func() {
-		t:= time.Tick(100*time.Millisecond)
-		for {
-			select {
-			case <-t:
-				now:=time.Now().Unix()
-				for addr, session := range g_MakeSession {
-					if now > session.overTime && session.status != "ok" {
-						session.Close(addr)
-					}
-				}
-			}
-		}
-	}()
 	func() {
 		out:
 		for {
-			sock.SetReadDeadline(time.Now().Add(2*time.Second))
+			//sock.SetReadDeadline(time.Now().Add(2*time.Second))
 			n, from, err := sock.ReadFromUDP(tempBuff)
 			if err == nil {
 				//log.Println("recv", string(tempBuff[:n]), from)
@@ -121,33 +108,87 @@ func ServerCheck(sock *net.UDPConn) {
 				session, bHave := g_MakeSession[addr]
 				if bHave {
 					if session.status == "ok" {
-						ikcp.Ikcp_input(session.kcp, tempBuff[:n], n)
+                                                if session.remote.String() == from.String() {
+                                                        //log.Println("input msg", n)
+                                                        ikcp.Ikcp_input(session.kcp, tempBuff[:n], n)
+                                                        session.Process()
+                                                }
 						continue
 					}
 				} else {
-					session = &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, remote:from, send:"", quitcheck:make(chan bool), sock:sock}
+                                        session = &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, remote:from, send:"", quitcheck:make(chan bool), sock:sock, recvChan:make(chan string), closed:false}
 					g_MakeSession[addr]= session
-					go session.Check()
+					go session.ClientCheck()
 				}
-				arr:=strings.Split(string(tempBuff[:n]), ":")
+				arr:=strings.Split(string(tempBuff[:n]), "@")
 				switch session.status {
 					case "init":
 					if len(arr) > 1 {
 						if arr[0] == "1snd" {
 							session.idstr = arr[1]
 							session.id, _ = strconv.Atoi(session.idstr)
-							session.SetStatusAndSend("1ack", "1ack:"+session.idstr)
+                                                        if len(arr) > 2 {
+                                                                session.action = arr[2]
+                                                        } else {
+                                                                session.action = "socks5"
+                                                        }
+                                                        if len(arr) > 3 {
+                                                                tail := arr[3]
+                                                                if tail != "" {
+                                                                        log.Println("got encrpyt key", tail)
+                                                                        aesKey := "asd4" + tail
+                                                                        aesBlock, _ := aes.NewCipher([]byte(aesKey))
+                                                                        session.SetCrypt(func(s []byte) []byte {
+                                                                                if aesBlock == nil {
+                                                                                        return s
+                                                                                } else {
+                                                                                        padLen := aes.BlockSize - (len(s) % aes.BlockSize)
+                                                                                        for i := 0; i < padLen; i++ {
+                                                                                                s = append(s, byte(padLen))
+                                                                                        }
+                                                                                        srcLen := len(s)
+                                                                                        encryptText := make([]byte, srcLen+aes.BlockSize)
+                                                                                        iv := encryptText[srcLen:]
+                                                                                        for i := 0; i < len(iv); i++ {
+                                                                                                iv[i] = byte(i)
+                                                                                        }
+                                                                                        mode := cipher.NewCBCEncrypter(aesBlock, iv)
+                                                                                        mode.CryptBlocks(encryptText[:srcLen], s)
+                                                                                        return encryptText
+                                                                                }
+                                                                        }, func(s []byte) []byte {
+                                                                                if aesBlock == nil {
+                                                                                        return s
+                                                                                } else {
+                                                                                        if len(s) < aes.BlockSize*2 || len(s)%aes.BlockSize != 0 {
+                                                                                                return []byte{}
+                                                                                        }
+                                                                                        srcLen := len(s) - aes.BlockSize
+                                                                                        decryptText := make([]byte, srcLen)
+                                                                                        iv := s[srcLen:]
+                                                                                        mode := cipher.NewCBCDecrypter(aesBlock, iv)
+                                                                                        mode.CryptBlocks(decryptText, s[:srcLen])
+                                                                                        paddingLen := int(decryptText[srcLen-1])
+                                                                                        if paddingLen > 16 {
+                                                                                                return []byte{}
+                                                                                        }
+                                                                                        return decryptText[:srcLen-paddingLen]
+                                                                                }
+                                                                        })
+                                                                }
+                                                        }
+                                                        session.SetStatusAndSend("1ack", "1ack@"+session.idstr)
 						}
 					} else {
-						session.Close(addr)
+						session.Close()
 					}
 					case "1ack":
 					if len(arr) > 1 {
 						if arr[0] == "2snd" && arr[1] == session.idstr {
-							session.SetStatusAndSend("ok", "2ack:"+session.idstr)
+							session.SetStatusAndSend("ok", "2ack@"+session.idstr)
 						}
 					} else {
-						session.Close(addr)
+						session.Close()
 					}
 				}
 			} else {
@@ -186,30 +227,198 @@ func (session *UDPMakeSession) Dial(addr string) string {
 		fmt.Println("dial addr fail", err.Error())
 		return "fail"
 	}
-	session.id = rand.Intn(1000000) + int(time.Now().Unix()%10000) 
+        if session.id == 0 {
+                session.id = rand.Intn(1000000) + int(time.Now().Unix()%10000) 
+        }
 	session.idstr = fmt.Sprintf("%d", session.id)
 	println("session id", session.id)
-	session.SetStatusAndSend("1snd", "1snd:"+session.idstr)
+        encrypt_tail := ""
+	if *bEncrypt {
+                encrypt_tail = string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
+                aesKey := "asd4" + encrypt_tail
+		log.Println("debug aeskey", encrypt_tail)
+		aesBlock, _ := aes.NewCipher([]byte(aesKey))
+		session.SetCrypt(func(s []byte) []byte {
+			if aesBlock == nil {
+				return s
+			} else {
+				padLen := aes.BlockSize - (len(s) % aes.BlockSize)
+				for i := 0; i < padLen; i++ {
+					s = append(s, byte(padLen))
+				}
+				srcLen := len(s)
+				encryptText := make([]byte, srcLen+aes.BlockSize)
+				iv := encryptText[srcLen:]
+				for i := 0; i < len(iv); i++ {
+					iv[i] = byte(i)
+				}
+				mode := cipher.NewCBCEncrypter(aesBlock, iv)
+				mode.CryptBlocks(encryptText[:srcLen], s)
+				return encryptText
+			}
+		}, func(s []byte) []byte {
+			if aesBlock == nil {
+				return s
+			} else {
+				if len(s) < aes.BlockSize*2 || len(s)%aes.BlockSize != 0 {
+					return []byte{}
+				}
+				srcLen := len(s) - aes.BlockSize
+				decryptText := make([]byte, srcLen)
+				iv := s[srcLen:]
+				mode := cipher.NewCBCDecrypter(aesBlock, iv)
+				mode.CryptBlocks(decryptText, s[:srcLen])
+				paddingLen := int(decryptText[srcLen-1])
+				if paddingLen > 16 {
+					return []byte{}
+				}
+				return decryptText[:srcLen-paddingLen]
+			}
+		})
+	}
+	session.SetStatusAndSend("1snd", "1snd@"+session.idstr+"@"+*remoteAction+"@"+encrypt_tail)
 	session.remote = udpAddr
 	session.sock = sock
-	session.Check()
+	session.ClientCheck()
 	return session.status
 }
+func (session *UDPMakeSession) LocalAddr() net.Addr {
+        return session.sock.LocalAddr()
+}
 
-func (session *UDPMakeSession) Check() {
+func (session *UDPMakeSession) RemoteAddr() net.Addr {
+        return session.sock.RemoteAddr()
+}
+
+func (session *UDPMakeSession) SetDeadline(t time.Time) error {
+        return session.sock.SetDeadline(t)
+}
+
+func (session *UDPMakeSession) SetReadDeadline(t time.Time) error {
+        return session.sock.SetReadDeadline(t)
+}
+
+func (session *UDPMakeSession) SetWriteDeadline(t time.Time) error {
+        return session.sock.SetWriteDeadline(t)
+}
+
+func (session *UDPMakeSession) SetCrypt(encode, decode func([]byte)[]byte) {
+        session.encode = encode
+        session.decode = decode
+}
+func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
+        if session.closed {
+                return 0, errors.New("force quit")
+        }
+        if session.encode != nil {
+                b = session.encode(b)
+        }
+        sendL := len(b)
+        if sendL == 0 {return 0, nil}
+        //log.Println("try write", sendL)
+        ikcp.Ikcp_send(session.kcp, b[:sendL], sendL)
+        return sendL, nil
+}
+
+func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
+        if session.closed {
+                return 0, errors.New("force quit")
+        }
+        if clientType == 0 {
+                b := []byte(<- session.recvChan)
+                l := len(b)
+                copy(p, b[:l])
+                //log.Println("real recv", l, string(b[:l]))
+                if l == 0 {
+                        return 0, errors.New("end")
+                } else {
+                        session.overTime = time.Now().Unix() + 10
+                        session.send = ""
+                        return l, nil
+                }
+        } else {
+                tmp:=make([]byte, 2000)
+                for {
+                        if session.closed {
+                                return 0, errors.New("force quit")
+                        }
+                        hr := ikcp.Ikcp_recv(session.kcp, tmp, 2000)
+                        if hr > 0 {
+                                copy(p, tmp[:hr])
+                                if session.decode != nil {
+                                        d:= session.decode(p[:hr])
+                                        copy(p, d)
+                                        hr = int32(len(d))
+                                }
+                                session.overTime = time.Now().Unix() + 10
+                                session.send = ""
+                                //log.Println("real recv client", hr)
+                                return int(hr), nil
+                        }
+                        bHave := false
+                        for {
+                                n, addr, err := session.sock.ReadFrom(tmp)
+                                //debug("want read!", n, addr, err)
+                                // Generic non-address related errors.
+                                if addr == nil && err != nil {
+                                        log.Println("error!", err.Error())
+                                        return 0, err
+                                }
+                                if session.closed {
+                                        return 0, errors.New("force quit")
+                                }
+                                //debug("redirect", n)
+                                ikcp.Ikcp_input(session.kcp, tmp[:n], n)
+                                bHave = true
+                                break
+                        }
+                        if !bHave {
+                                time.Sleep(10 * time.Millisecond)
+                        }
+
+                }
+        }
+}
+
+func (session *UDPMakeSession) Process() {
+        tmp := make([]byte, 2000)
+        for {
+                hr := ikcp.Ikcp_recv(session.kcp, tmp, 2000)
+                //println("loop", hr)
+                if hr > 0 {
+                        if session.decode != nil {
+                                d:= session.decode(tmp[:hr])
+                                hr = int32(len(d))
+                                copy(tmp, d)
+                        }
+                        //log.Println("try recv", hr)
+                        if !session.closed && hr > 0 {
+                                session.recvChan <- string(tmp[:hr])
+                        }
+                } else {
+                        break
+                }
+        }
+}
+
+func (session *UDPMakeSession) ClientCheck() {
 	go func() {
-		t := time.Tick(10*time.Millisecond)
+		t := time.Tick(20*time.Millisecond)
 		out:
 		for {
 			select {
 			case <-t:
+                                //println("-------", session.status, session.send)
+                                if session.status == "ok" {
+                                        ikcp.Ikcp_update(session.kcp, uint32(iclock()))
+                                }
 				if time.Now().Unix() > session.overTime {
-					if session.status != "ok" {
-						break out
-					} else {
-						if session.send != "" {session.send = ""}
-						ikcp.Ikcp_update(session.kcp, uint32(iclock()))
-					}
+                                        if session.status == "ok" && session.send != "" {
+                                                session.send = ""
+                                        } else {
+                                                session.Close()
+                                        }
+                                        break out
 				} else {
 					if session.send != "" {
 						//log.Println("try send", session.send, session.remote)
@@ -222,18 +431,19 @@ func (session *UDPMakeSession) Check() {
 		}
 	}()
 
+        if clientType == 0 {return}
 	buf := make([]byte, 512)
 	out:
 	for {
-		n, _, err := session.sock.ReadFromUDP(buf)
+		n, from, err := session.sock.ReadFromUDP(buf)
 		if err == nil {
-			//log.Println("recv", string(buf[:n]), from)
-			arr:=strings.Split(string(buf[:n]), ":")
+			log.Println("head recv", string(buf[:n]), from)
+			arr:=strings.Split(string(buf[:n]), "@")
 			switch session.status {
 				case "1snd":
 				if len(arr) > 1 {
 					if arr[0] == "1ack" && arr[1] == session.idstr {
-						session.SetStatusAndSend("2snd", "2snd:"+session.idstr)
+						session.SetStatusAndSend("2snd", "2snd@"+session.idstr)
 					}
 				} else {
 					break out
@@ -253,23 +463,48 @@ func (session *UDPMakeSession) Check() {
 		}
 	}
 }
-func (session *UDPMakeSession) Close (addr string) {
-	log.Println("remove session", addr)
+func (session *UDPMakeSession) Close () error {
+        if session.closed {return nil}
+        addr := session.remote.String()
+	log.Println("remove udp pipe", addr)
 	close(session.quitcheck)
+        if session.recvChan != nil {
+                close(session.recvChan)
+        }
 	delete(g_MakeSession, addr)
+        session.closed = true
+        return nil
 }
 func (session *UDPMakeSession) SetStatusAndSend(status, content string) {
-	log.Println("set status", status)
+	log.Println("set status", status, content)
 	session.status = status
 	session.overTime = time.Now().Unix() + 10
 	session.send = content
-	if status == "ok" {
+	if status == "ok" && session.kcp == nil {
 		session.kcp = ikcp.Ikcp_create(uint32(session.id), session)
 		session.kcp.Output = udp_output
+                if content != "" {
+                        session.overTime -= 5
+                } else {
+                        session.overTime += 5
+                }
 		ikcp.Ikcp_wndsize(session.kcp, 128, 128)
 		ikcp.Ikcp_nodelay(session.kcp, 1, 10, 2, 1)
 		fmt.Println("add session", session.id, session.remote)
-	}
+
+                client, have := g_ClientMap[session.idstr]
+                if !have {
+                        client = &Client{id: session.idstr, ready: true, bUdp: true, sessions: make(map[string]*clientSession), specPipes: make(map[string]net.Conn), pipes: make(map[int]net.Conn)}
+                        g_ClientMap[session.idstr] = client
+                }
+                client.action = session.action
+                client.pipes[0] = net.Conn(session)
+                go client.Run(0, "")
+                log.Println("add common session", session.id)
+                if clientType == 1 && !have {
+                        client.MultiListen()
+                }
+        }
 }
 /*func (session *UDPMakeSession) begin(content string) {
 	engine := session.engine
@@ -515,8 +750,7 @@ func main() {
 			}
 		} else {
 			session := &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, send:"", quitcheck:make(chan bool)}
-			status:=session.Dial(*serviceAddr)
-			log.Println(status, "test now status")
+			session.Dial(*serviceAddr)
 		}
 		/*common.Read(remoteConn, handleResponse)
 		q <- true
@@ -533,16 +767,16 @@ func main() {
 		}
 		return false
 	}
-	if clientType == 0 {
+	//if clientType == 0 {
 		for {
 			if loop() {
 				break
 			}
 			time.Sleep(10 * time.Second)
 		}
-	} else {
-		loop()
-	}
+	//} else {
+	//	loop()
+	//}
 	log.Println("service shutdown")
 }
 /*
@@ -827,6 +1061,7 @@ type Client struct {
 	sessions  map[string]*clientSession // session to pipeid
 	ready     bool
 	bUdp      bool
+        action    string
 }
 
 // pipe : client to client
@@ -877,15 +1112,15 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	case "tunnel_close_s":
 		sc.removeSession(sessionId)
 	case "ping", "pingback":
-		//log.Println("recv", action)
+		//log.Println("out recv", action)
 		if action == "ping" {
 			common.Write(pipe, sessionId, "pingback", "")
 		}
 	case "tunnel_msg_c":
 		if conn != nil {
-			//log.Println("tunnel", len(content), sessionId)
+			//log.Println("tunnel", (content), sessionId)
 			conn.Write([]byte(content))
-		} else if *localAddr == "socks5" {
+		} else if sc.action == "socks5" {
 			if session == nil {
 				return
 			}
@@ -897,11 +1132,11 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		sc.removeSession(sessionId)
 	case "tunnel_open":
 		if clientType == 0 {
-			if *localAddr != "socks5" {
-				s_conn, err := net.DialTimeout("tcp", *localAddr, 10*time.Second)
+			if sc.action != "socks5" {
+				s_conn, err := net.DialTimeout("tcp", sc.action, 10*time.Second)
 				if err != nil {
 					log.Println("connect to local server fail:", err.Error())
-					msg := "cannot connect to bind addr" + *localAddr
+					msg := "cannot connect to bind addr" + sc.action
 					common.Write(pipe, sessionId, "tunnel_error", msg)
 					//remoteConn.Close()
 					return
@@ -946,9 +1181,13 @@ func (sc *Client) MultiListen() bool {
 			}
 			return false
 		}
-		go func() {
+		println("service start success,please connect", *localAddr, "p2p mode")
+		func() {
 			quit := false
 			ping := time.Tick(time.Second * 5)
+                        for _, pipe := range sc.pipes {
+                                common.Write(pipe, "-1", "ping", "")
+                        }
 			go func() {
 			out:
 				for {
@@ -957,9 +1196,23 @@ func (sc *Client) MultiListen() bool {
 						if quit {
 							break out
 						}
-						for _, pipe := range sc.pipes {
-							common.Write(pipe, "-1", "ping", "")
+                                                empty := true
+						for n, pipe := range sc.pipes {
+                                                        empty = false
+							if common.Write(pipe, "-1", "ping", "") != nil {
+                                                                pipe.Close()
+                                                                delete(sc.pipes, n)
+                                                                if len(sc.pipes) == 0 {
+                                                                        empty = true
+                                                                }
+                                                        }
 						}
+                                                if empty {
+                                                        id, _ := strconv.Atoi(sc.id)
+                                                        log.Println("recreate pipe for client", id)
+                                                        session := &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, send:"", quitcheck:make(chan bool), id:id}
+                                                        session.Dial(*serviceAddr)
+                                                }
 					}
 				}
 			}()
@@ -983,12 +1236,6 @@ func (sc *Client) MultiListen() bool {
 			}
 			quit = true
 		}()
-		mode := "p2p mode"
-		if !sc.bUdp {
-			mode = "c/s mode"
-			delete(g_ClientMapKey, sc.id)
-		}
-		println("service start success,please connect", *localAddr, mode)
 	}
 	return true
 }
@@ -1027,6 +1274,7 @@ func (sc *Client) Run(index int, specPipe string) {
 				sc.OnTunnelRecv(conn, sessionId, action, content)
 			}
 		}
+		log.Println("client begin read", index)
 		common.Read(pipe, callback)
 		log.Println("client end read", index)
 		if index >= 0 {
