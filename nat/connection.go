@@ -89,7 +89,7 @@ func (c *Conn) Read(b []byte) (int, error) {
                         bHave := false
                         for {
                                 n, addr, err := c.conn.ReadFrom(c.tmp)
-                                debug("want read!", n, addr, err)
+                                //debug("want read!", n, addr, err)
                                 // Generic non-address related errors.
                                 if addr == nil && err != nil {
                                         debug("error!", err.Error())

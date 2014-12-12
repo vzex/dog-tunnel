@@ -192,9 +192,7 @@ func ServerCheck(sock *net.UDPConn) {
 					}
 				}
 			} else {
-				fmt.Println("recv error", err.Error())
-				sock.Close()
-				break out
+				//fmt.Println("recv error", err.Error())
 			}
 			if bForceQuit {
 				break out
