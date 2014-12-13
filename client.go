@@ -70,6 +70,7 @@ type UDPMakeSession struct {
 	overTime int64
 	quitcheck chan bool
 	recvChan chan string
+	sendChan chan string
 	sock *net.UDPConn
 	remote *net.UDPAddr
 	send	string
@@ -113,7 +114,7 @@ func ServerCheck(sock *net.UDPConn) {
 						continue
 					}
 				} else {
-                                        session = &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, remote:from, send:"", quitcheck:make(chan bool), sock:sock, recvChan:make(chan string), closed:false}
+                                        session = &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, remote:from, send:"", quitcheck:make(chan bool), sock:sock, recvChan:make(chan string), closed:false, sendChan:make(chan string, 10)}
                                         if *authKey == "" {
                                                 session.authed = true
                                         }
@@ -346,7 +347,8 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
         sendL := len(b)
         if sendL == 0 {return 0, nil}
         //log.Println("try write", sendL)
-        ikcp.Ikcp_send(session.kcp, b[:sendL], sendL)
+	session.sendChan <- string(b[:sendL])
+        //ikcp.Ikcp_send(session.kcp, b[:sendL], sendL)
         return sendL, nil
 }
 
@@ -437,6 +439,9 @@ func (session *UDPMakeSession) ClientCheck() {
 		out:
 		for {
 			select {
+			case s:=<-session.sendChan:
+				b:=[]byte(s)
+				ikcp.Ikcp_send(session.kcp, b, len(b))
 			case <-t:
                                 //log.Println("-------", session.status, session.send,  time.Now().Unix() ,session.overTime )
                                 if session.status == "ok" {
@@ -501,6 +506,9 @@ func (session *UDPMakeSession) Close () error {
 	close(session.quitcheck)
         if session.recvChan != nil {
                 close(session.recvChan)
+        }
+        if session.sendChan!= nil {
+                close(session.sendChan)
         }
         olds, have := g_MakeSession[addr]
         if have && olds == session {
@@ -630,7 +638,7 @@ func main() {
 				ServerCheck(sock)
 			}
 		} else {
-			session := &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, send:"", quitcheck:make(chan bool)}
+			session := &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, send:"", quitcheck:make(chan bool), sendChan:make(chan string, 10)}
                         if *authKey == "" {
                                 session.authed = true
                         }
