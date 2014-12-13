@@ -41,6 +41,7 @@ type Conn struct {
 	local, remote         net.Addr
 	closed                bool
 	quit                  chan bool
+	sendChan chan string
         kcp                *ikcp.Ikcpcb
         
         tmp                     []byte
@@ -49,7 +50,7 @@ type Conn struct {
 
 func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 	sock.SetDeadline(time.Time{})
-        conn := &Conn{conn: sock, local: local, remote: remote, closed: false, quit: make(chan bool), tmp:make([]byte, 2000)}
+        conn := &Conn{conn: sock, local: local, remote: remote, closed: false, quit: make(chan bool), tmp:make([]byte, 2000), sendChan:make(chan string, 10)}
         debug("create", id)
         conn.kcp = ikcp.Ikcp_create(uint32(id), conn)
         conn.kcp.Output = udp_output
@@ -64,6 +65,11 @@ func (c *Conn) onUpdate() {
 out:
 	for {
 		select {
+		case s:= <- c.sendChan:
+			if !c.closed {
+				b:=[]byte(s)
+				ikcp.Ikcp_send(c.kcp, b, len(b))
+			}
 		case <-updateChan:
                         if c.closed {break out}
                         ikcp.Ikcp_update(c.kcp, uint32(iclock()))
@@ -113,12 +119,13 @@ func (c *Conn) Read(b []byte) (int, error) {
 func (c *Conn) Write(b []byte) (int, error) {
         if c.closed {return 0, errors.New("eof")}
 
-        if c.encode != nil {
+	if c.encode != nil {
                 b = c.encode(b)
         }
         sendL := len(b)
-        debug("try write", sendL)
-        ikcp.Ikcp_send(c.kcp, b, sendL)
+        if sendL == 0 {return 0, nil}
+        //log.Println("try write", sendL)
+	c.sendChan <- string(b[:sendL])
         return sendL, nil
 }
 
@@ -129,6 +136,10 @@ func (c *Conn) Close() error {
         if c.quit != nil {
                 close(c.quit)
                 c.quit = nil
+        }
+        if c.sendChan != nil {
+                close(c.sendChan)
+                c.sendChan = nil
         }
         return c.conn.Close()
 }
