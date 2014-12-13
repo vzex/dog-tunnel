@@ -440,8 +440,10 @@ func (session *UDPMakeSession) ClientCheck() {
 		for {
 			select {
 			case s:=<-session.sendChan:
-				b:=[]byte(s)
-				ikcp.Ikcp_send(session.kcp, b, len(b))
+				if !session.closed {
+					b:=[]byte(s)
+					ikcp.Ikcp_send(session.kcp, b, len(b))
+				}
 			case <-t:
                                 //log.Println("-------", session.status, session.send,  time.Now().Unix() ,session.overTime )
                                 if session.status == "ok" {
@@ -1030,6 +1032,7 @@ func (sc *Client) MultiListen() bool {
 						if quit {
 							break out
 						}
+						//log.Println("test ping !")
                                                 empty := true
 						for n, pipe := range sc.pipes {
                                                         empty = false
