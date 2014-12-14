@@ -13,7 +13,7 @@ It's written with pure golang by vzex.
 
 We provided a bash scripts to install dtunnel on fresh linux box.
 
-see [scripts/install_linux.sh](scripts/install_linux.sh]
+see [scripts/install_linux.sh](scripts/install_linux.sh)
 
 ## Specification
 
