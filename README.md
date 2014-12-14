@@ -23,6 +23,9 @@ c1 -> s : success_bust_a
 s -> c2 : tell_bust_b
 c2 -> s : makeholeok or makeholefail
 ```
+## License
+
+[MIT License](LICENSE)
 
 ## Credits
 
