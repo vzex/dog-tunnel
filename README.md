@@ -6,7 +6,14 @@ Dog tunnel provide a P2P tunnel between your any two network, via UDP protocol o
 It's amazing fast and stable , gain better performance than other tunnel solution.
 It's written with pure golang by vzex.
 
+## Installation
 
+
+### Install dtunnel on Fedora 20/21 or CentOS 6/7
+
+We provided a bash scripts to install dtunnel on fresh linux box.
+
+see [scripts/install_linux.sh](scripts/install_linux.sh]
 
 ## Specification
 
