@@ -505,6 +505,7 @@ func (session *UDPMakeSession) ClientCheck() {
 }
 func (session *UDPMakeSession) Close () error {
         if session.closed {return nil}
+        session.closed = true
         if clientType == 1 {
                 session.sock.Close()
         }
@@ -525,7 +526,6 @@ func (session *UDPMakeSession) Close () error {
         if have && olds == session {
                 delete(g_MakeSession, addr)
         }
-        session.closed = true
         return nil
 }
 func (session *UDPMakeSession) SetStatusAndSend(status, content string) {
