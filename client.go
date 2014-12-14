@@ -95,6 +95,10 @@ var tempBuff []byte
 var g_MakeSession map[string]*UDPMakeSession
 func ServerCheck(sock *net.UDPConn) {
 	println("begin check")
+	defer func(){ 
+		if err:=recover();err!=nil{
+		}
+	}()
 	func() {
 		out:
 		for {
