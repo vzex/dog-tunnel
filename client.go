@@ -101,7 +101,7 @@ func ServerCheck(sock *net.UDPConn) {
 			//sock.SetReadDeadline(time.Now().Add(2*time.Second))
 			n, from, err := sock.ReadFromUDP(tempBuff)
 			if err == nil {
-				//log.Println("recv", string(tempBuff[:n]), from)
+				//log.Println("recv", string(tempBuff[:20]), from)
 				addr := from.String()
 				session, bHave := g_MakeSession[addr]
 				if bHave {
@@ -193,7 +193,8 @@ func ServerCheck(sock *net.UDPConn) {
 					}
 				}
 			} else {
-				fmt.Println("recv error", err.Error())
+				fmt.Println("recv error", err.Error(), from)
+                                //time.Sleep(time.Second)
 				sock.Close()
 				break out
 			}
@@ -262,7 +263,7 @@ func (session *UDPMakeSession) Dial(addr string) string {
                 session.id = rand.Intn(1000000) + int(time.Now().Unix()%10000) 
         }
 	session.idstr = fmt.Sprintf("%d", session.id)
-	println("session id", session.id)
+	log.Println("session id", session.id, sock.LocalAddr().String())
         encrypt_tail := ""
 	if *bEncrypt {
                 encrypt_tail = string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
@@ -348,6 +349,7 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
         if sendL == 0 {return 0, nil}
         //log.Println("try write", sendL)
 	session.sendChan <- string(b[:sendL])
+        //log.Println("try write2", sendL)
         //ikcp.Ikcp_send(session.kcp, b[:sendL], sendL)
         return sendL, nil
 }
@@ -453,6 +455,7 @@ func (session *UDPMakeSession) ClientCheck() {
                                         if session.status == "ok" && session.send != "" {
                                                 session.send = ""
                                         } else {
+                                                log.Println("remove over time udp", session.overTime, time.Now().Unix())
                                                 session.Close()
                                         }
                                         break out
@@ -502,9 +505,15 @@ func (session *UDPMakeSession) ClientCheck() {
 }
 func (session *UDPMakeSession) Close () error {
         if session.closed {return nil}
-        session.sock.Close()
+        if clientType == 1 {
+                session.sock.Close()
+        }
         addr := session.remote.String()
-        log.Println("remove udp pipe", addr)
+        if clientType == 1 {
+                log.Println("remove udp pipe", session.sock.LocalAddr().String())
+        } else {
+                log.Println("remove udp pipe", addr)
+        }
 	close(session.quitcheck)
         if session.recvChan != nil {
                 close(session.recvChan)
@@ -520,10 +529,10 @@ func (session *UDPMakeSession) Close () error {
         return nil
 }
 func (session *UDPMakeSession) SetStatusAndSend(status, content string) {
-	log.Println("set status", status, content)
 	session.status = status
 	session.overTime = time.Now().Unix() + 10
 	session.send = content
+	log.Println("set status", status, content, session.overTime)
 	if status == "ok" && session.kcp == nil {
 		session.kcp = ikcp.Ikcp_create(uint32(session.id), session)
 		session.kcp.Output = udp_output
@@ -586,6 +595,7 @@ func loadSettings(info *fileSetting) error {
 }
 
 func main() {
+        rand.Seed(time.Now().Unix())
 	flag.Parse()
 	if *bShowVersion {
 		fmt.Printf("%.2f\n", common.Version)
@@ -1051,7 +1061,7 @@ func (sc *Client) MultiListen() bool {
                                                 if empty {
                                                         id, _ := strconv.Atoi(sc.id)
                                                         log.Println("recreate pipe for client", id)
-                                                        session := &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, send:"", quitcheck:make(chan bool), id:id}
+                                                        session := &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, send:"", quitcheck:make(chan bool), id:id, sendChan:make(chan string, 10)}
                                                         if *authKey == "" {
                                                                 session.authed = true
                                                         }
@@ -1123,9 +1133,14 @@ func (sc *Client) Run(index int, specPipe string) {
 		log.Println("client begin read", index)
 		common.Read(pipe, callback)
 		log.Println("client end read", index)
+                if clientType == 0 {
+                        sc.Quit()
+                        return
+                }
 		if index >= 0 {
                         _newpipe, have := sc.pipes[index]
                         if have && _newpipe == pipe {
+                                pipe.Close()
                                 log.Println("client remove udp pipe", index)
                                 delete(sc.pipes, index)
                         } else {
