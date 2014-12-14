@@ -370,7 +370,7 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
                 if l == 0 {
                         return 0, errors.New("force quit for read error")
                 } else {
-                        session.overTime = time.Now().Unix() + 10
+                        session.overTime = time.Now().Unix() + 20
                         session.send = ""
                         return l, nil
                 }
@@ -388,7 +388,7 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
                                         copy(p, d)
                                         hr = int32(len(d))
                                 }
-                                session.overTime = time.Now().Unix() + 10
+                                session.overTime = time.Now().Unix() + 20
                                 session.send = ""
                                 //log.Println("real recv client", hr)
                                 return int(hr), nil
@@ -458,6 +458,7 @@ func (session *UDPMakeSession) ClientCheck() {
 				if time.Now().Unix() > session.overTime {
                                         if session.status == "ok" && session.send != "" {
                                                 session.send = ""
+						session.overTime = time.Now().Unix() + 10
                                         } else {
                                                 log.Println("remove over time udp", session.overTime, time.Now().Unix())
                                                 session.Close()
@@ -1135,6 +1136,7 @@ func (sc *Client) Run(index int, specPipe string) {
 			}
 		}
 		log.Println("client begin read", index)
+		pipe.(*UDPMakeSession).Auth()
 		common.Read(pipe, callback)
 		log.Println("client end read", index)
                 if clientType == 0 {
