@@ -458,7 +458,6 @@ func (session *UDPMakeSession) ClientCheck() {
 				if time.Now().Unix() > session.overTime {
                                         if session.status == "ok" && session.send != "" {
                                                 session.send = ""
-						session.overTime = time.Now().Unix() + 10
                                         } else {
                                                 log.Println("remove over time udp", session.overTime, time.Now().Unix())
                                                 session.Close()
