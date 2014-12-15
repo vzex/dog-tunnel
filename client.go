@@ -980,7 +980,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	case "tunnel_close_s":
 		sc.removeSession(sessionId)
 	case "ping", "pingback":
-		//log.Println("out recv", action)
+		//log.Println("out recv", action, pipe.(*UDPMakeSession).idstr)
 		if action == "ping" {
 			common.Write(pipe, sessionId, "pingback", "")
 		}
@@ -1149,6 +1149,7 @@ func (sc *Client) Run(index int, specPipe string) {
 				sc.OnTunnelRecv(conn, sessionId, action, content)
 			}
 		}
+		pipe.(*UDPMakeSession).timeChan <- time.Now().Unix() + 20
 		log.Println("client begin read", index)
 		pipe.(*UDPMakeSession).Auth()
 		common.Read(pipe, callback)
