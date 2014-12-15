@@ -71,6 +71,7 @@ type UDPMakeSession struct {
 	quitcheck chan bool
 	recvChan chan string
 	sendChan chan string
+	timeChan chan int64
 	sock *net.UDPConn
 	remote *net.UDPAddr
 	send	string
@@ -118,7 +119,7 @@ func ServerCheck(sock *net.UDPConn) {
 						continue
 					}
 				} else {
-                                        session = &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, remote:from, send:"", quitcheck:make(chan bool), sock:sock, recvChan:make(chan string), closed:false, sendChan:make(chan string, 10)}
+                                        session = &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, remote:from, send:"", quitcheck:make(chan bool), sock:sock, recvChan:make(chan string), closed:false, sendChan:make(chan string), timeChan:make(chan int64)}
                                         if *authKey == "" {
                                                 session.authed = true
                                         }
@@ -370,7 +371,7 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
                 if l == 0 {
                         return 0, errors.New("force quit for read error")
                 } else {
-                        session.overTime = time.Now().Unix() + 20
+                        session.timeChan <- time.Now().Unix() + 20
                         session.send = ""
                         return l, nil
                 }
@@ -388,7 +389,7 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
                                         copy(p, d)
                                         hr = int32(len(d))
                                 }
-                                session.overTime = time.Now().Unix() + 20
+                                session.timeChan <- time.Now().Unix() + 20
                                 session.send = ""
                                 //log.Println("real recv client", hr)
                                 return int(hr), nil
@@ -441,16 +442,23 @@ func (session *UDPMakeSession) Process() {
 
 func (session *UDPMakeSession) ClientCheck() {
 	go func() {
-		t := time.Tick(20*time.Millisecond)
-		defer func() {
-			if err:=recover(); err!=nil {
-				session.Close()
-				log.Println("clientcheck trigger error:", err)
-			}
-		}()
+		t := time.Tick(40*time.Millisecond)
+                defer func() {
+                        if err:=recover(); err!=nil {
+                                session.Close()
+                                log.Println("clientcheck trigger error:", err)
+                        }
+                }()
 		out:
 		for {
 			select {
+                        case over:= <- session.timeChan:
+                                session.overTime = over
+				if time.Now().Unix() > session.overTime {
+                                        log.Println("remove over time udp", session.overTime, time.Now().Unix())
+                                        session.Close()
+                                        break out
+				} 
 			case s:=<-session.sendChan:
 				if !session.closed {
 					b:=[]byte(s)
@@ -529,6 +537,7 @@ func (session *UDPMakeSession) Close () error {
         if session.recvChan != nil {
                 close(session.recvChan)
         }
+        close(session.timeChan)
         if session.sendChan!= nil {
                 close(session.sendChan)
         }
@@ -660,7 +669,7 @@ func main() {
 				ServerCheck(sock)
 			}
 		} else {
-			session := &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, send:"", quitcheck:make(chan bool), sendChan:make(chan string, 10)}
+                        session := &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, send:"", quitcheck:make(chan bool), sendChan:make(chan string), timeChan:make(chan int64)}
                         if *authKey == "" {
                                 session.authed = true
                         }
@@ -983,7 +992,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 			if session == nil {
 				return
 			}
-			session.processSockProxy(sc, sessionId, content, func() {
+			go session.processSockProxy(sc, sessionId, content, func() {
 				sc.OnTunnelRecv(pipe, sessionId, action, session.recvMsg)
 			})
 		}
@@ -1052,7 +1061,7 @@ func (sc *Client) MultiListen() bool {
 						if quit {
 							break out
 						}
-						//log.Println("test ping !")
+						log.Println("test ping !")
                                                 empty := true
 						for n, pipe := range sc.pipes {
                                                         empty = false
@@ -1071,7 +1080,7 @@ func (sc *Client) MultiListen() bool {
                                                 if empty {
                                                         id, _ := strconv.Atoi(sc.id)
                                                         log.Println("recreate pipe for client", id)
-                                                        session := &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, send:"", quitcheck:make(chan bool), id:id, sendChan:make(chan string, 10)}
+                                                        session := &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, send:"", quitcheck:make(chan bool), id:id, sendChan:make(chan string), timeChan:make(chan int64)}
                                                         if *authKey == "" {
                                                                 session.authed = true
                                                         }
