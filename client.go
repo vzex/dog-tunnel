@@ -1061,7 +1061,7 @@ func (sc *Client) MultiListen() bool {
 						if quit {
 							break out
 						}
-						log.Println("test ping !")
+						//log.Println("test ping !")
                                                 empty := true
 						for n, pipe := range sc.pipes {
                                                         empty = false
