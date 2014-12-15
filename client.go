@@ -442,6 +442,12 @@ func (session *UDPMakeSession) Process() {
 func (session *UDPMakeSession) ClientCheck() {
 	go func() {
 		t := time.Tick(20*time.Millisecond)
+		defer func() {
+			if err:=recover(); err!=nil {
+				session.Close()
+				log.Println("clientcheck trigger error:", err)
+			}
+		}()
 		out:
 		for {
 			select {
