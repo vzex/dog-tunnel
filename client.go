@@ -402,7 +402,7 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
                                 }
                                 session.timeChan <- time.Now().Unix() + 20
                                 session.send = ""
-                                log.Println("real recv client", hr)
+                                //log.Println("real recv client", hr)
                                 return int(hr), nil
                         }
                         bHave := false
@@ -461,7 +461,7 @@ func (session *UDPMakeSession) ClientCheck() {
                                 log.Println("clientcheck trigger error:", err)
                         }
                 }()
-                ping := time.Tick(time.Second * 5)
+                ping := time.Tick(time.Second * 1)
                 session.Auth()
                 if session.status == "ok" {
                         go common.Write(session, "-1", "ping", "")
@@ -476,7 +476,8 @@ func (session *UDPMakeSession) ClientCheck() {
 			case s:=<-session.sendChan:
 				if !session.closed {
 					b:=[]byte(s)
-					go ikcp.Ikcp_send(session.kcp, b, len(b))
+					kcp := session.kcp
+					go ikcp.Ikcp_send(kcp, b, len(b))
 				}
 			case over:= <- session.timeChan:
                                 session.overTime = over
