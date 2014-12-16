@@ -488,7 +488,7 @@ func (session *UDPMakeSession) ClientCheck() {
 			case <-t:
                                 //log.Println("-------", session.status, session.send,  time.Now().Unix() ,session.overTime )
                                 if session.status == "ok" {
-                                        ikcp.Ikcp_update(session.kcp, uint32(iclock()))
+                                        go ikcp.Ikcp_update(session.kcp, uint32(iclock()))
                                 }
 				if time.Now().Unix() > session.overTime {
                                         if session.status == "ok" && session.send != "" {
