@@ -572,6 +572,9 @@ func (session *UDPMakeSession) Close () error {
         if session.sendChan!= nil {
                 close(session.sendChan)
         }
+        if session.recvChan!= nil {
+                close(session.recvChan)
+        }
         olds, have := g_MakeSession[addr]
         println("test", olds, have, addr)
         if have && olds == session {
