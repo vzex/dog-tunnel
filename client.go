@@ -106,7 +106,7 @@ func ServerCheck(sock *net.UDPConn) {
 	func() {
 		out:
 		for {
-			//sock.SetReadDeadline(time.Now().Add(2*time.Second))
+			sock.SetReadDeadline(time.Now().Add(2*time.Second))
 			n, from, err := sock.ReadFromUDP(tempBuff)
 			if err == nil {
 				//log.Println("recv", string(tempBuff[:10]), from)
@@ -201,7 +201,7 @@ func ServerCheck(sock *net.UDPConn) {
 					}
 				}
                                 //log.Println("debug out.........")
-			} else {
+			} else if !err.(net.Error).Timeout() {
 				fmt.Println("recv error", err.Error(), from)
                                 //time.Sleep(time.Second)
 				sock.Close()
@@ -416,11 +416,13 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
                                 return int(hr), nil
                         }
                         bHave := false
+                        //log.Println("want read0-------------!", hr)
                         for {
-                                n, addr, err := session.sock.ReadFrom(tmp)
-                                //debug("want read!", n, addr, err)
+                                session.sock.SetReadDeadline(time.Now().Add(time.Second * 2))
+                                n, addr, err := session.sock.ReadFromUDP(tmp)
+                                //log.Println("want read!", n, addr, err)
                                 // Generic non-address related errors.
-                                if addr == nil && err != nil {
+                                if addr == nil && err != nil && !err.(net.Error).Timeout(){
                                         log.Println("error!", err.Error())
                                         return 0, err
                                 }
@@ -620,7 +622,9 @@ func (session *UDPMakeSession) SetStatusAndSend(status, content string) {
                         g_ClientMap[session.idstr] = client
                 }
                 client.action = session.action
-                go client.Run(0, "")
+                if !have {
+                        go client.Run(0, "")
+                }
                 client.addSession <- session
                 log.Println("add common session", session.id)
                 if clientType == 1 && !have {
