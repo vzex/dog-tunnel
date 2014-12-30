@@ -68,10 +68,11 @@ type UDPMakeSession struct {
 	idstr string
 	status string
 	overTime int64
-	quitcheck chan bool
 	recvChan chan string
+	recvChan2 chan string
 	sendChan chan string
 	timeChan chan int64
+	quitChan chan bool
 	sock *net.UDPConn
 	remote *net.UDPAddr
 	send	string
@@ -86,8 +87,8 @@ func iclock() int32 {
 }
 
 func udp_output(buf []byte, _len int32, kcp *ikcp.Ikcpcb, user interface{}) int32 {
-        //log.Println("send udp", _len)
         c := user.(*UDPMakeSession)
+        //log.Println("send udp", _len, c.remote.String())
         c.sock.WriteTo(buf[:_len], c.remote)
         return 0
 }
@@ -121,7 +122,7 @@ func ServerCheck(sock *net.UDPConn) {
 						continue
 					}
 				} else {
-                                        session = &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, remote:from, send:"", quitcheck:make(chan bool), sock:sock, recvChan:make(chan string), closed:false, sendChan:make(chan string, 10), timeChan:make(chan int64)}
+                                        session = &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, remote:from, send:"", sock:sock, recvChan:make(chan string), closed:false, sendChan:make(chan string, 10), timeChan:make(chan int64), quitChan:make(chan bool), recvChan2:make(chan string)}
                                         if *authKey == "" {
                                                 session.authed = true
                                         }
@@ -228,7 +229,7 @@ func Listen(addr string) *net.UDPConn {
 }
 
 func CreateUDPSession(id int) {
-        session := &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, send:"", quitcheck:make(chan bool), id:id, sendChan:make(chan string, 10), timeChan:make(chan int64)}
+        session := &UDPMakeSession{status:"init", overTime:time.Now().Unix() + 10, send:"", id:id, sendChan:make(chan string, 10), timeChan:make(chan int64), quitChan:make(chan bool)}
         if *authKey == "" {
                 session.authed = true
         }
@@ -452,7 +453,7 @@ func (session *UDPMakeSession) Process() {
                         }
                         //log.Println("try recv", hr)
                         if !session.closed && hr > 0 {
-                                go func() {session.recvChan <- string(tmp[:hr])}()
+                                go func() {session.recvChan2 <- string(tmp[:hr])}()
                         }
                         //log.Println("try recved", hr)
                 } else {
@@ -462,10 +463,29 @@ func (session *UDPMakeSession) Process() {
 }
 
 func (session *UDPMakeSession) ClientCheck() {
-        go func() {
-                <- session.quitcheck
-                session.Close()
-        }()
+	go func() {
+out:
+		for {
+		select {
+		case <- session.quitChan:
+			session.Close()
+			break out
+		case s:=<-session.sendChan:
+			if !session.closed {
+				b:=[]byte(s)
+				kcp := session.kcp
+				if kcp != nil {
+//println("write!!!", len(b))
+					ikcp.Ikcp_send(kcp, b, len(b))
+				}
+			}
+		case s:=<-session.recvChan2:
+			if !session.closed {
+				session.recvChan <- s
+			}
+		}
+		}
+	}()
 	go func() {
 		t := time.Tick(40*time.Millisecond)
                 defer func() {
@@ -486,19 +506,11 @@ func (session *UDPMakeSession) ClientCheck() {
                                 //log.Println("test ping !")
                                 session.Auth()
                                 go common.Write(session, "-1", "ping", "")
-			case s:=<-session.sendChan:
-				if !session.closed {
-					b:=[]byte(s)
-					kcp := session.kcp
-                                        if kcp != nil {
-                                                go ikcp.Ikcp_send(kcp, b, len(b))
-                                        }
-				}
 			case over:= <- session.timeChan:
                                 session.overTime = over
 				if time.Now().Unix() > session.overTime {
                                         log.Println("remove over time udp", session.overTime, time.Now().Unix())
-                                        session.quitcheck <- true
+					session.quitChan <- true
                                         break out
 				} 
 			case <-t:
@@ -511,7 +523,7 @@ func (session *UDPMakeSession) ClientCheck() {
                                 }
 				if time.Now().Unix() > session.overTime {
                                         log.Println("remove over time udp", session.overTime, time.Now().Unix())
-                                        session.quitcheck <- true
+					session.quitChan <- true
                                         break out
 				} else {
 					if session.send != "" {
@@ -567,13 +579,16 @@ func (session *UDPMakeSession) Close () error {
         } else {
                 log.Println("remove udp pipe", addr, session.id)
         }
-	close(session.quitcheck)
         close(session.timeChan)
+	close(session.quitChan)
         if session.sendChan!= nil {
                 close(session.sendChan)
         }
         if session.recvChan!= nil {
                 close(session.recvChan)
+        }
+        if session.recvChan2!= nil {
+                close(session.recvChan2)
         }
         olds, have := g_MakeSession[addr]
         println("test", olds, have, addr)
