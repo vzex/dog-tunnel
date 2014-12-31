@@ -1076,7 +1076,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	case "tunnel_close_s":
 		sc.removeSession(sessionId)
 	case "ping", "pingback":
-		//log.Println("out recv", action, pipe.(*UDPMakeSession).idstr)
+		debug("out recv", action, pipe.(*UDPMakeSession).idstr)
 		if action == "ping" {
 			go common.Write(pipe, sessionId, "pingback", "")
 		}
