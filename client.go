@@ -138,7 +138,7 @@ func ServerCheck(sock *net.UDPConn) {
 					g_MakeSession[addr] = session
 					go session.ClientCheck()
 				}
-				arr := strings.Split(string(tempBuff[:n]), "@")
+				arr := strings.Split(common.Xor(string(tempBuff[:n])), "@")
 				switch session.status {
 				case "init":
 					if len(arr) > 1 {
@@ -553,7 +553,7 @@ func (session *UDPMakeSession) ClientCheck() {
 				} else {
 					if session.send != "" {
 						log.Println("try send", session.send, session.remote)
-						session.sock.WriteToUDP([]byte(session.send), session.remote)
+						session.sock.WriteToUDP([]byte(common.Xor(session.send)), session.remote)
 					}
 				}
 			}
@@ -569,7 +569,7 @@ out:
 		n, from, err := session.sock.ReadFromUDP(buf)
 		if err == nil {
 			log.Println("head recv", string(buf[:n]), from)
-			arr := strings.Split(string(buf[:n]), "@")
+			arr := strings.Split(common.Xor(string(buf[:n])), "@")
 			switch session.status {
 			case "1snd":
 				if len(arr) > 1 {
