@@ -198,7 +198,11 @@ func ServerCheck(sock *net.UDPConn) {
 							session.SetStatusAndSend("1ack", "1ack@"+session.idstr)
 						}
 					} else {
-						log.Println("status invalid", session.status, arr[0][:10])
+						if len(arr[0]) > 10 {
+							log.Println("status invalid", session.status, arr[0][:10])
+						} else {
+							log.Println("status invalid", session.status, arr[0])
+						}
 					}
 				case "1ack":
 					if len(arr) > 1 {
