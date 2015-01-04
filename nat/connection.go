@@ -94,12 +94,17 @@ func (c *Conn) Read(b []byte) (int, error) {
                         }
                         bHave := false
                         for {
+                                c.conn.SetReadDeadline(time.Now().Add(time.Second * 2))
                                 n, addr, err := c.conn.ReadFrom(c.tmp)
                                 //debug("want read!", n, addr, err)
                                 // Generic non-address related errors.
                                 if addr == nil && err != nil {
-                                        debug("error!", err.Error())
-                                        return 0, err
+                                        if !err.(net.Error).Timeout() {
+                                                debug("error!", err.Error())
+                                                return 0, err
+                                        } else {
+                                                break
+                                        }
                                 }
                                 //debug("redirect", n)
                                 ikcp.Ikcp_input(c.kcp, c.tmp[:n], n)
