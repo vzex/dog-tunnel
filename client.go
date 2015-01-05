@@ -27,7 +27,7 @@ import (
 var accessKey = flag.String("key", "", "please login into dog-tunnel.tk to get accesskey")
 var clientKey = flag.String("clientkey", "", "when other client linkt to the reg client, need clientkey, or empty")
 
-var serverAddr = flag.String("remote", "dog-tunnel.tk:8008", "connect remote server")
+var serverAddr = flag.String("remote", "dog-tunnel.tk:8018", "connect remote server")
 var addInitAddr = flag.String("addip", "127.0.0.1", "addip for bust,xx.xx.xx.xx;xx.xx.xx.xx;")
 var pipeNum = flag.Int("pipen", 1, "pipe num for transmission")
 
