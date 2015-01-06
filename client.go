@@ -43,8 +43,8 @@ var clientType = 1
 
 type dnsInfo struct {
 	Ip                  string
-	Status string
-	Queue []*dnsQueryReq
+	Status              string
+	Queue               []*dnsQueryReq
 	overTime, cacheTime int64
 }
 
@@ -701,38 +701,39 @@ func loadSettings(info *fileSetting) error {
 	}
 	return nil
 }
+
 var checkDns chan *dnsQueryReq
 var checkDnsRes chan *dnsQueryBack
 
 type dnsQueryReq struct {
-	c chan *dnsQueryRes
-	host string
-	port int
+	c       chan *dnsQueryRes
+	host    string
+	port    int
 	reqtype string
-	url string
+	url     string
 }
 
 type dnsQueryBack struct {
-	host string
+	host   string
 	status string
-	conn net.Conn
-	err error
+	conn   net.Conn
+	err    error
 }
 
 type dnsQueryRes struct {
 	conn net.Conn
-	err error
-	ip	string
+	err  error
+	ip   string
 }
 
 func dnsLoop() {
 	for {
 		select {
-		case info := <- checkDns:
+		case info := <-checkDns:
 			cache := common.GetCacheContainer("dns")
 			cacheInfo := cache.GetCache(info.host)
 			if cacheInfo == nil {
-				cache.AddCache(info.host, &dnsInfo{Queue:[]*dnsQueryReq{info}, Status:"querying"}, int64(*dnsCacheNum*60))
+				cache.AddCache(info.host, &dnsInfo{Queue: []*dnsQueryReq{info}, Status: "querying"}, int64(*dnsCacheNum*60))
 				go func() {
 					back := &dnsQueryBack{host: info.host}
 					s_conn, err := net.DialTimeout(info.reqtype, info.url, 30*time.Second)
@@ -747,21 +748,21 @@ func dnsLoop() {
 				}()
 			} else {
 				_cacheInfo := cacheInfo.(*dnsInfo)
-				debug("on trigger", info.host, _cacheInfo.GetCacheTime())
+				debug("on trigger", info.host, _cacheInfo.GetCacheTime(), len(_cacheInfo.Queue))
 				switch _cacheInfo.Status {
 				case "querying":
 					_cacheInfo.Queue = append(_cacheInfo.Queue, info)
-					cache.UpdateCache(info.host, _cacheInfo)
+					//cache.UpdateCache(info.host, _cacheInfo)
 					cacheInfo.SetCacheTime(-1)
 				case "queryok":
 					cacheInfo.SetCacheTime(-1)
 					go func() {
-						info.c <- &dnsQueryRes{ip:_cacheInfo.Ip}
+						info.c <- &dnsQueryRes{ip: _cacheInfo.Ip}
 					}()
 				}
 				//url = cacheInfo.(*dnsInfo).Ip + fmt.Sprintf(":%d", info.port)
 			}
-		case info := <- checkDnsRes:
+		case info := <-checkDnsRes:
 			cache := common.GetCacheContainer("dns")
 			cacheInfo := cache.GetCache(info.host)
 			if cacheInfo != nil {
@@ -770,8 +771,9 @@ func dnsLoop() {
 				switch info.status {
 				case "queryfail":
 					for _, _info := range _cacheInfo.Queue {
+						c := _info.c
 						go func() {
-							_info.c <- &dnsQueryRes{}
+							c <- &dnsQueryRes{err: info.err}
 						}()
 					}
 					cache.DelCache(info.host)
@@ -781,13 +783,14 @@ func dnsLoop() {
 					_cacheInfo.SetCacheTime(-1)
 					debug("process the queue of host", info.host, len(_cacheInfo.Queue))
 					for _, _info := range _cacheInfo.Queue {
+						c := _info.c
 						go func() {
-							_info.c <- &dnsQueryRes{ip:_cacheInfo.Ip, conn:info.conn, err: info.err}
+							c <- &dnsQueryRes{ip: _cacheInfo.Ip, conn: info.conn, err: info.err}
 						}()
 					}
 					_cacheInfo.Queue = []*dnsQueryReq{}
 				}
-				cache.UpdateCache(info.host, _cacheInfo)
+				//cache.UpdateCache(info.host, _cacheInfo)
 			}
 		}
 	}
@@ -940,17 +943,18 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 				if *dnsCacheNum > 0 && hello.atyp == 3 {
 					host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
 					resChan := make(chan *dnsQueryRes)
-					debug("try cache")
+					debug("try cache", resChan)
 					checkDns <- &dnsQueryReq{c: resChan, host: host, port: int(hello.dst_port2), reqtype: hello.reqtype, url: url}
 					debug("try cache2")
-					res := <- resChan
+					res := <-resChan
 					debug("try cache3")
 					s_conn = res.conn
+					err = res.err
 					if res.ip != "" {
 						url = res.ip + fmt.Sprintf(":%d", hello.dst_port2)
 					}
 				}
-				if s_conn == nil {
+				if s_conn == nil && err == nil {
 					s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
 				}
 				if err != nil {
@@ -1161,7 +1165,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 			//println("tunnel msg", sessionId, len(content))
 			conn.Write([]byte(content))
 		} else {
-			log.Println("cannot tunnel msg", sessionId)
+			//log.Println("cannot tunnel msg", sessionId)
 		}
 	case "tunnel_close_s":
 		sc.removeSession(sessionId)
