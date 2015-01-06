@@ -607,11 +607,18 @@ func (session *UDPMakeSession) Close() error {
 	}
 	session.closed = true
 	if clientType == 1 {
-		session.sock.Close()
+		if session.sock != nil {
+			session.sock.Close()
+		}
 	}
-	addr := session.remote.String()
+	var addr string
+	if session.remote != nil {
+		addr = session.remote.String()
+	}
 	if clientType == 1 {
-		log.Println("remove udp pipe", session.sock.LocalAddr().String(), session.id)
+		if session.sock != nil {
+			log.Println("remove udp pipe", session.sock.LocalAddr().String(), session.id)
+		}
 	} else {
 		log.Println("remove udp pipe", addr, session.id)
 	}
