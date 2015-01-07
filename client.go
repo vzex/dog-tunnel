@@ -791,19 +791,13 @@ func dnsLoop() {
 					_cacheInfo.Ip = strings.Split(info.conn.RemoteAddr().String(), ":")[0]
 					_cacheInfo.SetCacheTime(-1)
 					debug("process the queue of host", info.host, len(_cacheInfo.Queue))
-					used := false
+					conn := info.conn
 					for _, _info := range _cacheInfo.Queue {
 						c := _info.c
-						if !used {
-							go func() {
-								c <- &dnsQueryRes{ip: _cacheInfo.Ip, conn: info.conn}
-							}()
-							used = true
-						} else {
-							go func() {
-								c <- &dnsQueryRes{ip: _cacheInfo.Ip}
-							}()
-						}
+						go func() {
+							c <- &dnsQueryRes{ip: _cacheInfo.Ip, conn: conn}
+						}()
+						conn = nil
 					}
 					_cacheInfo.Queue = []*dnsQueryReq{}
 				}
