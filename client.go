@@ -26,6 +26,7 @@ import (
 )
 
 var authKey = flag.String("auth", "", "key for auth")
+var xorData = flag.String("xor", "", "xor key,c/s must use a some key")
 
 var serviceAddr = flag.String("service", "", "listen addr for client connect")
 var localAddr = flag.String("local", "", "if local not empty, treat me as client, this is the addr for local listen, otherwise, treat as server")
@@ -575,8 +576,9 @@ out:
 	for {
 		n, from, err := session.sock.ReadFromUDP(buf)
 		if err == nil {
-			log.Println("head recv", string(buf[:n]), from)
-			arr := strings.Split(common.Xor(string(buf[:n])), "@")
+			data := common.Xor(string(buf[:n]))
+			log.Println("head recv", data, from)
+			arr := strings.Split(data, "@")
 			switch session.status {
 			case "1snd":
 				if len(arr) > 1 {
@@ -840,6 +842,9 @@ func main() {
 	if *remoteAction == "" && clientType == 1 {
 		println("must have action")
 		return
+	}
+	if *xorData != "" {
+		common.XorSetKey(*xorData)
 	}
 	go func() {
 		c := make(chan os.Signal, 1)

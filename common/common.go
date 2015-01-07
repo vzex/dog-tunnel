@@ -17,8 +17,12 @@ var encodingData []byte = []byte("bertdfvuifu4359c")
 var encodingLen int = 16
 var headerLen int = 4
 
-func init() {
+func initxor() {
 	encodingLen = len(encodingData)
+}
+
+func init() {
+	initxor()
 	headerLen = binary.Size(uint32(1))
 }
 
@@ -35,6 +39,11 @@ type ClientSetting struct {
 	Mode       int
 	PipeNum    int
 	AesKey     string
+}
+
+func XorSetKey(s string) {
+	encodingData = []byte(s)
+	initxor()
 }
 
 func Xor(s string) string {
