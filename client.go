@@ -913,24 +913,18 @@ type clientSession struct {
 	quit      chan bool
 }
 
-func (session *clientSession) processSockProxy(sc *Client, sessionId, content string, callback func()) {
-	pipe := session.pipe
+func (session *clientSession) processSockProxy(sessionId, content string, callback func([]byte)) {
 	session.recvMsg += content
 	bytes := []byte(session.recvMsg)
 	size := len(bytes)
-	//log.Println("recv msg-====", len(session.recvMsg),  session.recvMsg, session.status, sessionId)
+	//log.Println("recv msg-====", len(session.recvMsg),  session.status, sessionId)
 	switch session.status {
 	case "init":
-		if session.localConn != nil {
-			session.localConn.Close()
-			session.localConn = nil
-		}
 		if size < 2 {
 			//println("wait init")
 			return
 		}
 		var _, nmethod uint8 = bytes[0], bytes[1]
-		//println("version", version, nmethod)
 		session.status = "version"
 		session.recvMsg = string(bytes[2:])
 		session.extra = nmethod
@@ -940,61 +934,23 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 			return
 		}
 		var send = []uint8{5, 0}
-		go common.Write(pipe, sessionId, "tunnel_msg_s", string(send))
+		go session.localConn.Write(send)
 		session.status = "hello"
 		session.recvMsg = string(bytes[session.extra:])
 		session.extra = 0
-		//log.Println("now", len(session.recvMsg))
 	case "hello":
 		var hello reqMsg
 		bOk, tail := hello.read(bytes)
 		if bOk {
-			go func() {
-				var ansmsg ansMsg
-				url := hello.url
-				var s_conn net.Conn
-				var err error
-				if *dnsCacheNum > 0 && hello.atyp == 3 {
-					host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
-					resChan := make(chan *dnsQueryRes)
-					debug("try cache", resChan)
-					checkDns <- &dnsQueryReq{c: resChan, host: host, port: int(hello.dst_port2), reqtype: hello.reqtype, url: url}
-					debug("try cache2")
-					res := <-resChan
-					debug("try cache3")
-					s_conn = res.conn
-					err = res.err
-					if res.ip != "" {
-						url = res.ip + fmt.Sprintf(":%d", hello.dst_port2)
-					}
-				}
-				if s_conn == nil && err == nil {
-					s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
-				}
-				if err != nil {
-					log.Println("connect to local server fail:", err.Error())
-					ansmsg.gen(&hello, 4)
-					go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
-					return
-				} else {
-					session.localConn = s_conn
-					go handleLocalPortResponse(sc, sessionId)
-					ansmsg.gen(&hello, 0)
-					go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
-					session.status = "ok"
-					session.recvMsg = string(tail)
-					callback()
-					return
-				}
-			}()
-		} else {
-			//log.Println("wait hello")
+			session.status = "ok"
+			session.recvMsg = string(tail)
+			callback(bytes)
 		}
 		return
 	case "ok":
 		return
 	}
-	session.processSockProxy(sc, sessionId, "", callback)
+	session.processSockProxy(sessionId, "", callback)
 }
 
 type ansMsg struct {
@@ -1192,13 +1148,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		if conn != nil {
 			//log.Println("tunnel", (content), sessionId)
 			conn.Write([]byte(content))
-		} else if sc.action == "socks5" {
-			if session == nil {
-				return
-			}
-			go session.processSockProxy(sc, sessionId, content, func() {
-				sc.OnTunnelRecv(pipe, sessionId, action, session.recvMsg)
-			})
 		}
 	case "tunnel_close":
 		sc.removeSession(sessionId)
@@ -1217,7 +1166,48 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 					go handleLocalPortResponse(sc, sessionId)
 				}
 			} else {
-				sc.sessions[sessionId] = &clientSession{pipe: pipe, localConn: nil, status: "init", recvMsg: "", quit: make(chan bool)}
+				session = &clientSession{pipe: pipe, localConn: nil, status: "init", recvMsg: "", quit: make(chan bool)}
+				sc.sessions[sessionId] = session
+				go func() {
+					var hello reqMsg
+					bOk, _ := hello.read([]byte(content))
+					if !bOk {
+						msg := "hello read err"
+						go common.Write(pipe, sessionId, "tunnel_error", msg)
+						return
+					}
+					var ansmsg ansMsg
+					url := hello.url
+					var s_conn net.Conn
+					var err error
+					if *dnsCacheNum > 0 && hello.atyp == 3 {
+						host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
+						resChan := make(chan *dnsQueryRes)
+						debug("try cache", resChan)
+						checkDns <- &dnsQueryReq{c: resChan, host: host, port: int(hello.dst_port2), reqtype: hello.reqtype, url: url}
+						debug("try cache2")
+						res := <-resChan
+						debug("try cache3")
+						s_conn = res.conn
+						err = res.err
+						if res.ip != "" {
+							url = res.ip + fmt.Sprintf(":%d", hello.dst_port2)
+						}
+					}
+					if s_conn == nil && err == nil {
+						s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
+					}
+					if err != nil {
+						log.Println("connect to local server fail:", err.Error())
+						ansmsg.gen(&hello, 4)
+						go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
+					} else {
+						session.localConn = s_conn
+						go handleLocalPortResponse(sc, sessionId)
+						ansmsg.gen(&hello, 0)
+						go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
+					}
+				}()
 			}
 		}
 	}
@@ -1268,7 +1258,7 @@ func (sc *Client) MultiListen() bool {
 					time.Sleep(time.Second)
 					continue
 				}
-				sc.sessions[sessionId] = &clientSession{pipe: pipe, localConn: conn}
+				sc.sessions[sessionId] = &clientSession{pipe: pipe, localConn: conn, status: "init"}
 				//log.Println("client", sc.id, "create session", sessionId)
 				go handleLocalServerResponse(sc, sessionId)
 			}
@@ -1401,15 +1391,32 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 	}
 	conn := session.localConn
 	pipe.(*UDPMakeSession).Auth()
-	common.Write(pipe, sessionId, "tunnel_open", "")
+	if *remoteAction != "socks5" {
+		common.Write(pipe, sessionId, "tunnel_open", "")
+	}
 	arr := make([]byte, 1000)
 	reader := bufio.NewReader(conn)
+	bParsed := false
+	bNeedBreak := false
 	for {
 		size, err := reader.Read(arr)
 		if err != nil {
 			break
 		}
-		if common.Write(pipe, sessionId, "tunnel_msg_c", string(arr[0:size])) != nil {
+		if *remoteAction == "socks5" && !bParsed {
+			session.processSockProxy(sessionId, string(arr[0:size]), func(head []byte) {
+				common.Write(pipe, sessionId, "tunnel_open", string(head))
+				if common.Write(pipe, sessionId, "tunnel_msg_c", session.recvMsg) != nil {
+					bNeedBreak = true
+				}
+				bParsed = true
+			})
+		} else {
+			if common.Write(pipe, sessionId, "tunnel_msg_c", string(arr[0:size])) != nil {
+				bNeedBreak = true
+			}
+		}
+		if bNeedBreak {
 			break
 		}
 	}
