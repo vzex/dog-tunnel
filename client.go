@@ -747,9 +747,9 @@ func dnsLoop() {
 				cache.AddCache(info.host, &dnsInfo{Queue: []*dnsQueryReq{info}, Status: "querying"}, int64(*dnsCacheNum*60))
 				go func() {
 					back := &dnsQueryBack{host: info.host}
-					log.Println("try dial", info.url)
+					//log.Println("try dial", info.url)
 					s_conn, err := net.DialTimeout(info.reqtype, info.url, 30*time.Second)
-					log.Println("try dial", info.url, "ok")
+					//log.Println("try dial", info.url, "ok")
 					if err != nil {
 						back.status = "queryfail"
 						back.err = err
@@ -1200,9 +1200,9 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 						}
 					}
 					if s_conn == nil && err == nil {
-						log.Println("try dial", url)
+						//log.Println("try dial", url)
 						s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
-						log.Println("try dial", url, "ok")
+						//log.Println("try dial", url, "ok")
 					}
 					if err != nil {
 						log.Println("connect to local server fail:", err.Error())
