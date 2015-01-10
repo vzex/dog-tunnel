@@ -90,11 +90,11 @@ func (session *Session) StartCSMode() {
 
 func (session *Session) Loop() {
 	go func() {
-		checkChan := time.Tick(10 * time.Second)
+		checkChan := time.NewTicker(10 * time.Second)
 	out:
 		for {
 			select {
-			case <-checkChan:
+			case <-checkChan.C:
 				//println("check lop session status", session.status)
 				if time.Now().Unix() > session.OverTime {
 					if session.Status != "ok" {
@@ -110,6 +110,7 @@ func (session *Session) Loop() {
 				break out
 			}
 		}
+		checkChan.Stop()
 	}()
 }
 
@@ -166,11 +167,11 @@ func (s *ClientInfo) AddClient(conn net.Conn, clientInfo ClientSetting) {
 
 func (s *ClientInfo) Loop() {
 	go func() {
-		checkChan := time.Tick(10 * time.Second)
+		checkChan := time.NewTicker(10 * time.Second)
 	out:
 		for {
 			select {
-			case <-checkChan:
+			case <-checkChan.C:
 				if time.Now().Unix()-s.ResponseTime > 1800 {
 					log.Println("timeout,client loop quit", s.Conn.RemoteAddr().String())
 					break out
@@ -179,6 +180,7 @@ func (s *ClientInfo) Loop() {
 				break out
 			}
 		}
+		checkChan.Stop()
 		s.Conn.Close()
 	}()
 }
@@ -218,11 +220,11 @@ func (udpsession *UDPMakeSession) Remove(bTimeout bool) {
 
 func (udpsession *UDPMakeSession) Loop() {
 	go func() {
-		checkChan := time.Tick(10 * time.Second)
+		checkChan := time.NewTicker(10 * time.Second)
 	out:
 		for {
 			select {
-			case <-checkChan:
+			case <-checkChan.C:
 				if time.Now().Unix()-udpsession.CreateTime > 120 {
 					udpsession.Remove(true)
 					break out
@@ -231,6 +233,7 @@ func (udpsession *UDPMakeSession) Loop() {
 				break out
 			}
 		}
+		checkChan.Stop()
 	}()
 }
 
