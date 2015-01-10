@@ -520,14 +520,14 @@ func (session *UDPMakeSession) ClientCheck() {
 		}
 	}()
 	go func() {
-		t := time.Tick(40 * time.Millisecond)
+		t := time.NewTicker(40 * time.Millisecond)
 		defer func() {
 			if err := recover(); err != nil {
 				session.Close()
 				log.Println("clientcheck trigger error:", err)
 			}
 		}()
-		ping := time.Tick(time.Second * 1)
+		ping := time.NewTicker(time.Second * 1)
 		session.Auth()
 		if session.status == "ok" {
 			go common.Write(session, "-1", "ping", "")
@@ -535,7 +535,7 @@ func (session *UDPMakeSession) ClientCheck() {
 	out:
 		for {
 			select {
-			case <-ping:
+			case <-ping.C:
 				//log.Println("test ping !")
 				session.Auth()
 				go common.Write(session, "-1", "ping", "")
@@ -546,7 +546,7 @@ func (session *UDPMakeSession) ClientCheck() {
 					session.quitChan <- true
 					break out
 				}
-			case <-t:
+			case <-t.C:
 				//log.Println("-------", session.status, session.send,  time.Now().Unix() ,session.overTime )
 				if session.status == "ok" {
 					kcp := session.kcp
@@ -566,6 +566,8 @@ func (session *UDPMakeSession) ClientCheck() {
 				}
 			}
 		}
+		t.Stop()
+		ping.Stop()
 	}()
 
 	if clientType == 0 {
@@ -745,7 +747,9 @@ func dnsLoop() {
 				cache.AddCache(info.host, &dnsInfo{Queue: []*dnsQueryReq{info}, Status: "querying"}, int64(*dnsCacheNum*60))
 				go func() {
 					back := &dnsQueryBack{host: info.host}
+					log.Println("try dial", info.url)
 					s_conn, err := net.DialTimeout(info.reqtype, info.url, 30*time.Second)
+					log.Println("try dial", info.url, "ok")
 					if err != nil {
 						back.status = "queryfail"
 						back.err = err
@@ -858,10 +862,10 @@ func main() {
 
 	if *bDebug {
 		go func() {
-			t := time.Tick(time.Second * 5)
+			t := time.NewTicker(time.Second * 5)
 			for {
 				select {
-				case <-t:
+				case <-t.C:
 					log.Println("debug begin", len(g_ClientMap))
 					for a := range g_MakeSession {
 						log.Println(a)
@@ -869,6 +873,7 @@ func main() {
 					log.Println("debug end")
 				}
 			}
+			t.Stop()
 		}()
 	}
 	loop := func() bool {
@@ -1195,7 +1200,9 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 						}
 					}
 					if s_conn == nil && err == nil {
+						log.Println("try dial", url)
 						s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
+						log.Println("try dial", url, "ok")
 					}
 					if err != nil {
 						log.Println("connect to local server fail:", err.Error())
@@ -1287,11 +1294,11 @@ func (sc *Client) getOnePipe() net.Conn {
 
 func (sc *Client) Run(index int, specPipe string) {
 	func() {
-		t := time.Tick(2 * time.Second)
+		t := time.NewTicker(2 * time.Second)
 	out:
 		for {
 			select {
-			case <-t:
+			case <-t.C:
 				if sc.getOnePipe() == nil {
 					log.Println("recreate pipe for client", sc.id)
 					id, _ := strconv.Atoi(sc.id)
@@ -1333,6 +1340,7 @@ func (sc *Client) Run(index int, specPipe string) {
 				break out
 			}
 		}
+		t.Stop()
 	}()
 }
 
@@ -1351,17 +1359,18 @@ func handleLocalPortResponse(client *Client, id string) {
 		return
 	}
 	go func() {
-		t := time.Tick(time.Minute * 5)
+		t := time.NewTicker(time.Minute * 5)
 	out:
 		for {
 			select {
-			case <-t:
+			case <-t.C:
 				client.removeSession(id)
 				break out
 			case <-session.quit:
 				break out
 			}
 		}
+		t.Stop()
 	}()
 	arr := make([]byte, 1000)
 	reader := bufio.NewReader(conn)
