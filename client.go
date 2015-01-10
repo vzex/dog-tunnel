@@ -224,7 +224,7 @@ func handleResponse(conn net.Conn, clientId string, action string, content strin
 			if session != nil && session.localConn != nil {
 				session.localConn.Write([]byte(content))
 			} else {
-				log.Println("cs:cannot tunnel msg", sessionId)
+				//log.Println("cs:cannot tunnel msg", sessionId)
 			}
 		}
 	}
@@ -951,7 +951,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 			//println("tunnel msg", sessionId, len(content))
 			conn.Write([]byte(content))
 		} else {
-			log.Println("cannot tunnel msg", sessionId)
+			//log.Println("cannot tunnel msg", sessionId)
 		}
 	case "tunnel_close_s":
 		sc.removeSession(sessionId)
