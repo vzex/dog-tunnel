@@ -51,11 +51,17 @@ var clientType = -1
 
 type dnsInfo struct {
 	Ip                  string
+	Status              string
+	Queue               []*dnsQueryReq
 	overTime, cacheTime int64
 }
 
 func (u *dnsInfo) IsAlive() bool {
 	return time.Now().Unix() < u.overTime
+}
+
+func (u *dnsInfo) GetCacheTime() int64 {
+	return u.overTime
 }
 
 func (u *dnsInfo) SetCacheTime(t int64) {
@@ -416,6 +422,9 @@ func loadSettings(info *fileSetting) error {
 
 func main() {
 	flag.Parse()
+	checkDns = make(chan *dnsQueryReq)
+	checkDnsRes = make(chan *dnsQueryBack)
+	go dnsLoop()
 	if *bShowVersion {
 		fmt.Printf("%.2f\n", common.Version)
 		return
@@ -492,11 +501,11 @@ func main() {
 		go connect()
 		q := make(chan bool)
 		go func() {
-			c := time.Tick(time.Second * 10)
+			c := time.NewTicker(time.Second * 10)
 		out:
 			for {
 				select {
-				case <-c:
+				case <-c.C:
 					if remoteConn != nil {
 						common.Write(remoteConn, "-1", "ping", "")
 					}
@@ -504,6 +513,7 @@ func main() {
 					break out
 				}
 			}
+			c.Stop()
 		}()
 
 		common.Read(remoteConn, handleResponse)
@@ -636,53 +646,36 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 			go func() {
 				var ansmsg ansMsg
 				url := hello.url
-				needcache := false
-				usecache := false
+				var s_conn net.Conn
+				var err error
 				if *dnsCacheNum > 0 && hello.atyp == 3 {
 					host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
-					cache := common.GetCacheContainer("dns")
-					cacheInfo := cache.GetCache(host)
-					if cacheInfo == nil {
-						needcache = true
-					} else {
-						url = cacheInfo.(*dnsInfo).Ip + fmt.Sprintf(":%d", hello.dst_port2)
-						cacheInfo.SetCacheTime(-1)
-						usecache = true
+					resChan := make(chan *dnsQueryRes)
+					checkDns <- &dnsQueryReq{c: resChan, host: host, port: int(hello.dst_port2), reqtype: hello.reqtype, url: url}
+					res := <-resChan
+					s_conn = res.conn
+					err = res.err
+					if res.ip != "" {
+						url = res.ip + fmt.Sprintf(":%d", hello.dst_port2)
 					}
 				}
-				for {
-					s_conn, err := net.DialTimeout(hello.reqtype, url, 30*time.Second)
-					if err != nil {
-						if usecache {
-							host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
-							cache := common.GetCacheContainer("dns")
-							cache.DelCache(host)
-							url = hello.url
-							usecache = false
-							continue
-						}
-						log.Println("connect to local server fail:", err.Error())
-						//msg := "cannot connect to bind addr" + *localAddr
-						ansmsg.gen(&hello, 4)
-						go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
-						//common.Write(pipe, sessionId, "tunnel_error", msg)
-						return
-					} else {
-						if needcache {
-							cache := common.GetCacheContainer("dns")
-							host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
-							cache.AddCache(host, &dnsInfo{Ip: strings.Split(s_conn.RemoteAddr().String(), ":")[0]}, int64(*dnsCacheNum*60))
-							log.Println("add host", host, "to dns cache")
-						}
-						session.localConn = s_conn
-						go handleLocalPortResponse(sc, sessionId)
-						ansmsg.gen(&hello, 0)
-						go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
-						session.status = "ok"
-						session.recvMsg = string(tail)
-						callback()
-						return
-					}
+				if s_conn == nil && err == nil {
+					s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
+				}
+				if err != nil {
+					log.Println("connect to local server fail:", err.Error())
+					ansmsg.gen(&hello, 4)
+					go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
+					return
+				} else {
+					session.localConn = s_conn
+					go handleLocalPortResponse(sc, sessionId)
+					ansmsg.gen(&hello, 0)
+					go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
+					session.status = "ok"
+					session.recvMsg = string(tail)
+					callback()
+					return
 				}
 			}()
 		} else {
@@ -693,6 +686,104 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 		return
 	}
 	session.processSockProxy(sc, sessionId, "", callback)
+}
+
+var checkDns chan *dnsQueryReq
+var checkDnsRes chan *dnsQueryBack
+
+type dnsQueryReq struct {
+	c       chan *dnsQueryRes
+	host    string
+	port    int
+	reqtype string
+	url     string
+}
+
+type dnsQueryBack struct {
+	host   string
+	status string
+	conn   net.Conn
+	err    error
+}
+
+type dnsQueryRes struct {
+	conn net.Conn
+	err  error
+	ip   string
+}
+
+func dnsLoop() {
+	for {
+		select {
+		case info := <-checkDns:
+			cache := common.GetCacheContainer("dns")
+			cacheInfo := cache.GetCache(info.host)
+			if cacheInfo == nil {
+				cache.AddCache(info.host, &dnsInfo{Queue: []*dnsQueryReq{info}, Status: "querying"}, int64(*dnsCacheNum*60))
+				go func() {
+					back := &dnsQueryBack{host: info.host}
+					//log.Println("try dial", info.url)
+					s_conn, err := net.DialTimeout(info.reqtype, info.url, 30*time.Second)
+					//log.Println("try dial", info.url, "ok")
+					if err != nil {
+						back.status = "queryfail"
+						back.err = err
+					} else {
+						back.status = "queryok"
+						back.conn = s_conn
+					}
+					checkDnsRes <- back
+				}()
+			} else {
+				_cacheInfo := cacheInfo.(*dnsInfo)
+				//log.Println("on trigger", info.host, _cacheInfo.GetCacheTime(), len(_cacheInfo.Queue))
+				switch _cacheInfo.Status {
+				case "querying":
+					_cacheInfo.Queue = append(_cacheInfo.Queue, info)
+					//cache.UpdateCache(info.host, _cacheInfo)
+					cacheInfo.SetCacheTime(-1)
+				case "queryok":
+					cacheInfo.SetCacheTime(-1)
+					go func() {
+						info.c <- &dnsQueryRes{ip: _cacheInfo.Ip}
+					}()
+				}
+				//url = cacheInfo.(*dnsInfo).Ip + fmt.Sprintf(":%d", info.port)
+			}
+		case info := <-checkDnsRes:
+			cache := common.GetCacheContainer("dns")
+			cacheInfo := cache.GetCache(info.host)
+			if cacheInfo != nil {
+				_cacheInfo := cacheInfo.(*dnsInfo)
+				_cacheInfo.Status = info.status
+				switch info.status {
+				case "queryfail":
+					for _, _info := range _cacheInfo.Queue {
+						c := _info.c
+						go func() {
+							c <- &dnsQueryRes{err: info.err}
+						}()
+					}
+					cache.DelCache(info.host)
+				case "queryok":
+					log.Println("add host", info.host, "to dns cache")
+					_cacheInfo.Ip = strings.Split(info.conn.RemoteAddr().String(), ":")[0]
+					_cacheInfo.SetCacheTime(-1)
+					//log.Println("process the queue of host", info.host, len(_cacheInfo.Queue))
+					conn := info.conn
+					for _, _info := range _cacheInfo.Queue {
+						c := _info.c
+						go func() {
+							c <- &dnsQueryRes{ip: _cacheInfo.Ip, conn: conn}
+						}()
+						conn = nil
+					}
+					_cacheInfo.Queue = []*dnsQueryReq{}
+				}
+				//cache.UpdateCache(info.host, _cacheInfo)
+			}
+		}
+	}
 }
 
 type ansMsg struct {
@@ -834,7 +925,7 @@ func (sc *Client) removeSession(sessionId string) bool {
 			session.localConn.Close()
 		}
 		delete(sc.sessions, sessionId)
-		log.Println("client", sc.id, "remove session", sessionId)
+		//log.Println("client", sc.id, "remove session", sessionId)
 		return true
 	}
 	return false
@@ -936,12 +1027,12 @@ func (sc *Client) MultiListen() bool {
 		}
 		go func() {
 			quit := false
-			ping := time.Tick(time.Second * 5)
+			ping := time.NewTicker(time.Second * 5)
 			go func() {
 			out:
 				for {
 					select {
-					case <-ping:
+					case <-ping.C:
 						if quit {
 							break out
 						}
@@ -951,6 +1042,7 @@ func (sc *Client) MultiListen() bool {
 					}
 				}
 			}()
+			ping.Stop()
 			for {
 				conn, err := g_LocalConn.Accept()
 				if err != nil {
