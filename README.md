@@ -35,5 +35,6 @@ c2 -> s : makeholeok or makeholefail
 [MIT License](LICENSE)
 
 ## Credits
+![欢迎使用支付宝对该项目进行捐赠](https://raw.githubusercontent.com/vzex/dog-tunnel/udpVersion/dog-tunnel.png)
 
 author: vzex@163.com
