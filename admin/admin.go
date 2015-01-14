@@ -111,6 +111,7 @@ func _adminGetServers(w http.ResponseWriter, r *http.Request) (result string, bS
 			_arr, bHave := arr[server.UserName]
 			if bHave {
 				arr[server.UserName] = append(_arr, server.ServerName)
+				arr[server.UserName] = append(arr[server.UserName], server.Conn.RemoteAddr().String())
 			} else {
 				arr[server.UserName] = []string{server.ServerName, server.Conn.RemoteAddr().String()}
 			}
