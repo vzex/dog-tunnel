@@ -26,6 +26,7 @@ import (
 )
 
 var authKey = flag.String("auth", "", "key for auth")
+var bTcp = flag.Bool("tcp", false, "use tcp to replace udp")
 var xorData = flag.String("xor", "", "xor key,c/s must use a some key")
 
 var serviceAddr = flag.String("service", "", "listen addr for client connect")
@@ -164,43 +165,7 @@ func ServerCheck(sock *net.UDPConn) {
 									log.Println("got encrpyt key", tail)
 									aesKey := "asd4" + tail
 									aesBlock, _ := aes.NewCipher([]byte(aesKey))
-									session.SetCrypt(func(s []byte) []byte {
-										if aesBlock == nil {
-											return s
-										} else {
-											padLen := aes.BlockSize - (len(s) % aes.BlockSize)
-											for i := 0; i < padLen; i++ {
-												s = append(s, byte(padLen))
-											}
-											srcLen := len(s)
-											encryptText := make([]byte, srcLen+aes.BlockSize)
-											iv := encryptText[srcLen:]
-											for i := 0; i < len(iv); i++ {
-												iv[i] = byte(i)
-											}
-											mode := cipher.NewCBCEncrypter(aesBlock, iv)
-											mode.CryptBlocks(encryptText[:srcLen], s)
-											return encryptText
-										}
-									}, func(s []byte) []byte {
-										if aesBlock == nil {
-											return s
-										} else {
-											if len(s) < aes.BlockSize*2 || len(s)%aes.BlockSize != 0 {
-												return []byte{}
-											}
-											srcLen := len(s) - aes.BlockSize
-											decryptText := make([]byte, srcLen)
-											iv := s[srcLen:]
-											mode := cipher.NewCBCDecrypter(aesBlock, iv)
-											mode.CryptBlocks(decryptText, s[:srcLen])
-											paddingLen := int(decryptText[srcLen-1])
-											if paddingLen > 16 {
-												return []byte{}
-											}
-											return decryptText[:srcLen-paddingLen]
-										}
-									})
+									session.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
 								}
 							}
 							session.SetStatusAndSend("1ack", "1ack@"+session.idstr)
@@ -234,6 +199,123 @@ func ServerCheck(sock *net.UDPConn) {
 		}
 	}()
 }
+
+func getEncodeFunc(aesBlock cipher.Block) func([]byte) []byte {
+	return func(s []byte) []byte {
+		if aesBlock == nil {
+			return s
+		} else {
+			padLen := aes.BlockSize - (len(s) % aes.BlockSize)
+			for i := 0; i < padLen; i++ {
+				s = append(s, byte(padLen))
+			}
+			srcLen := len(s)
+			encryptText := make([]byte, srcLen+aes.BlockSize)
+			iv := encryptText[srcLen:]
+			for i := 0; i < len(iv); i++ {
+				iv[i] = byte(i)
+			}
+			mode := cipher.NewCBCEncrypter(aesBlock, iv)
+			mode.CryptBlocks(encryptText[:srcLen], s)
+			return encryptText
+		}
+	}
+}
+
+func getDecodeFunc(aesBlock cipher.Block) func([]byte) []byte {
+	return func(s []byte) []byte {
+		if aesBlock == nil {
+			return s
+		} else {
+			if len(s) < aes.BlockSize*2 || len(s)%aes.BlockSize != 0 {
+				return []byte{}
+			}
+			srcLen := len(s) - aes.BlockSize
+			decryptText := make([]byte, srcLen)
+			iv := s[srcLen:]
+			mode := cipher.NewCBCDecrypter(aesBlock, iv)
+			mode.CryptBlocks(decryptText, s[:srcLen])
+			paddingLen := int(decryptText[srcLen-1])
+			if paddingLen > 16 {
+				return []byte{}
+			}
+			return decryptText[:srcLen-paddingLen]
+		}
+	}
+}
+
+func CreateTCPSession(idindex int) bool {
+	s_conn, err := net.DialTimeout("tcp", *serviceAddr, 30*time.Second)
+	log.Println("try dial", *serviceAddr, "ok")
+	if err != nil {
+		log.Println("try dial err", err.Error())
+		return false
+	}
+	id := *serviceAddr
+	client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), specPipes: make(map[string]net.Conn), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
+	client.pipes[0] = s_conn
+	g_ClientMap[id] = client
+	callback := func(conn net.Conn, sessionId, action, content string) {
+		client.OnTunnelRecv(conn, sessionId, action, content)
+	}
+	go client.MultiListen()
+	/*if *bEncrypt {
+		encrypt_tail := string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
+		aesKey := "asd4" + encrypt_tail
+		log.Println("debug aeskey", encrypt_tail)
+		aesBlock, _ := aes.NewCipher([]byte(aesKey))
+		common.Write(s_conn, "-1", "tcp_init_enc", common.Xor(encrypt_tail))
+		//s_conn.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
+	}*/
+	common.Write(s_conn, "-1", "tcp_init_action", *remoteAction)
+	common.Read(s_conn, callback)
+	delete(g_ClientMap, id)
+	log.Println("remove tcp session", id)
+	delete(client.pipes, 0)
+	if g_LocalConn != nil {
+		g_LocalConn.Close()
+	}
+	return true
+}
+func TCPListen(addr string) bool {
+	var err error
+	g_LocalConn, err = net.Listen("tcp", addr)
+	if err != nil {
+		log.Println("cannot listen addr:" + err.Error())
+		return false
+	}
+	println("service start success,please connect", addr)
+	func() {
+		for {
+			conn, err := g_LocalConn.Accept()
+			if err != nil {
+				log.Println("server err:", err.Error())
+				break
+			}
+			//log.Println("client", sc.id, "create session", sessionId)
+
+			id := conn.RemoteAddr().String()
+			log.Println("add tcp session", id)
+			client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), specPipes: make(map[string]net.Conn), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
+			client.pipes[0] = conn
+			g_ClientMap[id] = client
+			go client.TCPServerProcess(id)
+			//go handleLocalServerResponse(sc, sessionId)
+		}
+		g_LocalConn = nil
+	}()
+	return true
+}
+
+func (client *Client) TCPServerProcess(id string) {
+	callback := func(conn net.Conn, sessionId, action, content string) {
+		client.OnTunnelRecv(conn, sessionId, action, content)
+	}
+	common.Read(client.pipes[0], callback)
+	delete(g_ClientMap, id)
+	log.Println("remove tcp session", id)
+}
+
 func Listen(addr string) *net.UDPConn {
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
@@ -317,43 +399,7 @@ func (session *UDPMakeSession) Dial(addr string) string {
 		aesKey := "asd4" + encrypt_tail
 		log.Println("debug aeskey", encrypt_tail)
 		aesBlock, _ := aes.NewCipher([]byte(aesKey))
-		session.SetCrypt(func(s []byte) []byte {
-			if aesBlock == nil {
-				return s
-			} else {
-				padLen := aes.BlockSize - (len(s) % aes.BlockSize)
-				for i := 0; i < padLen; i++ {
-					s = append(s, byte(padLen))
-				}
-				srcLen := len(s)
-				encryptText := make([]byte, srcLen+aes.BlockSize)
-				iv := encryptText[srcLen:]
-				for i := 0; i < len(iv); i++ {
-					iv[i] = byte(i)
-				}
-				mode := cipher.NewCBCEncrypter(aesBlock, iv)
-				mode.CryptBlocks(encryptText[:srcLen], s)
-				return encryptText
-			}
-		}, func(s []byte) []byte {
-			if aesBlock == nil {
-				return s
-			} else {
-				if len(s) < aes.BlockSize*2 || len(s)%aes.BlockSize != 0 {
-					return []byte{}
-				}
-				srcLen := len(s) - aes.BlockSize
-				decryptText := make([]byte, srcLen)
-				iv := s[srcLen:]
-				mode := cipher.NewCBCDecrypter(aesBlock, iv)
-				mode.CryptBlocks(decryptText, s[:srcLen])
-				paddingLen := int(decryptText[srcLen-1])
-				if paddingLen > 16 {
-					return []byte{}
-				}
-				return decryptText[:srcLen-paddingLen]
-			}
-		})
+		session.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
 	}
 	session.SetStatusAndSend("1snd", "1snd@"+session.idstr+"@"+*remoteAction+"@"+encrypt_tail)
 	session.remote = udpAddr
@@ -884,12 +930,20 @@ func main() {
 		g_MakeSession = make(map[string]*UDPMakeSession)
 		tempBuff = make([]byte, 2000)
 		if clientType == 0 {
-			sock := Listen(*serviceAddr)
-			if sock != nil {
-				ServerCheck(sock)
+			if *bTcp {
+				TCPListen(*serviceAddr)
+			} else {
+				sock := Listen(*serviceAddr)
+				if sock != nil {
+					ServerCheck(sock)
+				}
 			}
 		} else {
-			CreateUDPSession(0)
+			if *bTcp {
+				CreateTCPSession(0)
+			} else {
+				CreateUDPSession(0)
+			}
 		}
 		if bForceQuit {
 			return true
@@ -1116,7 +1170,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	if session != nil {
 		conn = session.localConn
 	}
-	if !pipe.(*UDPMakeSession).CheckAuth(action, content) {
+	if !*bTcp && !pipe.(*UDPMakeSession).CheckAuth(action, content) {
 		go common.Write(pipe, sessionId, "authfail", "")
 		return
 	}
@@ -1144,6 +1198,14 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		}
 	case "tunnel_close_s":
 		sc.removeSession(sessionId)
+	case "tcp_init_action":
+		sc.action = content
+	case "tcp_init_enc":
+		tail := common.Xor(content)
+		log.Println("got encrpyt key", tail)
+		/*aesKey := "asd4" + tail
+		aesBlock, _ := aes.NewCipher([]byte(aesKey))*/
+		//sc.pipes[0].(*tcpConn).SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
 	case "ping", "pingback":
 		debug("out recv", action, pipe.(*UDPMakeSession).idstr)
 		if action == "ping" {
@@ -1252,7 +1314,7 @@ func (sc *Client) MultiListen() bool {
 			for {
 				conn, err := g_LocalConn.Accept()
 				if err != nil {
-					if bForceQuit {
+					if bForceQuit || *bTcp {
 						break
 					} else {
 						continue
@@ -1269,6 +1331,7 @@ func (sc *Client) MultiListen() bool {
 				//log.Println("client", sc.id, "create session", sessionId)
 				go handleLocalServerResponse(sc, sessionId)
 			}
+			g_LocalConn = nil
 		}()
 	}
 	return true
@@ -1346,10 +1409,6 @@ func (sc *Client) Run(index int, specPipe string) {
 
 func handleLocalPortResponse(client *Client, id string) {
 	sessionId := id
-	if !client.bUdp {
-		arr := strings.Split(id, "-")
-		sessionId = arr[1]
-	}
 	session := client.getSession(sessionId)
 	if session == nil {
 		return
@@ -1379,6 +1438,7 @@ func handleLocalPortResponse(client *Client, id string) {
 		if err != nil {
 			break
 		}
+		//log.Println("debug read", size)
 		if common.Write(session.pipe, id, "tunnel_msg_s", string(arr[0:size])) != nil {
 			break
 		}
@@ -1399,7 +1459,9 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 		return
 	}
 	conn := session.localConn
-	pipe.(*UDPMakeSession).Auth()
+	if !*bTcp {
+		pipe.(*UDPMakeSession).Auth()
+	}
 	if *remoteAction != "socks5" {
 		common.Write(pipe, sessionId, "tunnel_open", "")
 	}

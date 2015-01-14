@@ -113,7 +113,7 @@ func Read(conn net.Conn, callback ReadCallBack) {
 		binary.Read(buf, binary.LittleEndian, &content)
 		callback(conn, string(id), Xor(string(action)), string(content))
 		//println("read11!!", l1,l2, l3,string(id), Xor(string(action)), string(content))
-		return headerLen*3 + int(l1+l2+l3), nil, nil
+		return headerLen*3 + int(l1+l2+l3), []byte{}, nil
 	}
 	scanner.Split(split)
 	for scanner.Scan() {
