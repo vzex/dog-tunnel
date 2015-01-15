@@ -1,8 +1,8 @@
 #!/bin/sh
 # need run as root
 cd ~
-apt-get update && apt-get dist-upgrade -y
-apt-get install tar wget curl git make gcc build-essential -y
+apt-get update && apt-get dist-upgrade -y && echo 'Upgrade system ok'
+apt-get install tar wget curl git make gcc build-essential -y && echo 'package installed'
 mkdir /root/goworkspace
 wget https://storage.googleapis.com/golang/go1.4.linux-amd64.tar.gz
 tar zxvf go1.4.linux-amd64.tar.gz
