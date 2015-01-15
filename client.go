@@ -1337,7 +1337,7 @@ func (sc *Client) MultiListen() bool {
 			}
 			return false
 		}
-		println("service start success,please connect", *localAddr, "udp mode")
+		println("service start success,please connect", *localAddr)
 		func() {
 			for {
 				conn, err := g_LocalConn.Accept()
