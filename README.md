@@ -14,7 +14,7 @@ ssh port forward example:
 client: ./dtunnel_lite -v -service 127.0.0.1:1234 -local :8787 -action :22
 
 It's better to add the -encrypt arg for privacy in client
-you can add "-auth" at both side for authorize
+you can add "-auth" on both sides for authorize
 
 The default mode is udp mode, and is faster in the poor network than tcp mode, you can also use tcp mode with "-tcp" on both sides.
 ## License
