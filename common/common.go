@@ -58,6 +58,14 @@ func Xor(s string) string {
 	return string(r)
 }
 
+func WriteCrypt(conn net.Conn, id string, action string, content string, encode func([]byte) []byte) error {
+	if encode != nil {
+		return Write(conn, id, action, string(encode([]byte(content))))
+	} else {
+		return Write(conn, id, action, content)
+	}
+}
+
 func Write(conn net.Conn, id string, action string, content string) error {
 	if conn == nil {
 		return nil
@@ -76,13 +84,12 @@ func Write(conn net.Conn, id string, action string, content string) error {
 	_, err := conn.Write(buf.Bytes())
 	//println("write!!!", old, l1, l2, l3)
 	if err != nil {
-		println("write err", err.Error())
+		log.Println("write err", err.Error())
 	}
 	return err
 }
 
 type ReadCallBack func(conn net.Conn, id string, action string, arg string)
-type ReadUDPCallBack func(conn *net.UDPConn, addr *net.UDPAddr, id string, action string, arg string)
 
 func Read(conn net.Conn, callback ReadCallBack) {
 	scanner := bufio.NewScanner(conn)
