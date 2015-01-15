@@ -262,6 +262,10 @@ func CreateTCPSession(idindex int) bool {
 		client.OnTunnelRecv(conn, sessionId, action, content)
 	}
 	go client.MultiListen()
+	if *authKey != "" {
+		common.Write(s_conn, "-1", "auth", common.Xor(*authKey))
+	}
+	client.authed = true
 	if *bEncrypt {
 		encrypt_tail := string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
 		aesKey := "asd4" + encrypt_tail
@@ -301,6 +305,9 @@ func TCPListen(addr string) bool {
 			log.Println("add tcp session", id)
 			client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), specPipes: make(map[string]net.Conn), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
 			client.pipes[0] = conn
+			if *authKey == "" {
+				client.authed = true
+			}
 			g_ClientMap[id] = client
 			go client.TCPServerProcess(id)
 			//go handleLocalServerResponse(sc, sessionId)
@@ -1141,6 +1148,7 @@ type Client struct {
 	quit           chan bool
 	addSession     chan *UDPMakeSession
 	encode, decode func([]byte) []byte
+	authed         bool
 }
 
 // pipe : client to client
@@ -1179,6 +1187,14 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	}
 	if !*bTcp && !pipe.(*UDPMakeSession).CheckAuth(action, content) {
 		go common.Write(pipe, sessionId, "authfail", "")
+		return
+	}
+	if clientType == 0 && *bTcp && !sc.authed {
+		if action != "auth" || common.Xor(content) != *authKey {
+			go common.Write(pipe, sessionId, "authfail", "")
+			return
+		}
+		sc.authed = true
 		return
 	}
 	switch action {
