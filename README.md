@@ -15,6 +15,10 @@ We provided a bash scripts to install dtunnel on fresh linux box.
 
 see [scripts/install_linux.sh](scripts/install_linux.sh)
 
+### Install dtunnel on Ubuntu/Kubuntu 14.04 and 14.10
+
+See [scripts/install_ubuntu.sh](scripts/install_ubuntu.sh)
+
 ## Specification
 
 
@@ -35,6 +39,6 @@ c2 -> s : makeholeok or makeholefail
 [MIT License](LICENSE)
 
 ## Credits
-![欢迎使用支付宝对该项目进行捐赠](https://raw.githubusercontent.com/vzex/dog-tunnel/udpVersion/dog-tunnel.png)
+![Welcome donate with Alipay && 欢迎使用支付宝对该项目进行捐赠](https://raw.githubusercontent.com/vzex/dog-tunnel/udpVersion/dog-tunnel.png)
 
 author: vzex@163.com
