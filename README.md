@@ -18,7 +18,7 @@ Here is some useful scripts:
 # server side dtunnel_lite
 
 #!/bin/sh
-killall dtunnel -9
+killall -9 dtunnel_lite
 sleep 2
 nice -n -20 /bin/dtunnel_lite -service 0.0.0.0:18080 -auth asecuritypassword &
 
