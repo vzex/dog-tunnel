@@ -140,7 +140,7 @@ func ServerCheck(sock *net.UDPConn) {
 						continue
 					}
 				} else {
-					session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, send: "", sock: sock, recvChan: make(chan string), closed: false, sendChan: make(chan string, 10), timeChan: make(chan int64), quitChan: make(chan bool), recvChan2: make(chan string)}
+					session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, send: "", sock: sock, recvChan: make(chan string), closed: false, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool), recvChan2: make(chan string)}
 					if *authKey == "" {
 						session.authed = true
 					}
@@ -345,7 +345,7 @@ func Listen(addr string) *net.UDPConn {
 }
 
 func CreateUDPSession(id int) {
-	session := &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, send: "", id: id, sendChan: make(chan string, 10), timeChan: make(chan int64), quitChan: make(chan bool)}
+	session := &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, send: "", id: id, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool)}
 	if *authKey == "" {
 		session.authed = true
 	}
@@ -474,7 +474,7 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
 		if l == 0 {
 			return 0, errors.New("force quit for read error")
 		} else {
-			session.timeChan <- time.Now().Unix() + 20
+			go func() { session.timeChan <- time.Now().Unix() + 20 }()
 			session.send = ""
 			return l, nil
 		}
@@ -492,7 +492,7 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
 					copy(p, d)
 					hr = int32(len(d))
 				}
-				session.timeChan <- time.Now().Unix() + 20
+				go func() { session.timeChan <- time.Now().Unix() + 20 }()
 				session.send = ""
 				//log.Println("real recv client", hr)
 				return int(hr), nil
@@ -568,9 +568,7 @@ func (session *UDPMakeSession) ClientCheck() {
 				}
 			case s := <-session.recvChan2:
 				if !session.closed {
-					debug("recv2 begin")
-					session.recvChan <- s
-					debug("recv2 end")
+					go func() { session.recvChan <- s }()
 				} else {
 					log.Println("force breakout")
 					break out
@@ -1179,7 +1177,7 @@ func (sc *Client) removeSession(sessionId string) bool {
 }
 
 func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, content string) {
-	debug("recv p2p tunnel", sessionId, action, content)
+	debug("recv p2p tunnel", sessionId, action, len(content))
 	session := sc.getSession(sessionId)
 	var conn net.Conn
 	if session != nil {
@@ -1253,7 +1251,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 					return
 				} else {
 					sc.sessions[sessionId] = &clientSession{pipe: pipe, localConn: s_conn, quit: make(chan bool)}
-					go handleLocalPortResponse(sc, sessionId)
+					go handleLocalPortResponse(sc, sessionId, "")
 				}
 			} else {
 				session = &clientSession{pipe: pipe, localConn: nil, status: "init", recvMsg: "", quit: make(chan bool)}
@@ -1295,7 +1293,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 						go common.WriteCrypt(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]), sc.encode)
 					} else {
 						session.localConn = s_conn
-						go handleLocalPortResponse(sc, sessionId)
+						go handleLocalPortResponse(sc, sessionId, hello.url)
 						ansmsg.gen(&hello, 0)
 						go common.WriteCrypt(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]), sc.encode)
 					}
@@ -1435,7 +1433,7 @@ func (sc *Client) Run(index int, specPipe string) {
 	}()
 }
 
-func handleLocalPortResponse(client *Client, id string) {
+func handleLocalPortResponse(client *Client, id, url string) {
 	sessionId := id
 	session := client.getSession(sessionId)
 	if session == nil {
@@ -1460,16 +1458,18 @@ func handleLocalPortResponse(client *Client, id string) {
 		t.Stop()
 	}()
 	arr := make([]byte, 1000)
+	debug("@@@@@@@ debug begin", url)
 	reader := bufio.NewReader(conn)
 	for {
 		size, err := reader.Read(arr)
 		if err != nil {
 			break
 		}
-		//log.Println("debug read", size)
+		debug("====debug read", size, url)
 		if common.WriteCrypt(session.pipe, id, "tunnel_msg_s", string(arr[0:size]), client.encode) != nil {
 			break
 		}
+		debug("!!!!debug write", size, url)
 	}
 	// log.Println("handlerlocal down")
 	if client.removeSession(sessionId) {
