@@ -3,13 +3,13 @@
 ## Introduction
 This tunnel is a lite version if dog-tunnel, and actions without a middle server, has no ability of udp traversal, but simple and faster
 ### Example
-the server side should have a public ip , such as 101.178.19.109, please replace it with your own ip
+the server side should have a public ip , such as xxx.xxx.xxx.xxx, please replace it with your own ip
 first, start a server
 server: ./dtunnel_lite -v -service 127.0.0.1:1234 -dnscache 10
 
 then start a client, you can seed the example below:
 socks5 example:
-client: ./dtunnel_lite -v -service 101.178.19.109:1234 -local :8787
+client: ./dtunnel_lite -v -service xxx.xxx.xxx.xxx:1234 -local :8787
 
 Then you can connect to socks5 proxy with 127.0.0.1:8787
 
@@ -28,7 +28,7 @@ nice -n -20 /bin/dtunnel_lite -service 0.0.0.0:18080 -auth asecuritypassword &
 
 #!/bin/sh
 killall -9 dtunnel_lite
-dtunnel_lite -service 218.101.your.serverip:18080 -local :8070 -auth asecuritypassword &
+dtunnel_lite -service this.is.your.serverip:18080 -local :8070 -auth asecuritypassword &
 ```
 
 ssh port forward example:
