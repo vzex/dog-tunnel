@@ -91,38 +91,54 @@ func Write(conn net.Conn, id string, action string, content string) error {
 
 type ReadCallBack func(conn net.Conn, id string, action string, arg string)
 
+func ReadUDP(conn net.Conn, callback ReadCallBack, bufsize int) {
+	//bufio.Scanner not work for large data, because the udppipe.Read(b []byte) func can't read a non-complete data to b
+	buffer := make([]byte, bufsize)
+	for {
+		n, err := conn.Read(buffer)
+		if err != nil {
+			println(err.Error())
+			break
+		}
+		split(buffer[:n], false, conn, callback)
+	}
+}
+
+func split(data []byte, atEOF bool, conn net.Conn, callback ReadCallBack) (adv int, token []byte, err error) {
+	l := len(data)
+	if l < headerLen*3 {
+		return 0, nil, nil
+	}
+	if l > 1024*1024 {
+		conn.Close()
+		log.Println("invalid query!")
+		return 0, nil, errors.New("to large data!")
+	}
+	var l1, l2, l3 uint32
+	buf := bytes.NewReader(data)
+	binary.Read(buf, binary.LittleEndian, &l1)
+	binary.Read(buf, binary.LittleEndian, &l2)
+	binary.Read(buf, binary.LittleEndian, &l3)
+	tail := l - headerLen*3
+	if tail < int(l1+l2+l3) {
+		return 0, nil, nil
+	}
+	id := make([]byte, l1)
+	action := make([]byte, l2)
+	content := make([]byte, l3)
+	binary.Read(buf, binary.LittleEndian, &id)
+	binary.Read(buf, binary.LittleEndian, &action)
+	binary.Read(buf, binary.LittleEndian, &content)
+	callback(conn, string(id), Xor(string(action)), string(content))
+	//println("read11!!", l1,l2, l3,string(id), Xor(string(action)), string(content))
+	return headerLen*3 + int(l1+l2+l3), []byte{}, nil
+}
+
 func Read(conn net.Conn, callback ReadCallBack) {
 	scanner := bufio.NewScanner(conn)
-	split := func(data []byte, atEOF bool) (adv int, token []byte, err error) {
-		l := len(data)
-		if l < headerLen*3 {
-			return 0, nil, nil
-		}
-		if l > 1024*1024 {
-			conn.Close()
-			log.Println("invalid query!")
-			return 0, nil, errors.New("to large data!")
-		}
-		var l1, l2, l3 uint32
-		buf := bytes.NewReader(data)
-		binary.Read(buf, binary.LittleEndian, &l1)
-		binary.Read(buf, binary.LittleEndian, &l2)
-		binary.Read(buf, binary.LittleEndian, &l3)
-		tail := l - headerLen*3
-		if tail < int(l1+l2+l3) {
-			return 0, nil, nil
-		}
-		id := make([]byte, l1)
-		action := make([]byte, l2)
-		content := make([]byte, l3)
-		binary.Read(buf, binary.LittleEndian, &id)
-		binary.Read(buf, binary.LittleEndian, &action)
-		binary.Read(buf, binary.LittleEndian, &content)
-		callback(conn, string(id), Xor(string(action)), string(content))
-		//println("read11!!", l1,l2, l3,string(id), Xor(string(action)), string(content))
-		return headerLen*3 + int(l1+l2+l3), []byte{}, nil
-	}
-	scanner.Split(split)
+	scanner.Split(func(data []byte, atEOF bool) (adv int, token []byte, err error) {
+		return split(data, atEOF, conn, callback)
+	})
 	for scanner.Scan() {
 	}
 	if scanner.Err() != nil {

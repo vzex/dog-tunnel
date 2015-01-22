@@ -43,6 +43,8 @@ var bDebug = flag.Bool("debug", false, "more output log")
 var remoteConn net.Conn
 var clientType = 1
 
+const writeBufferSize = 5000 //udp writer will add some data for checksum or encrypt
+const readBufferSize = 7000  //so reader must be larger
 type dnsInfo struct {
 	Ip                  string
 	Status              string
@@ -97,6 +99,9 @@ type UDPMakeSession struct {
 	closed         bool
 	action         string
 	authed         bool
+
+	readBuffer    []byte
+	processBuffer []byte
 }
 
 func iclock() int32 {
@@ -140,7 +145,7 @@ func ServerCheck(sock *net.UDPConn) {
 						continue
 					}
 				} else {
-					session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, send: "", sock: sock, recvChan: make(chan string), closed: false, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool), recvChan2: make(chan string)}
+					session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, send: "", sock: sock, recvChan: make(chan string), closed: false, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool), recvChan2: make(chan string), readBuffer: make([]byte, readBufferSize), processBuffer: make([]byte, readBufferSize)}
 					if *authKey == "" {
 						session.authed = true
 					}
@@ -345,7 +350,7 @@ func Listen(addr string) *net.UDPConn {
 }
 
 func CreateUDPSession(id int) {
-	session := &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, send: "", id: id, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool)}
+	session := &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, send: "", id: id, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool), readBuffer: make([]byte, readBufferSize), processBuffer: make([]byte, readBufferSize)}
 	if *authKey == "" {
 		session.authed = true
 	}
@@ -479,18 +484,19 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
 			return l, nil
 		}
 	} else {
-		tmp := make([]byte, 2000)
+		tmp := session.readBuffer
 		for {
 			if session.closed {
 				return 0, errors.New("force quit")
 			}
-			hr := ikcp.Ikcp_recv(session.kcp, tmp, 2000)
+			hr := ikcp.Ikcp_recv(session.kcp, tmp, readBufferSize)
 			if hr > 0 {
-				copy(p, tmp[:hr])
 				if session.decode != nil {
-					d := session.decode(p[:hr])
+					d := session.decode(tmp[:hr])
 					copy(p, d)
 					hr = int32(len(d))
+				} else {
+					copy(p, tmp[:hr])
 				}
 				go func() { session.timeChan <- time.Now().Unix() + 20 }()
 				session.send = ""
@@ -526,8 +532,8 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
 
 func (session *UDPMakeSession) Process() {
 	for {
-		tmp := make([]byte, 2000)
-		hr := ikcp.Ikcp_recv(session.kcp, tmp, 2000)
+		tmp := session.processBuffer
+		hr := ikcp.Ikcp_recv(session.kcp, tmp, readBufferSize)
 		//println("loop", hr)
 		if hr > 0 {
 			if session.decode != nil {
@@ -537,7 +543,8 @@ func (session *UDPMakeSession) Process() {
 			}
 			//log.Println("try recv", hr)
 			if !session.closed && hr > 0 {
-				go func() { session.recvChan2 <- string(tmp[:hr]) }()
+				s := string(tmp[:hr])
+				go func() { session.recvChan2 <- s }()
 			}
 			//log.Println("try recved", hr)
 		} else {
@@ -939,7 +946,7 @@ func main() {
 		}
 		g_ClientMap = make(map[string]*Client)
 		g_MakeSession = make(map[string]*UDPMakeSession)
-		tempBuff = make([]byte, 2000)
+		tempBuff = make([]byte, readBufferSize)
 		if clientType == 0 {
 			if *bTcp {
 				TCPListen(*serviceAddr)
@@ -1407,7 +1414,7 @@ func (sc *Client) Run(index int, specPipe string) {
 						pipe.(*UDPMakeSession).timeChan <- time.Now().Unix() + 20
 						log.Println("client begin read", index)
 						pipe.(*UDPMakeSession).Auth()
-						common.Read(pipe, callback)
+						common.ReadUDP(pipe, callback, readBufferSize)
 						log.Println("client end read", index)
 						if clientType == 0 {
 							sc.Quit()
@@ -1457,7 +1464,7 @@ func handleLocalPortResponse(client *Client, id, url string) {
 		}
 		t.Stop()
 	}()
-	arr := make([]byte, 1000)
+	arr := make([]byte, writeBufferSize)
 	debug("@@@@@@@ debug begin", url)
 	reader := bufio.NewReader(conn)
 	for {
@@ -1493,7 +1500,7 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 	if *remoteAction != "socks5" {
 		common.WriteCrypt(pipe, sessionId, "tunnel_open", "", client.encode)
 	}
-	arr := make([]byte, 1000)
+	arr := make([]byte, writeBufferSize)
 	reader := bufio.NewReader(conn)
 	bParsed := false
 	bNeedBreak := false
