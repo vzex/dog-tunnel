@@ -584,7 +584,7 @@ func (session *UDPMakeSession) ClientCheck() {
 		}
 	}()
 	go func() {
-		t := time.NewTicker(40 * time.Millisecond)
+		t := time.NewTicker(10 * time.Millisecond)
 		defer func() {
 			if err := recover(); err != nil {
 				session.Close()
