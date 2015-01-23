@@ -575,7 +575,7 @@ func (session *UDPMakeSession) ClientCheck() {
 				}
 			case s := <-session.recvChan2:
 				if !session.closed {
-					go func() { session.recvChan <- s }()
+					session.recvChan <- s
 				} else {
 					log.Println("force breakout")
 					break out
@@ -604,6 +604,9 @@ func (session *UDPMakeSession) ClientCheck() {
 				session.Auth()
 				go common.Write(session, "-1", "ping", "")
 			case over := <-session.timeChan:
+				if session.closed {
+					break out
+				}
 				session.overTime = over
 				if time.Now().Unix() > session.overTime {
 					log.Println("remove over time udp", session.overTime, time.Now().Unix())
@@ -690,7 +693,6 @@ func (session *UDPMakeSession) Close() error {
 	} else {
 		log.Println("remove udp pipe", addr, session.id)
 	}
-	close(session.timeChan)
 	close(session.quitChan)
 	if session.sendChan != nil {
 		close(session.sendChan)
