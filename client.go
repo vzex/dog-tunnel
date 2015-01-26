@@ -39,6 +39,7 @@ var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 
 var bDebug = flag.Bool("debug", false, "more output log")
+var bReverse = flag.Bool("r", false, "reverse mode")
 
 var remoteConn net.Conn
 var clientType = 1
@@ -257,7 +258,7 @@ func CreateTCPSession(idindex int) bool {
 		return false
 	}
 	id := *serviceAddr
-	client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), specPipes: make(map[string]net.Conn), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
+	client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
 	client.pipes[0] = s_conn
 	g_ClientMap[id] = client
 	callback := func(conn net.Conn, sessionId, action, content string) {
@@ -308,7 +309,7 @@ func TCPListen(addr string) bool {
 
 			id := conn.RemoteAddr().String()
 			log.Println("add tcp session", id)
-			client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), specPipes: make(map[string]net.Conn), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
+			client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
 			client.pipes[0] = conn
 			if *authKey == "" {
 				client.authed = true
@@ -729,7 +730,7 @@ func (session *UDPMakeSession) SetStatusAndSend(status, content string) {
 		client, have := g_ClientMap[session.idstr]
 		log.Println("add udp session", session.id, session.remote, have)
 		if !have {
-			client = &Client{id: session.idstr, ready: true, bUdp: true, sessions: make(map[string]*clientSession), specPipes: make(map[string]net.Conn), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
+			client = &Client{id: session.idstr, ready: true, bUdp: true, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
 			g_ClientMap[session.idstr] = client
 		}
 		client.action = session.action
@@ -1147,7 +1148,6 @@ type Client struct {
 	id             string
 	buster         bool
 	pipes          map[int]net.Conn          // client for pipes
-	specPipes      map[string]net.Conn       // client for pipes
 	sessions       map[string]*clientSession // session to pipeid
 	ready          bool
 	bUdp           bool
@@ -1156,6 +1156,7 @@ type Client struct {
 	addSession     chan *UDPMakeSession
 	encode, decode func([]byte) []byte
 	authed         bool
+	localconn      net.Conn
 }
 
 // pipe : client to client
@@ -1530,4 +1531,8 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 	}
 	common.WriteCrypt(pipe, sessionId, "tunnel_close", "", client.encode)
 	client.removeSession(sessionId)
+}
+
+func isServer() bool {
+	return (clientType == 0 || *bReverse)
 }
