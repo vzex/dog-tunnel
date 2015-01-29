@@ -39,6 +39,7 @@ var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 
 var bDebug = flag.Bool("debug", false, "more output log")
+var dropRate = flag.Int("drop", 0, "drop drop% data,0-100")
 
 var remoteConn net.Conn
 var clientType = 1
@@ -109,6 +110,11 @@ func iclock() int32 {
 }
 
 func udp_output(buf []byte, _len int32, kcp *ikcp.Ikcpcb, user interface{}) int32 {
+	if *dropRate > 0 {
+		if rand.Intn(100) <= *dropRate {
+			return 0
+		}
+	}
 	c := user.(*UDPMakeSession)
 	//log.Println("send udp", _len, c.remote.String())
 	c.sock.WriteTo(buf[:_len], c.remote)
