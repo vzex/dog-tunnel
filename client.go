@@ -39,7 +39,7 @@ var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 
 var bDebug = flag.Bool("debug", false, "more output log")
-var dropRate = flag.Int("drop", 0, "drop drop% data,0-100")
+var dropRate = flag.Int("drop", 0, "drop n% data,0-100")
 var bReverse = flag.Bool("r", false, "reverse mode")
 
 var remoteConn net.Conn
