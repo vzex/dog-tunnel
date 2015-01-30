@@ -37,6 +37,7 @@ var bShowVersion = flag.Bool("version", false, "show version")
 var bLoadSettingFromFile = flag.Bool("f", false, "load setting from file(~/.dtunnel)")
 var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
+var timeOut = flag.Int("timeout", 20, "udp pipe set timeout(seconds)")
 
 var bDebug = flag.Bool("debug", false, "more output log")
 var dropRate = flag.Int("drop", 0, "drop n% data,0-100")
@@ -104,6 +105,7 @@ type UDPMakeSession struct {
 
 	readBuffer    []byte
 	processBuffer []byte
+	timeout       int64
 }
 
 func iclock() int32 {
@@ -152,7 +154,7 @@ func ServerCheck(sock *net.UDPConn) {
 						continue
 					}
 				} else {
-					session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, send: "", sock: sock, recvChan: make(chan string), closed: false, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool), recvChan2: make(chan string), readBuffer: make([]byte, readBufferSize), processBuffer: make([]byte, readBufferSize)}
+					session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, send: "", sock: sock, recvChan: make(chan string), closed: false, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool), recvChan2: make(chan string), readBuffer: make([]byte, readBufferSize), processBuffer: make([]byte, readBufferSize), timeout: 20}
 					if *authKey == "" {
 						session.authed = true
 					}
@@ -357,7 +359,7 @@ func Listen(addr string) *net.UDPConn {
 }
 
 func CreateUDPSession(id int) {
-	session := &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, send: "", id: id, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool), readBuffer: make([]byte, readBufferSize), processBuffer: make([]byte, readBufferSize)}
+	session := &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, send: "", id: id, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool), readBuffer: make([]byte, readBufferSize), processBuffer: make([]byte, readBufferSize), timeout: 20}
 	if *authKey == "" {
 		session.authed = true
 	}
@@ -486,7 +488,7 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
 		if l == 0 {
 			return 0, errors.New("force quit for read error")
 		} else {
-			go func() { session.timeChan <- time.Now().Unix() + 20 }()
+			go func() { session.timeChan <- time.Now().Unix() + session.timeout }()
 			session.send = ""
 			return l, nil
 		}
@@ -505,7 +507,7 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
 				} else {
 					copy(p, tmp[:hr])
 				}
-				go func() { session.timeChan <- time.Now().Unix() + 20 }()
+				go func() { session.timeChan <- time.Now().Unix() + session.timeout }()
 				session.send = ""
 				//log.Println("real recv client", hr)
 				return int(hr), nil
@@ -746,6 +748,10 @@ func (session *UDPMakeSession) SetStatusAndSend(status, content string) {
 		client.addSession <- session
 		log.Println("add common session", session.id)
 		if clientType == 1 && !have {
+			if *timeOut > 0 {
+				session.timeout = int64(*timeOut)
+				common.Write(net.Conn(session), "-1", "settimeout", strconv.Itoa(*timeOut))
+			}
 			client.MultiListen()
 		}
 	}
@@ -1212,6 +1218,10 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		return
 	}
 	switch action {
+	case "settimeout":
+		timeout, _ := strconv.Atoi(content)
+		log.Println("set timeout", timeout)
+		pipe.(*UDPMakeSession).timeout = int64(timeout)
 	case "authfail":
 		bForceQuit = true
 		fmt.Println("auth key not eq")
@@ -1420,7 +1430,7 @@ func (sc *Client) Run(index int, specPipe string) {
 								sc.OnTunnelRecv(conn, sessionId, action, content)
 							}
 						}
-						pipe.(*UDPMakeSession).timeChan <- time.Now().Unix() + 20
+						pipe.(*UDPMakeSession).timeChan <- time.Now().Unix() + session.timeout
 						log.Println("client begin read", index)
 						pipe.(*UDPMakeSession).Auth()
 						common.ReadUDP(pipe, callback, readBufferSize)
