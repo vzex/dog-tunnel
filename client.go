@@ -187,8 +187,10 @@ func ServerCheck(sock *net.UDPConn) {
 					} else {
 						if len(arr[0]) > 10 {
 							log.Println("status invalid", session.status, arr[0][:10])
+							session.SetStatusAndSend(session.status, "reset")
 						} else {
 							log.Println("status invalid", session.status, arr[0])
+							session.SetStatusAndSend(session.status, "reset")
 						}
 					}
 				case "1ack":
@@ -198,6 +200,7 @@ func ServerCheck(sock *net.UDPConn) {
 						}
 					} else {
 						log.Println("status invalid", session.status, arr[0][:10])
+						session.SetStatusAndSend(session.status, "reset")
 					}
 				}
 				//log.Println("debug out.........")
@@ -509,7 +512,7 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
 				}
 				go func() { session.timeChan <- time.Now().Unix() + session.timeout }()
 				session.send = ""
-				//log.Println("real recv client", hr)
+				//log.Println("real recv client", hr, string(p))
 				return int(hr), nil
 			}
 			bHave := false
@@ -526,7 +529,10 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
 				if session.closed {
 					return 0, errors.New("force quit")
 				}
-				//debug("redirect", n)
+				debug("redirect", n)
+				if n == 5 && common.Xor(string(tmp[:n])) == "reset" {
+					return 0, errors.New("force reset")
+				}
 				ikcp.Ikcp_input(session.kcp, tmp[:n], n)
 				bHave = true
 				break
@@ -638,6 +644,9 @@ func (session *UDPMakeSession) ClientCheck() {
 					if session.send != "" {
 						log.Println("try send", session.send, session.remote)
 						session.sock.WriteToUDP([]byte(common.Xor(session.send)), session.remote)
+						if session.send == "reset" {
+							session.quitChan <- true
+						}
 					}
 				}
 			}
@@ -657,6 +666,9 @@ out:
 			data := common.Xor(string(buf[:n]))
 			log.Println("head recv", data, from)
 			arr := strings.Split(data, "@")
+			if len(arr) > 0 && arr[0] == "reset" {
+				break out
+			}
 			switch session.status {
 			case "1snd":
 				if len(arr) > 1 {
