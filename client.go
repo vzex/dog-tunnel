@@ -698,10 +698,8 @@ func (session *UDPMakeSession) Close() error {
 		return nil
 	}
 	session.closed = true
-	if clientType == 1 {
-		if session.sock != nil {
-			session.sock.Close()
-		}
+	if session.sock != nil {
+		session.sock.Close()
 	}
 	var addr string
 	if session.remote != nil {
