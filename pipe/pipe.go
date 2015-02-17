@@ -124,7 +124,7 @@ func (l *Listener) inner_loop() {
 			} else {
 				status, _ := makeDecode(l.readBuffer[:n])
 				if status != FirstSYN {
-					sock.WriteToUDP(makeEncode(Reset, 0), from)
+					go sock.WriteToUDP(makeEncode(Reset, 0), from)
 					continue
 				}
 				sessionId, _ := strconv.Atoi(common.GetId("udp"))
