@@ -3,6 +3,7 @@ package main
 import (
 	"./common"
 	"./ikcp"
+	"./pipe"
 	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
@@ -334,6 +335,89 @@ func TCPListen(addr string) bool {
 	return true
 }
 
+func CreateUDPSession(idindex int) bool {
+	s_conn, err := pipe.DialTimeout(*serviceAddr, 30)
+	log.Println("try dial", *serviceAddr, "ok")
+	if err != nil {
+		log.Println("try dial err", err.Error())
+		return false
+	}
+	id := *serviceAddr
+	client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
+	client.pipes[0] = s_conn
+	g_ClientMap[id] = client
+	callback := func(conn net.Conn, sessionId, action, content string) {
+		if client.decode != nil {
+			content = string(client.decode([]byte(content)))
+		}
+		client.OnTunnelRecv(conn, sessionId, action, content)
+	}
+	go client.MultiListen()
+	if *authKey != "" {
+		common.Write(s_conn, "-1", "auth", common.Xor(*authKey))
+	}
+	client.authed = true
+	if *bEncrypt {
+		encrypt_tail := string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
+		aesKey := "asd4" + encrypt_tail
+		log.Println("debug aeskey", encrypt_tail)
+		aesBlock, _ := aes.NewCipher([]byte(aesKey))
+		common.Write(s_conn, "-1", "tcp_init_enc", common.Xor(encrypt_tail))
+		client.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
+	}
+	common.WriteCrypt(s_conn, "-1", "tcp_init_action", *remoteAction, client.encode)
+	common.ReadUDP(s_conn, callback, readBufferSize)
+	delete(g_ClientMap, id)
+	log.Println("remove udp session", id)
+	delete(client.pipes, 0)
+	if g_LocalConn != nil {
+		g_LocalConn.Close()
+	}
+	return true
+}
+func UDPListen(addr string) bool {
+	var err error
+	g_LocalConn, err = pipe.Listen(addr)
+	if err != nil {
+		log.Println("cannot listen addr:" + err.Error())
+		return false
+	}
+	println("service start success,please connect", addr)
+	func() {
+		for {
+			conn, err := g_LocalConn.Accept()
+			if err != nil {
+				log.Println("server err:", err.Error())
+				break
+			}
+			//log.Println("client", sc.id, "create session", sessionId)
+
+			id := conn.RemoteAddr().String()
+			log.Println("add udp session", id)
+			client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
+			client.pipes[0] = conn
+			if *authKey == "" {
+				client.authed = true
+			}
+			g_ClientMap[id] = client
+			go client.UDPServerProcess(id)
+			//go handleLocalServerResponse(sc, sessionId)
+		}
+		g_LocalConn = nil
+	}()
+	return true
+}
+func (client *Client) UDPServerProcess(id string) {
+	callback := func(conn net.Conn, sessionId, action, content string) {
+		if client.decode != nil {
+			content = string(client.decode([]byte(content)))
+		}
+		client.OnTunnelRecv(conn, sessionId, action, content)
+	}
+	common.ReadUDP(client.pipes[0], callback, readBufferSize)
+	delete(g_ClientMap, id)
+	log.Println("remove udp session", id)
+}
 func (client *Client) TCPServerProcess(id string) {
 	callback := func(conn net.Conn, sessionId, action, content string) {
 		if client.decode != nil {
@@ -361,7 +445,7 @@ func Listen(addr string) *net.UDPConn {
 	return sock
 }
 
-func CreateUDPSession(id int) {
+func Cre2ateUDPSession(id int) {
 	session := &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, send: "", id: id, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool), readBuffer: make([]byte, readBufferSize), processBuffer: make([]byte, readBufferSize), timeout: 100}
 	if *authKey == "" {
 		session.authed = true
@@ -976,10 +1060,7 @@ func main() {
 			if *bTcp {
 				TCPListen(*serviceAddr)
 			} else {
-				sock := Listen(*serviceAddr)
-				if sock != nil {
-					ServerCheck(sock)
-				}
+				UDPListen(*serviceAddr)
 			}
 		} else {
 			if *bTcp {
@@ -1215,11 +1296,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	if session != nil {
 		conn = session.localConn
 	}
-	if !*bTcp && !pipe.(*UDPMakeSession).CheckAuth(action, content) {
-		go common.Write(pipe, sessionId, "authfail", "")
-		return
-	}
-	if clientType == 0 && *bTcp && !sc.authed {
+	if clientType == 0 && !sc.authed {
 		if action != "auth" || common.Xor(content) != *authKey {
 			go common.Write(pipe, sessionId, "authfail", "")
 			return
@@ -1376,11 +1453,7 @@ func (sc *Client) MultiListen() bool {
 			for {
 				conn, err := g_LocalConn.Accept()
 				if err != nil {
-					if bForceQuit || *bTcp {
-						break
-					} else {
-						continue
-					}
+					break
 				}
 				sessionId := common.GetId("udp")
 				pipe := sc.getOnePipe()
@@ -1523,9 +1596,6 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 		return
 	}
 	conn := session.localConn
-	if !*bTcp {
-		pipe.(*UDPMakeSession).Auth()
-	}
 	if *remoteAction != "socks5" {
 		common.WriteCrypt(pipe, sessionId, "tunnel_open", "", client.encode)
 	}
