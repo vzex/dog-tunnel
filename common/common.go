@@ -26,7 +26,7 @@ func init() {
 	headerLen = binary.Size(uint32(1))
 }
 
-const Version = 0.60
+const Version = 0.70
 
 type ClientSetting struct {
 	AccessKey string
