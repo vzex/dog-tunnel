@@ -2,14 +2,12 @@ package main
 
 import (
 	"./common"
-	"./ikcp"
 	"./pipe"
 	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
 	_ "crypto/tls"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -27,6 +25,7 @@ import (
 )
 
 var authKey = flag.String("auth", "", "key for auth")
+var pipeN = flag.Int("pipe", 1, "pipe num")
 var bTcp = flag.Bool("tcp", false, "use tcp to replace udp")
 var xorData = flag.String("xor", "", "xor key,c/s must use a some key")
 
@@ -44,11 +43,8 @@ var bDebug = flag.Bool("debug", false, "more output log")
 var dropRate = flag.Int("drop", 0, "drop n% data,0-100")
 var bReverse = flag.Bool("r", false, "reverse mode")
 
-var remoteConn net.Conn
 var clientType = 1
 
-const writeBufferSize = 5000 //udp writer will add some data for checksum or encrypt
-const readBufferSize = 7000  //so reader must be larger
 type dnsInfo struct {
 	Ip                  string
 	Status              string
@@ -85,138 +81,11 @@ var g_ClientMap map[string]*Client
 var markName = ""
 var bForceQuit = false
 
-type UDPMakeSession struct {
-	id             int
-	idstr          string
-	status         string
-	overTime       int64
-	recvChan       chan string
-	recvChan2      chan string
-	sendChan       chan string
-	timeChan       chan int64
-	quitChan       chan bool
-	sock           *net.UDPConn
-	remote         *net.UDPAddr
-	send           string
-	kcp            *ikcp.Ikcpcb
-	encode, decode func([]byte) []byte
-	closed         bool
-	action         string
-	authed         bool
-
-	readBuffer    []byte
-	processBuffer []byte
-	timeout       int64
-}
-
 func iclock() int32 {
 	return int32((time.Now().UnixNano() / 1000000) & 0xffffffff)
 }
 
-func udp_output(buf []byte, _len int32, kcp *ikcp.Ikcpcb, user interface{}) int32 {
-	if *dropRate > 0 {
-		if rand.Intn(100) <= *dropRate {
-			return 0
-		}
-	}
-	c := user.(*UDPMakeSession)
-	//log.Println("send udp", _len, c.remote.String())
-	c.sock.WriteTo(buf[:_len], c.remote)
-	return 0
-}
-
 var tempBuff []byte
-var g_MakeSession map[string]*UDPMakeSession
-
-func ServerCheck(sock *net.UDPConn) {
-	println("begin check")
-	defer func() {
-		if err := recover(); err != nil {
-			log.Println("restart server!", err)
-			ServerCheck(sock)
-		}
-	}()
-	func() {
-	out:
-		for {
-			sock.SetReadDeadline(time.Now().Add(2 * time.Second))
-			n, from, err := sock.ReadFromUDP(tempBuff)
-			if err == nil {
-				//log.Println("recv", string(tempBuff[:10]), from)
-				addr := from.String()
-				session, bHave := g_MakeSession[addr]
-				if bHave {
-					if session.status == "ok" {
-						if session.remote.String() == from.String() {
-							//log.Println("input msg", n)
-							ikcp.Ikcp_input(session.kcp, tempBuff[:n], n)
-							session.Process()
-						}
-						continue
-					}
-				} else {
-					session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, send: "", sock: sock, recvChan: make(chan string), closed: false, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool), recvChan2: make(chan string), readBuffer: make([]byte, readBufferSize), processBuffer: make([]byte, readBufferSize), timeout: 100}
-					if *authKey == "" {
-						session.authed = true
-					}
-					g_MakeSession[addr] = session
-					go session.ClientCheck()
-				}
-				arr := strings.Split(common.Xor(string(tempBuff[:n])), "@")
-				switch session.status {
-				case "init":
-					if len(arr) > 1 {
-						if arr[0] == "1snd" {
-							session.idstr = arr[1]
-							session.id, _ = strconv.Atoi(session.idstr)
-							if len(arr) > 2 {
-								session.action = arr[2]
-							} else {
-								session.action = "socks5"
-							}
-							if len(arr) > 3 {
-								tail := arr[3]
-								if tail != "" {
-									log.Println("got encrpyt key", tail)
-									aesKey := "asd4" + tail
-									aesBlock, _ := aes.NewCipher([]byte(aesKey))
-									session.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
-								}
-							}
-							session.SetStatusAndSend("1ack", "1ack@"+session.idstr)
-						}
-					} else {
-						if len(arr[0]) > 10 {
-							log.Println("status invalid", session.status, arr[0][:10])
-							session.SetStatusAndSend(session.status, "reset")
-						} else {
-							log.Println("status invalid", session.status, arr[0])
-							session.SetStatusAndSend(session.status, "reset")
-						}
-					}
-				case "1ack":
-					if len(arr) > 1 {
-						if arr[0] == "2snd" && arr[1] == session.idstr {
-							session.SetStatusAndSend("ok", "2ack@"+session.idstr)
-						}
-					} else {
-						log.Println("status invalid", session.status, arr[0][:10])
-						session.SetStatusAndSend(session.status, "reset")
-					}
-				}
-				//log.Println("debug out.........")
-			} else if !err.(net.Error).Timeout() {
-				fmt.Println("recv error", err.Error(), from)
-				//time.Sleep(time.Second)
-				sock.Close()
-				break out
-			}
-			if bForceQuit {
-				break out
-			}
-		}
-	}()
-}
 
 func getEncodeFunc(aesBlock cipher.Block) func([]byte) []byte {
 	return func(s []byte) []byte {
@@ -262,17 +131,26 @@ func getDecodeFunc(aesBlock cipher.Block) func([]byte) []byte {
 	}
 }
 
-func CreateTCPSession(idindex int) bool {
-	s_conn, err := net.DialTimeout("tcp", *serviceAddr, 30*time.Second)
-	log.Println("try dial", *serviceAddr, "ok")
+func CreateSession(bIsTcp bool, idindex int) bool {
+	var s_conn net.Conn
+	var err error
+	if bIsTcp {
+		s_conn, err = net.DialTimeout("tcp", *serviceAddr, 30*time.Second)
+	} else {
+		s_conn, err = pipe.DialTimeout(*serviceAddr, *timeOut)
+	}
 	if err != nil {
 		log.Println("try dial err", err.Error())
 		return false
 	}
+	log.Println("try dial", *serviceAddr, "ok")
 	id := *serviceAddr
-	client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
-	client.pipes[0] = s_conn
-	g_ClientMap[id] = client
+	client, bHave := g_ClientMap[id]
+	if !bHave {
+		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool)}
+		g_ClientMap[id] = client
+	}
+	client.pipes[idindex] = s_conn
 	callback := func(conn net.Conn, sessionId, action, content string) {
 		if client.decode != nil {
 			content = string(client.decode([]byte(content)))
@@ -293,18 +171,26 @@ func CreateTCPSession(idindex int) bool {
 		client.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
 	}
 	common.WriteCrypt(s_conn, "-1", "tcp_init_action", *remoteAction, client.encode)
-	common.Read(s_conn, callback)
+	if bIsTcp {
+		common.Read(s_conn, callback)
+	} else {
+		common.ReadUDP(s_conn, callback, pipe.ReadBufferSize)
+	}
 	delete(g_ClientMap, id)
 	log.Println("remove tcp session", id)
-	delete(client.pipes, 0)
+	delete(client.pipes, idindex)
 	if g_LocalConn != nil {
 		g_LocalConn.Close()
 	}
 	return true
 }
-func TCPListen(addr string) bool {
+func Listen(bIsTcp bool, addr string) bool {
 	var err error
-	g_LocalConn, err = net.Listen("tcp", addr)
+	if bIsTcp {
+		g_LocalConn, err = net.Listen("tcp", addr)
+	} else {
+		g_LocalConn, err = pipe.Listen(addr)
+	}
 	if err != nil {
 		log.Println("cannot listen addr:" + err.Error())
 		return false
@@ -320,534 +206,41 @@ func TCPListen(addr string) bool {
 			//log.Println("client", sc.id, "create session", sessionId)
 
 			id := conn.RemoteAddr().String()
-			log.Println("add tcp session", id)
-			client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
-			client.pipes[0] = conn
-			if *authKey == "" {
-				client.authed = true
-			}
-			g_ClientMap[id] = client
-			go client.TCPServerProcess(id)
-			//go handleLocalServerResponse(sc, sessionId)
-		}
-		g_LocalConn = nil
-	}()
-	return true
-}
-
-func CreateUDPSession(idindex int) bool {
-	s_conn, err := pipe.DialTimeout(*serviceAddr, 30)
-	log.Println("try dial", *serviceAddr, "ok")
-	if err != nil {
-		log.Println("try dial err", err.Error())
-		return false
-	}
-	id := *serviceAddr
-	client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
-	client.pipes[0] = s_conn
-	g_ClientMap[id] = client
-	callback := func(conn net.Conn, sessionId, action, content string) {
-		if client.decode != nil {
-			content = string(client.decode([]byte(content)))
-		}
-		client.OnTunnelRecv(conn, sessionId, action, content)
-	}
-	go client.MultiListen()
-	if *authKey != "" {
-		common.Write(s_conn, "-1", "auth", common.Xor(*authKey))
-	}
-	client.authed = true
-	if *bEncrypt {
-		encrypt_tail := string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
-		aesKey := "asd4" + encrypt_tail
-		log.Println("debug aeskey", encrypt_tail)
-		aesBlock, _ := aes.NewCipher([]byte(aesKey))
-		common.Write(s_conn, "-1", "tcp_init_enc", common.Xor(encrypt_tail))
-		client.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
-	}
-	common.WriteCrypt(s_conn, "-1", "tcp_init_action", *remoteAction, client.encode)
-	common.ReadUDP(s_conn, callback, readBufferSize)
-	delete(g_ClientMap, id)
-	log.Println("remove udp session", id)
-	delete(client.pipes, 0)
-	if g_LocalConn != nil {
-		g_LocalConn.Close()
-	}
-	return true
-}
-func UDPListen(addr string) bool {
-	var err error
-	g_LocalConn, err = pipe.Listen(addr)
-	if err != nil {
-		log.Println("cannot listen addr:" + err.Error())
-		return false
-	}
-	println("service start success,please connect", addr)
-	func() {
-		for {
-			conn, err := g_LocalConn.Accept()
-			if err != nil {
-				log.Println("server err:", err.Error())
-				break
-			}
-			//log.Println("client", sc.id, "create session", sessionId)
-
-			id := conn.RemoteAddr().String()
-			log.Println("add udp session", id)
-			client := &Client{id: id, ready: true, bUdp: false, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
-			client.pipes[0] = conn
-			if *authKey == "" {
-				client.authed = true
-			}
-			g_ClientMap[id] = client
-			go client.UDPServerProcess(id)
-			//go handleLocalServerResponse(sc, sessionId)
-		}
-		g_LocalConn = nil
-	}()
-	return true
-}
-func (client *Client) UDPServerProcess(id string) {
-	callback := func(conn net.Conn, sessionId, action, content string) {
-		if client.decode != nil {
-			content = string(client.decode([]byte(content)))
-		}
-		client.OnTunnelRecv(conn, sessionId, action, content)
-	}
-	common.ReadUDP(client.pipes[0], callback, readBufferSize)
-	delete(g_ClientMap, id)
-	log.Println("remove udp session", id)
-}
-func (client *Client) TCPServerProcess(id string) {
-	callback := func(conn net.Conn, sessionId, action, content string) {
-		if client.decode != nil {
-			content = string(client.decode([]byte(content)))
-		}
-		client.OnTunnelRecv(conn, sessionId, action, content)
-	}
-	common.Read(client.pipes[0], callback)
-	delete(g_ClientMap, id)
-	log.Println("remove tcp session", id)
-}
-
-func Listen(addr string) *net.UDPConn {
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		fmt.Println("resolve addr fail", err.Error())
-		return nil
-	}
-	sock, _err := net.ListenUDP("udp", udpAddr)
-	if _err != nil {
-		fmt.Println("listen addr fail", _err.Error())
-		return nil
-	}
-	fmt.Println("listen addr ok", udpAddr)
-	return sock
-}
-
-func Cre2ateUDPSession(id int) {
-	session := &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, send: "", id: id, sendChan: make(chan string), timeChan: make(chan int64), quitChan: make(chan bool), readBuffer: make([]byte, readBufferSize), processBuffer: make([]byte, readBufferSize), timeout: 100}
-	if *authKey == "" {
-		session.authed = true
-	}
-	session.Dial(*serviceAddr)
-}
-
-func (session *UDPMakeSession) Auth() {
-	if session.status == "ok" && !session.authed && clientType == 1 {
-		session.authed = true
-		log.Println("request auth key")
-		common.Write(net.Conn(session), "-1", "auth", *authKey)
-	}
-}
-
-func (session *UDPMakeSession) CheckAuth(action, key string) bool {
-	if !session.authed && clientType == 0 {
-		if action == "auth" {
-			if key == *authKey {
-				session.authed = true
-				fmt.Println("auth key succeed")
-				return true
+			if bIsTcp {
+				log.Println("add tcp session", id)
 			} else {
-				fmt.Println("auth key fail")
-				return false
+				log.Println("add udp session", id)
 			}
-		} else {
-			fmt.Println("auth key must send", action, key)
-			return false
+			client := &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool)}
+			client.pipes[0] = conn
+			if *authKey == "" {
+				client.authed = true
+			}
+			g_ClientMap[id] = client
+			go client.ServerProcess(bIsTcp, id)
 		}
-	} else {
-		return true
-	}
-}
-
-func (session *UDPMakeSession) Dial(addr string) string {
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		fmt.Println("resolve addr fail", err.Error())
-		session.Close()
-		return "fail"
-	}
-	addrS := udpAddr.String()
-	_, have := g_MakeSession[addrS]
-	log.Println("create test", addrS, have)
-	if have {
-		return "waiting"
-	}
-	//sock, _err := net.DialUDP("udp", nil, udpAddr)
-	g_MakeSession[addrS] = session
-	sock, _err := net.ListenUDP("udp", &net.UDPAddr{})
-	if _err != nil {
-		fmt.Println("dial addr fail", err.Error())
-		session.Close()
-		return "fail"
-	}
-	if session.id == 0 {
-		session.id = rand.Intn(1000000) + int(time.Now().Unix()%10000)
-	}
-	session.idstr = fmt.Sprintf("%d", session.id)
-	log.Println("session id", session.id, sock.LocalAddr().String())
-	encrypt_tail := ""
-	if *bEncrypt {
-		encrypt_tail = string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
-		aesKey := "asd4" + encrypt_tail
-		log.Println("debug aeskey", encrypt_tail)
-		aesBlock, _ := aes.NewCipher([]byte(aesKey))
-		session.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
-	}
-	session.SetStatusAndSend("1snd", "1snd@"+session.idstr+"@"+*remoteAction+"@"+encrypt_tail)
-	session.remote = udpAddr
-	session.sock = sock
-	session.ClientCheck()
-	return session.status
-}
-func (session *UDPMakeSession) LocalAddr() net.Addr {
-	return session.sock.LocalAddr()
-}
-
-func (session *UDPMakeSession) RemoteAddr() net.Addr {
-	return session.sock.RemoteAddr()
-}
-
-func (session *UDPMakeSession) SetDeadline(t time.Time) error {
-	return session.sock.SetDeadline(t)
-}
-
-func (session *UDPMakeSession) SetReadDeadline(t time.Time) error {
-	return session.sock.SetReadDeadline(t)
-}
-
-func (session *UDPMakeSession) SetWriteDeadline(t time.Time) error {
-	return session.sock.SetWriteDeadline(t)
-}
-
-func (session *UDPMakeSession) SetCrypt(encode, decode func([]byte) []byte) {
-	session.encode = encode
-	session.decode = decode
-}
-func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
-	if session.closed {
-		return 0, errors.New("force quit")
-	}
-	if session.encode != nil {
-		b = session.encode(b)
-	}
-	sendL := len(b)
-	if sendL == 0 || session.status != "ok" {
-		return 0, nil
-	}
-	debug("try write", sendL, session.id)
-	session.sendChan <- string(b[:sendL])
-	debug("try write2", sendL, session.id)
-	//ikcp.Ikcp_send(session.kcp, b[:sendL], sendL)
-	return sendL, nil
-}
-
-func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
-	if session.closed {
-		return 0, errors.New("force quit")
-	}
-	if clientType == 0 {
-		b := []byte(<-session.recvChan)
-		l := len(b)
-		copy(p, b[:l])
-		//log.Println("real recv", l, string(b[:l]))
-		if l == 0 {
-			return 0, errors.New("force quit for read error")
-		} else {
-			go func() { session.timeChan <- time.Now().Unix() + session.timeout }()
-			session.send = ""
-			return l, nil
-		}
-	} else {
-		tmp := session.readBuffer
-		for {
-			if session.closed {
-				return 0, errors.New("force quit")
-			}
-			hr := ikcp.Ikcp_recv(session.kcp, tmp, readBufferSize)
-			if hr > 0 {
-				if session.decode != nil {
-					d := session.decode(tmp[:hr])
-					copy(p, d)
-					hr = int32(len(d))
-				} else {
-					copy(p, tmp[:hr])
-				}
-				go func() { session.timeChan <- time.Now().Unix() + session.timeout }()
-				session.send = ""
-				//log.Println("real recv client", hr, string(p))
-				return int(hr), nil
-			}
-			bHave := false
-			//log.Println("want read0-------------!", hr)
-			for {
-				session.sock.SetReadDeadline(time.Now().Add(time.Second * 2))
-				n, addr, err := session.sock.ReadFromUDP(tmp)
-				//log.Println("want read!", n, addr, err)
-				// Generic non-address related errors.
-				if addr == nil && err != nil && !err.(net.Error).Timeout() {
-					log.Println("error!", err.Error())
-					return 0, err
-				}
-				if session.closed {
-					return 0, errors.New("force quit")
-				}
-				debug("redirect", n)
-				if n == 5 && common.Xor(string(tmp[:n])) == "reset" {
-					return 0, errors.New("force reset")
-				}
-				ikcp.Ikcp_input(session.kcp, tmp[:n], n)
-				bHave = true
-				break
-			}
-			if !bHave {
-				time.Sleep(10 * time.Millisecond)
-			}
-
-		}
-	}
-}
-
-func (session *UDPMakeSession) Process() {
-	for {
-		tmp := session.processBuffer
-		hr := ikcp.Ikcp_recv(session.kcp, tmp, readBufferSize)
-		//println("loop", hr)
-		if hr > 0 {
-			if session.decode != nil {
-				d := session.decode(tmp[:hr])
-				hr = int32(len(d))
-				copy(tmp, d)
-			}
-			//log.Println("try recv", hr)
-			if !session.closed && hr > 0 {
-				s := string(tmp[:hr])
-				go func() { session.recvChan2 <- s }()
-			}
-			//log.Println("try recved", hr)
-		} else {
-			break
-		}
-	}
-}
-
-func (session *UDPMakeSession) ClientCheck() {
-	go func() {
-	out:
-		for {
-			select {
-			case <-session.quitChan:
-				session.Close()
-				break out
-			case s := <-session.sendChan:
-				if !session.closed {
-					b := []byte(s)
-					kcp := session.kcp
-					if kcp != nil {
-						debug("write!!!", len(b), session.id)
-						ikcp.Ikcp_send(kcp, b, len(b))
-					}
-				} else {
-					log.Println("force breakout")
-					break out
-				}
-			case s := <-session.recvChan2:
-				if !session.closed {
-					session.recvChan <- s
-				} else {
-					log.Println("force breakout")
-					break out
-				}
-			}
-		}
+		g_LocalConn = nil
 	}()
-	go func() {
-		t := time.NewTicker(10 * time.Millisecond)
-		defer func() {
-			if err := recover(); err != nil {
-				session.Close()
-				log.Println("clientcheck trigger error:", err)
-			}
-		}()
-		ping := time.NewTicker(time.Second * 1)
-		session.Auth()
-		if session.status == "ok" {
-			go common.Write(session, "-1", "ping", "")
-		}
-	out:
-		for {
-			select {
-			case <-ping.C:
-				//log.Println("test ping !")
-				session.Auth()
-				go common.Write(session, "-1", "ping", "")
-			case over := <-session.timeChan:
-				if session.closed {
-					break out
-				}
-				session.overTime = over
-				if time.Now().Unix() > session.overTime {
-					log.Println("remove over time udp", session.overTime, time.Now().Unix())
-					session.quitChan <- true
-					break out
-				}
-			case <-t.C:
-				//log.Println("-------", session.status, session.send,  time.Now().Unix() ,session.overTime )
-				if session.status == "ok" {
-					kcp := session.kcp
-					if kcp != nil {
-						go ikcp.Ikcp_update(session.kcp, uint32(iclock()))
-					}
-				}
-				if time.Now().Unix() > session.overTime {
-					log.Println("remove over time udp", session.overTime, time.Now().Unix())
-					session.quitChan <- true
-					break out
-				} else {
-					if session.send != "" {
-						log.Println("try send", session.send, session.remote)
-						session.sock.WriteToUDP([]byte(common.Xor(session.send)), session.remote)
-						if session.send == "reset" {
-							session.quitChan <- true
-						}
-					}
-				}
-			}
-		}
-		t.Stop()
-		ping.Stop()
-	}()
-
-	if clientType == 0 {
-		return
-	}
-	buf := make([]byte, 512)
-out:
-	for {
-		n, from, err := session.sock.ReadFromUDP(buf)
-		if err == nil {
-			data := common.Xor(string(buf[:n]))
-			log.Println("head recv", data, from)
-			arr := strings.Split(data, "@")
-			if len(arr) > 0 && arr[0] == "reset" {
-				break out
-			}
-			switch session.status {
-			case "1snd":
-				if len(arr) > 1 {
-					if arr[0] == "1ack" && arr[1] == session.idstr {
-						session.SetStatusAndSend("2snd", "2snd@"+session.idstr)
-					}
-				} else {
-					break out
-				}
-			case "2snd":
-				if len(arr) > 1 {
-					if arr[0] == "2ack" && arr[1] == session.idstr {
-						session.SetStatusAndSend("ok", "")
-						break out
-					}
-				} else {
-					break out
-				}
-			}
-		} else {
-			break out
-		}
-	}
+	return true
 }
-func (session *UDPMakeSession) Close() error {
-	if session.closed {
-		return nil
-	}
-	session.closed = true
-	if session.sock != nil {
-		session.sock.Close()
-	}
-	var addr string
-	if session.remote != nil {
-		addr = session.remote.String()
-	}
-	if clientType == 1 {
-		if session.sock != nil {
-			log.Println("remove udp pipe", session.sock.LocalAddr().String(), session.id)
+
+func (client *Client) ServerProcess(bIsTcp bool, id string) {
+	callback := func(conn net.Conn, sessionId, action, content string) {
+		if client.decode != nil {
+			content = string(client.decode([]byte(content)))
 		}
+		client.OnTunnelRecv(conn, sessionId, action, content)
+	}
+	if bIsTcp {
+		common.Read(client.pipes[0], callback)
 	} else {
-		log.Println("remove udp pipe", addr, session.id)
+		common.ReadUDP(client.pipes[0], callback, pipe.ReadBufferSize)
 	}
-	close(session.quitChan)
-	if session.sendChan != nil {
-		close(session.sendChan)
-	}
-	if session.recvChan != nil {
-		close(session.recvChan)
-	}
-	if session.recvChan2 != nil {
-		close(session.recvChan2)
-	}
-	olds, have := g_MakeSession[addr]
-	println("test", olds, have, addr)
-	if have && olds == session {
-		delete(g_MakeSession, addr)
-	}
-	return nil
-}
-func (session *UDPMakeSession) SetStatusAndSend(status, content string) {
-	session.status = status
-	session.overTime = time.Now().Unix() + 10
-	session.send = content
-	log.Println("set status", status, content, session.overTime)
-	if status == "ok" && session.kcp == nil {
-		session.kcp = ikcp.Ikcp_create(uint32(session.id), session)
-		session.kcp.Output = udp_output
-		if content != "" {
-			session.overTime -= 5
-		} else {
-			session.overTime += 5
-		}
-		ikcp.Ikcp_wndsize(session.kcp, 128, 128)
-		ikcp.Ikcp_nodelay(session.kcp, 1, 10, 2, 1)
-
-		client, have := g_ClientMap[session.idstr]
-		log.Println("add udp session", session.id, session.remote, have)
-		if !have {
-			client = &Client{id: session.idstr, ready: true, bUdp: true, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), addSession: make(chan *UDPMakeSession)}
-			g_ClientMap[session.idstr] = client
-		}
-		client.action = session.action
-		if !have {
-			go client.Run(0, "")
-		}
-		client.addSession <- session
-		log.Println("add common session", session.id)
-		if clientType == 1 && !have {
-			if *timeOut > 0 {
-				session.timeout = int64(*timeOut)
-				common.Write(net.Conn(session), "-1", "settimeout", strconv.Itoa(*timeOut))
-			}
-			client.MultiListen()
-		}
+	delete(g_ClientMap, id)
+	if bIsTcp {
+		log.Println("remove tcp session", id)
+	} else {
+		log.Println("remove udp session", id)
 	}
 }
 
@@ -1033,41 +426,16 @@ func main() {
 		}
 	}()
 
-	if *bDebug {
-		go func() {
-			t := time.NewTicker(time.Second * 5)
-			for {
-				select {
-				case <-t.C:
-					log.Println("debug begin", len(g_ClientMap))
-					for a := range g_MakeSession {
-						log.Println(a)
-					}
-					log.Println("debug end")
-				}
-			}
-			t.Stop()
-		}()
-	}
 	loop := func() bool {
 		if bForceQuit {
 			return true
 		}
 		g_ClientMap = make(map[string]*Client)
-		g_MakeSession = make(map[string]*UDPMakeSession)
-		tempBuff = make([]byte, readBufferSize)
+		tempBuff = make([]byte, pipe.ReadBufferSize)
 		if clientType == 0 {
-			if *bTcp {
-				TCPListen(*serviceAddr)
-			} else {
-				UDPListen(*serviceAddr)
-			}
+			Listen(*bTcp, *serviceAddr)
 		} else {
-			if *bTcp {
-				CreateTCPSession(0)
-			} else {
-				CreateUDPSession(0)
-			}
+			CreateSession(*bTcp, 0)
 		}
 		if bForceQuit {
 			return true
@@ -1256,7 +624,6 @@ type Client struct {
 	bUdp           bool
 	action         string
 	quit           chan bool
-	addSession     chan *UDPMakeSession
 	encode, decode func([]byte) []byte
 	authed         bool
 	localconn      net.Conn
@@ -1308,7 +675,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	case "settimeout":
 		timeout, _ := strconv.Atoi(content)
 		log.Println("set timeout", timeout)
-		pipe.(*UDPMakeSession).timeout = int64(timeout)
 	case "authfail":
 		bForceQuit = true
 		fmt.Println("auth key not eq")
@@ -1340,11 +706,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		aesKey := "asd4" + tail
 		aesBlock, _ := aes.NewCipher([]byte(aesKey))
 		sc.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
-	case "ping", "pingback":
-		debug("out recv", action, pipe.(*UDPMakeSession).idstr)
-		if action == "ping" {
-			go common.Write(pipe, sessionId, "pingback", "")
-		}
 	case "tunnel_msg_c":
 		if conn != nil {
 			//log.Println("tunnel", (content), sessionId)
@@ -1360,7 +721,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 					log.Println("connect to local server fail:", err.Error())
 					msg := "cannot connect to bind addr" + sc.action
 					go common.WriteCrypt(pipe, sessionId, "tunnel_error", msg, sc.encode)
-					//remoteConn.Close()
 					return
 				} else {
 					sc.sessions[sessionId] = &clientSession{pipe: pipe, localConn: s_conn, quit: make(chan bool)}
@@ -1443,9 +803,6 @@ func (sc *Client) MultiListen() bool {
 		g_LocalConn, err = net.Listen("tcp", *localAddr)
 		if err != nil {
 			log.Println("cannot listen addr:" + err.Error())
-			if remoteConn != nil {
-				remoteConn.Close()
-			}
 			return false
 		}
 		println("service start success,please connect", *localAddr)
@@ -1500,39 +857,7 @@ func (sc *Client) Run(index int, specPipe string) {
 				if sc.getOnePipe() == nil {
 					log.Println("recreate pipe for client", sc.id)
 					id, _ := strconv.Atoi(sc.id)
-					go CreateUDPSession(id)
-				}
-			case session := <-sc.addSession:
-				_, have := sc.pipes[0]
-				if !have {
-					var pipe net.Conn = net.Conn(session)
-					sc.pipes[0] = pipe
-					go func() {
-						callback := func(conn net.Conn, sessionId, action, content string) {
-							if sc != nil {
-								sc.OnTunnelRecv(conn, sessionId, action, content)
-							}
-						}
-						pipe.(*UDPMakeSession).timeChan <- time.Now().Unix() + session.timeout
-						log.Println("client begin read", index)
-						pipe.(*UDPMakeSession).Auth()
-						common.ReadUDP(pipe, callback, readBufferSize)
-						log.Println("client end read", index)
-						if clientType == 0 {
-							sc.Quit()
-							return
-						}
-						if index >= 0 {
-							_newpipe, have := sc.pipes[index]
-							if have && _newpipe == pipe {
-								pipe.Close()
-								log.Println("client remove udp pipe", index)
-								delete(sc.pipes, index)
-							} else {
-								log.Println("client dont remove the newcreated udp pipe", index)
-							}
-						}
-					}()
+					go CreateSession(*bTcp, id)
 				}
 			case <-sc.quit:
 				break out
@@ -1566,7 +891,7 @@ func handleLocalPortResponse(client *Client, id, url string) {
 		}
 		t.Stop()
 	}()
-	arr := make([]byte, writeBufferSize)
+	arr := make([]byte, pipe.WriteBufferSize)
 	debug("@@@@@@@ debug begin", url)
 	reader := bufio.NewReader(conn)
 	for {
@@ -1591,6 +916,7 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 	if session == nil {
 		return
 	}
+	buffSize := pipe.WriteBufferSize
 	pipe := session.pipe
 	if pipe == nil {
 		return
@@ -1599,7 +925,7 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 	if *remoteAction != "socks5" {
 		common.WriteCrypt(pipe, sessionId, "tunnel_open", "", client.encode)
 	}
-	arr := make([]byte, writeBufferSize)
+	arr := make([]byte, buffSize)
 	reader := bufio.NewReader(conn)
 	bParsed := false
 	bNeedBreak := false
