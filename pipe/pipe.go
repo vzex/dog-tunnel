@@ -37,12 +37,11 @@ func udp_output(buf []byte, _len int32, kcp *ikcp.Ikcpcb, user interface{}) int3
 }
 
 const (
-	ERROR         = 0
-	FirstSYN byte = 1
+	Reset    byte = 0
+	FirstSYN byte = 6
 	FirstACK byte = 1
 	SndSYN   byte = 2
 	SndACK   byte = 2
-	Reset    byte = 3
 	Data     byte = 4
 	Ping     byte = 5
 )
@@ -56,7 +55,7 @@ func makeEncode(status byte, arg int) []byte {
 
 func makeDecode(data []byte) (status byte, arg int32) {
 	if len(data) < 5 {
-		return 0, 0
+		return Reset, 0
 	}
 	buf := bytes.NewReader(data)
 	binary.Read(buf, binary.LittleEndian, &status)
@@ -125,7 +124,8 @@ func (l *Listener) inner_loop() {
 			} else {
 				status, _ := makeDecode(l.readBuffer[:n])
 				if status != FirstSYN {
-					go sock.WriteToUDP(makeEncode(Reset, 0), from)
+					go sock.WriteToUDP([]byte("0"), from)
+					fmt.Println("invalid package,reset", from)
 					continue
 				}
 				sessionId, _ := strconv.Atoi(common.GetId("udp"))
@@ -149,6 +149,10 @@ func (l *Listener) inner_loop() {
 
 func (l *Listener) remove(addr string) {
 	fmt.Println("listener remove", addr)
+	session, bHave := l.sessions[addr]
+	if bHave {
+		common.RmId("udp", strconv.Itoa(session.id))
+	}
 	delete(l.sessions, addr)
 }
 
@@ -286,6 +290,7 @@ out:
 
 func (session *UDPMakeSession) serverDo(s string) {
 	go func() {
+		fmt.Println("prepare handshake", session.remote)
 		session.handShakeChan <- s
 	}()
 }
@@ -297,13 +302,14 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 				c.Stop()
 			}
 			if session.status != "ok" {
-				delete(l.sessions, session.remote.String())
+				session.Close()
 			}
 		}()
 		overTime := time.Now().Unix() + session.timeout
 		for {
 			select {
 			case s := <-session.handShakeChan:
+				fmt.Println("process handshake", session.remote)
 				status, arg := makeDecode([]byte(s))
 				switch session.status {
 				case "init":
@@ -355,16 +361,17 @@ func (session *UDPMakeSession) loop() {
 			tmp := session.readBuffer
 			for {
 				session.sock.SetReadDeadline(time.Now().Add(time.Second * 2))
-				n, addr, err := session.sock.ReadFromUDP(tmp)
-				//log.Println("want read!", n, addr, err)
+				n, _, err := session.sock.ReadFromUDP(tmp)
 				// Generic non-address related errors.
-				if addr == nil && err != nil && !err.(net.Error).Timeout() {
+				if err != nil && !err.(net.Error).Timeout() {
 					return
 				}
 				if session.closed {
 					return
 				}
-				session.DoAction("input", string(session.readBuffer[:n]), n)
+				if n > 0 {
+					session.DoAction("input", string(session.readBuffer[:n]), n)
+				}
 			}
 		}()
 	}
@@ -388,6 +395,11 @@ out:
 				args := action.args
 				s := args[0].(string)
 				n := args[1].(int)
+				if n < 5 {
+					println("recv reset")
+					session.Close()
+					break
+				}
 				session.processInput(s, n)
 			case "write":
 				b := []byte(action.args[0].(string))
