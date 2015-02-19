@@ -6,8 +6,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
-	_ "log"
+	"log"
 	"net"
 	"strconv"
 	"sync"
@@ -112,10 +111,7 @@ func (l *Listener) inner_loop() {
 			if bHave {
 				if session.status == "ok" {
 					if session.remote.String() == from.String() {
-						//println("input msg", n)
-						go func() {
-							session.DoAction("input", string(l.readBuffer[:n]), n)
-						}()
+						session.DoAction("input", string(l.readBuffer[:n]), n)
 					}
 					continue
 				} else {
@@ -125,7 +121,7 @@ func (l *Listener) inner_loop() {
 				status, _ := makeDecode(l.readBuffer[:n])
 				if status != FirstSYN {
 					go sock.WriteToUDP([]byte("0"), from)
-					fmt.Println("invalid package,reset", from)
+					log.Println("invalid package,reset", from)
 					continue
 				}
 				sessionId, _ := strconv.Atoi(common.GetId("udp"))
@@ -137,7 +133,7 @@ func (l *Listener) inner_loop() {
 			//log.Println("debug out.........")
 		} else {
 			if !err.(net.Error).Timeout() {
-				fmt.Println("recv error", err.Error(), from)
+				log.Println("recv error", err.Error(), from)
 				l.remove(from.String())
 				//time.Sleep(time.Second)
 				continue
@@ -148,7 +144,7 @@ func (l *Listener) inner_loop() {
 }
 
 func (l *Listener) remove(addr string) {
-	fmt.Println("listener remove", addr)
+	log.Println("listener remove", addr)
 	session, bHave := l.sessions[addr]
 	if bHave {
 		common.RmId("udp", strconv.Itoa(session.id))
@@ -157,12 +153,12 @@ func (l *Listener) remove(addr string) {
 }
 
 func (l *Listener) Close() error {
-	println("pppppp")
+	log.Println("pppppp")
 	if l.sock != nil {
 		l.sock.Close()
 	}
 	close(l.connChan)
-	println("...")
+	log.Println("...")
 	return nil
 }
 
@@ -203,7 +199,7 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 	}
 	sock, _err := net.ListenUDP("udp", &net.UDPAddr{})
 	if _err != nil {
-		fmt.Println("dial addr fail", _err.Error())
+		log.Println("dial addr fail", _err.Error())
 		return nil, _err
 	}
 	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), quitChan: make(chan bool), recvChan: make(chan string), processBuffer: make([]byte, ReadBufferSize)}
@@ -268,7 +264,7 @@ out:
 			n, from, err := session.sock.ReadFromUDP(session.readBuffer)
 			if err != nil {
 				if !err.(net.Error).Timeout() {
-					fmt.Println("recv error", err.Error(), from)
+					log.Println("recv error", err.Error(), from)
 					code = -2
 					break out
 				}
@@ -283,14 +279,14 @@ out:
 	}
 	t.Stop()
 	if code > 0 {
-		fmt.Println("handshake fail,got code", code)
+		log.Println("handshake fail,got code", code)
 	}
 	return
 }
 
 func (session *UDPMakeSession) serverDo(s string) {
 	go func() {
-		fmt.Println("prepare handshake", session.remote)
+		log.Println("prepare handshake", session.remote)
 		session.handShakeChan <- s
 	}()
 }
@@ -309,7 +305,7 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 		for {
 			select {
 			case s := <-session.handShakeChan:
-				fmt.Println("process handshake", session.remote)
+				log.Println("process handshake", session.remote)
 				status, arg := makeDecode([]byte(s))
 				switch session.status {
 				case "init":
@@ -381,7 +377,7 @@ out:
 		case <-ping.C:
 			session.DoAction("write", string(makeEncode(Ping, 0)))
 			if time.Now().Unix() > session.overTime {
-				fmt.Println("overtime close")
+				log.Println("overtime close")
 				session.Close()
 			}
 		case <-update.C:
@@ -396,13 +392,14 @@ out:
 				s := args[0].(string)
 				n := args[1].(int)
 				if n < 5 {
-					println("recv reset")
+					log.Println("recv reset")
 					session.Close()
 					break
 				}
 				session.processInput(s, n)
 			case "write":
 				b := []byte(action.args[0].(string))
+				//log.Println("send", b[0])
 				ikcp.Ikcp_send(session.kcp, b, len(b))
 			case "quit":
 				session._Close()
@@ -411,13 +408,18 @@ out:
 				session.overTime = time.Now().Unix() + session.timeout
 				data := []byte(action.args[0].(string))
 				status := data[0]
-				//println("recv", status, string(data[1:]))
+				//log.Println("recv", status, len(data[1:]))
 				switch status {
 				case Reset:
-					println("recv reset")
+					log.Println("recv reset")
 					session.Close()
 				case Data:
-					go func() { session.recvChan <- string(data[1:]) }()
+					go func() {
+						select {
+						case session.recvChan <- string(data[1:]):
+						case <-session.quitChan:
+						}
+					}()
 				case Ping:
 				default:
 					if session.status != "ok" {
@@ -460,7 +462,7 @@ func (session *UDPMakeSession) Close() error {
 func (session *UDPMakeSession) DoAction(action string, args ...interface{}) {
 	//session.wait.Add(1)
 	go func() {
-		//println(action, len(args))
+		//log.Println(action, len(args))
 		select {
 		case session.do <- Action{t: action, args: args}:
 		case <-session.quitChan:
@@ -474,7 +476,6 @@ func (session *UDPMakeSession) processInput(s string, n int) {
 	for {
 		tmp := session.processBuffer
 		hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
-		//println("loop", hr)
 		if hr > 0 {
 			s := string(tmp[:hr])
 			session.DoAction("recv", s)
