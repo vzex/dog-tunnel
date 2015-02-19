@@ -2,7 +2,6 @@ package common
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/md5"
 	"encoding/binary"
 	"errors"
@@ -15,7 +14,6 @@ import (
 
 var encodingData []byte = []byte("bertdfvuifu4359c")
 var encodingLen int = 16
-var headerLen int = 4
 
 func initxor() {
 	encodingLen = len(encodingData)
@@ -23,7 +21,6 @@ func initxor() {
 
 func init() {
 	initxor()
-	headerLen = binary.Size(uint32(1))
 }
 
 const Version = 0.70
@@ -74,14 +71,14 @@ func Write(conn net.Conn, id string, action string, content string) error {
 	action = Xor(action)
 	l2 := len(action)
 	l3 := len(content)
-	var buf bytes.Buffer
-	binary.Write(&buf, binary.LittleEndian, uint32(l1))
-	binary.Write(&buf, binary.LittleEndian, uint32(l2))
-	binary.Write(&buf, binary.LittleEndian, uint32(l3))
-	binary.Write(&buf, binary.LittleEndian, []byte(id))
-	binary.Write(&buf, binary.LittleEndian, []byte(action))
-	binary.Write(&buf, binary.LittleEndian, []byte(content))
-	_, err := conn.Write(buf.Bytes())
+	var buf []byte = make([]byte, l1+l2+l3+4*3)
+	binary.LittleEndian.PutUint32(buf, uint32(l1))
+	binary.LittleEndian.PutUint32(buf[4:], uint32(l2))
+	binary.LittleEndian.PutUint32(buf[8:], uint32(l3))
+	copy(buf[12:], []byte(id))
+	copy(buf[12+l1:], []byte(action))
+	copy(buf[12+l1+l2:], []byte(content))
+	_, err := conn.Write(buf)
 	//println("write!!!", old, l1, l2, l3)
 	if err != nil {
 		log.Println("write err", err.Error())
@@ -106,32 +103,28 @@ func ReadUDP(conn net.Conn, callback ReadCallBack, bufsize int) {
 
 func split(data []byte, atEOF bool, conn net.Conn, callback ReadCallBack) (adv int, token []byte, err error) {
 	l := len(data)
-	if l < headerLen*3 {
+	if l < 12 {
 		return 0, nil, nil
 	}
-	if l > 1024*1024 {
+	if l > 1000000 {
 		conn.Close()
 		log.Println("invalid query!")
 		return 0, nil, errors.New("to large data!")
 	}
 	var l1, l2, l3 uint32
-	buf := bytes.NewReader(data)
-	binary.Read(buf, binary.LittleEndian, &l1)
-	binary.Read(buf, binary.LittleEndian, &l2)
-	binary.Read(buf, binary.LittleEndian, &l3)
-	tail := l - headerLen*3
+	l1 = binary.LittleEndian.Uint32(data)
+	l2 = binary.LittleEndian.Uint32(data[4:])
+	l3 = binary.LittleEndian.Uint32(data[8:])
+	tail := l - 12
 	if tail < int(l1+l2+l3) {
 		return 0, nil, nil
 	}
-	id := make([]byte, l1)
-	action := make([]byte, l2)
-	content := make([]byte, l3)
-	binary.Read(buf, binary.LittleEndian, &id)
-	binary.Read(buf, binary.LittleEndian, &action)
-	binary.Read(buf, binary.LittleEndian, &content)
+	id := string(data[12 : 12+l1])
+	action := string(data[12+l1 : 12+l1+l2])
+	content := string(data[12+l1+l2 : 12+l1+l2+l3])
 	callback(conn, string(id), Xor(string(action)), string(content))
 	//println("read11!!", l1,l2, l3,string(id), Xor(string(action)), string(content))
-	return headerLen*3 + int(l1+l2+l3), []byte{}, nil
+	return 12 + int(l1+l2+l3), []byte{}, nil
 }
 
 func Read(conn net.Conn, callback ReadCallBack) {

@@ -35,7 +35,7 @@ var remoteAction = flag.String("action", "socks5", "for client control server, i
 var bVerbose = flag.Bool("v", false, "verbose mode")
 var bShowVersion = flag.Bool("version", false, "show version")
 var bLoadSettingFromFile = flag.Bool("f", false, "load setting from file(~/.dtunnel)")
-var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
+var bEncrypt = flag.Bool("encrypt", true, "p2p mode encrypt")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 var timeOut = flag.Int("timeout", 100, "udp pipe set timeout(seconds)")
 
@@ -387,8 +387,8 @@ func dnsLoop() {
 }
 
 func main() {
-	rand.Seed(time.Now().Unix())
 	flag.Parse()
+	rand.Seed(time.Now().Unix())
 	checkDns = make(chan *dnsQueryReq)
 	checkDnsRes = make(chan *dnsQueryBack)
 	go dnsLoop()
