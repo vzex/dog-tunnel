@@ -25,7 +25,7 @@ import (
 )
 
 var authKey = flag.String("auth", "", "key for auth")
-var pipeN = flag.Int("pipe", 1, "pipe num")
+var pipeN = flag.Int("pipe", 1, "pipe num(todo...)")
 var bTcp = flag.Bool("tcp", false, "use tcp to replace udp")
 var xorData = flag.String("xor", "", "xor key,c/s must use a some key")
 
@@ -34,13 +34,11 @@ var localAddr = flag.String("local", "", "if local not empty, treat me as client
 var remoteAction = flag.String("action", "socks5", "for client control server, if action is socks5,remote is socks5 server, if is addr like 127.0.0.1:22, remote server is a port redirect server")
 var bVerbose = flag.Bool("v", false, "verbose mode")
 var bShowVersion = flag.Bool("version", false, "show version")
-var bLoadSettingFromFile = flag.Bool("f", false, "load setting from file(~/.dtunnel)")
-var bEncrypt = flag.Bool("encrypt", true, "p2p mode encrypt")
+var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 var timeOut = flag.Int("timeout", 100, "udp pipe set timeout(seconds)")
 
 var bDebug = flag.Bool("debug", false, "more output log")
-var dropRate = flag.Int("drop", 0, "drop n% data,0-100")
 var bReverse = flag.Bool("r", false, "reverse mode, if true, client 's \"-local\" address will be listened on server side")
 
 var clientType = 1
@@ -187,6 +185,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	delete(client.pipes, idindex)
 	if client.listener != nil {
 		client.listener.Close()
+		client.listener = nil
 	}
 	return true
 }
@@ -250,6 +249,7 @@ func (client *Client) ServerProcess(bIsTcp bool, id string) {
 	}
 	if client.listener != nil {
 		client.listener.Close()
+		client.listener = nil
 	}
 }
 
@@ -422,17 +422,15 @@ func main() {
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-		n := 0
-		for {
-			<-c
-			log.Println("received signal,shutdown")
-			bForceQuit = true
-			n++
-			if n > 5 {
-				log.Println("force shutdown")
-				os.Exit(-1)
-			}
+		<-c
+		log.Println("received signal,shutdown")
+		for _, client := range g_ClientMap {
+			client.Quit()
 		}
+		if g_LocalConn != nil {
+			g_LocalConn.Close()
+		}
+		bForceQuit = true
 	}()
 
 	loop := func() bool {
@@ -456,7 +454,7 @@ func main() {
 		if loop() {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		time.Sleep(3* time.Second)
 	}
 	//} else {
 	//	loop()
@@ -690,6 +688,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		sc.Quit()
 		if sc.listener != nil {
 			sc.listener.Close()
+			sc.listener = nil
 		}
 	case "tunnel_error":
 		if conn != nil {
@@ -801,7 +800,11 @@ func (sc *Client) SetCrypt(encode, decode func([]byte) []byte) {
 }
 
 func (sc *Client) Quit() {
+	if sc.quit == nil {
+		return
+	}
 	close(sc.quit)
+	sc.quit = nil
 	log.Println("client quit", sc.id)
 	delete(g_ClientMap, sc.id)
 	for id, _ := range sc.sessions {
@@ -810,6 +813,10 @@ func (sc *Client) Quit() {
 	for id, pipe := range sc.pipes {
 		pipe.Close()
 		delete(sc.pipes, id)
+	}
+	if sc.listener != nil {
+		sc.listener.Close()
+		sc.listener = nil
 	}
 }
 
