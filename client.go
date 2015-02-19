@@ -83,8 +83,6 @@ func iclock() int32 {
 	return int32((time.Now().UnixNano() / 1000000) & 0xffffffff)
 }
 
-var tempBuff []byte
-
 func getEncodeFunc(aesBlock cipher.Block) func([]byte) []byte {
 	return func(s []byte) []byte {
 		if aesBlock == nil {
@@ -422,15 +420,23 @@ func main() {
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-		<-c
-		log.Println("received signal,shutdown")
-		for _, client := range g_ClientMap {
-			client.Quit()
+		n := 0
+		for {
+			<-c
+			n++
+			log.Println("received signal,shutdown")
+			if n > 5 {
+				log.Println("force shutdown")
+				os.Exit(-1)
+			}
+			for _, client := range g_ClientMap {
+				client.Quit()
+			}
+			if g_LocalConn != nil {
+				g_LocalConn.Close()
+			}
+			bForceQuit = true
 		}
-		if g_LocalConn != nil {
-			g_LocalConn.Close()
-		}
-		bForceQuit = true
 	}()
 
 	loop := func() bool {
@@ -438,7 +444,6 @@ func main() {
 			return true
 		}
 		g_ClientMap = make(map[string]*Client)
-		tempBuff = make([]byte, pipe.ReadBufferSize)
 		if clientType == 0 {
 			Listen(*bTcp, *serviceAddr)
 		} else {
@@ -454,7 +459,7 @@ func main() {
 		if loop() {
 			break
 		}
-		time.Sleep(3* time.Second)
+		time.Sleep(3 * time.Second)
 	}
 	//} else {
 	//	loop()
