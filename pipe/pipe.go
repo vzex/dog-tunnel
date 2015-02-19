@@ -383,7 +383,7 @@ out:
 			session.DoAction("write", string(makeEncode(Ping, 0)))
 			if time.Now().Unix() > session.overTime {
 				log.Println("overtime close")
-				session.Close()
+				go session.Close()
 			}
 		case <-update.C:
 			if session.status == "ok" {
@@ -398,7 +398,7 @@ out:
 				n := args[1].(int)
 				if n < 5 {
 					log.Println("recv reset")
-					session.Close()
+					go session.Close()
 					break
 				}
 				session.processInput(s, n)
@@ -446,7 +446,7 @@ out:
 					}
 				case Reset:
 					log.Println("recv reset")
-					session.Close()
+					go session.Close()
 				case Data:
 					go func() {
 						select {
