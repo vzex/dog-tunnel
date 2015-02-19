@@ -132,11 +132,12 @@ func (l *Listener) inner_loop() {
 			}
 			//log.Println("debug out.........")
 		} else {
-			if !err.(net.Error).Timeout() {
+			e, ok := err.(net.Error)
+			if !ok || !e.Timeout() {
 				log.Println("recv error", err.Error(), from)
 				l.remove(from.String())
 				//time.Sleep(time.Second)
-				continue
+				break
 			}
 		}
 	}
@@ -153,12 +154,13 @@ func (l *Listener) remove(addr string) {
 }
 
 func (l *Listener) Close() error {
-	log.Println("pppppp")
 	if l.sock != nil {
 		l.sock.Close()
+		l.sock = nil
+	} else {
+		return nil
 	}
 	close(l.connChan)
-	log.Println("...")
 	return nil
 }
 
