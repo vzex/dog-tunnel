@@ -20,6 +20,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -195,6 +196,7 @@ func Listen(bIsTcp bool, addr string) bool {
 		g_LocalConn, err = pipe.Listen(addr)
 	}
 	if err != nil {
+		g_LocalConn = nil
 		log.Println("cannot listen addr:" + err.Error())
 		return false
 	}
@@ -417,26 +419,35 @@ func main() {
 	if *xorData != "" {
 		common.XorSetKey(*xorData)
 	}
+	var w sync.WaitGroup
+	w.Add(2)
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 		n := 0
-		for {
+		f := func() {
 			<-c
 			n++
-			log.Println("received signal,shutdown")
-			if n > 5 {
+			if n > 2 {
 				log.Println("force shutdown")
 				os.Exit(-1)
 			}
+			log.Println("received signal,shutdown")
+			bForceQuit = true
 			for _, client := range g_ClientMap {
 				client.Quit()
 			}
 			if g_LocalConn != nil {
 				g_LocalConn.Close()
 			}
-			bForceQuit = true
 		}
+		f()
+		go func() {
+			for {
+				f()
+			}
+		}()
+		w.Done()
 	}()
 
 	loop := func() bool {
@@ -464,6 +475,10 @@ func main() {
 	//} else {
 	//	loop()
 	//}
+	if bForceQuit {
+		w.Done()
+		w.Wait()
+	}
 	log.Println("service shutdown")
 }
 

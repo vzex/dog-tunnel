@@ -3,7 +3,6 @@ package pipe
 import (
 	"../common"
 	"../ikcp"
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"log"
@@ -47,20 +46,18 @@ const (
 	CloseBack byte = 7
 )
 
-func makeEncode(status byte, arg int) []byte {
-	var buf bytes.Buffer
-	binary.Write(&buf, binary.LittleEndian, status)
-	binary.Write(&buf, binary.LittleEndian, int32(arg))
-	return buf.Bytes()
+func makeEncode(buf []byte, status byte, arg int) []byte {
+	buf[0] = status
+	binary.LittleEndian.PutUint32(buf[1:], uint32(arg))
+	return buf
 }
 
 func makeDecode(data []byte) (status byte, arg int32) {
 	if len(data) < 5 {
 		return Reset, 0
 	}
-	buf := bytes.NewReader(data)
-	binary.Read(buf, binary.LittleEndian, &status)
-	binary.Read(buf, binary.LittleEndian, &arg)
+	status = data[0]
+	arg = int32(binary.LittleEndian.Uint32(data[1:]))
 	return
 }
 
@@ -83,6 +80,7 @@ type UDPMakeSession struct {
 
 	readBuffer    []byte
 	processBuffer []byte
+	encodeBuffer  []byte
 	timeout       int64
 }
 
@@ -105,10 +103,9 @@ func (l *Listener) Accept() (net.Conn, error) {
 func (l *Listener) inner_loop() {
 	sock := l.sock
 	for {
-		sock.SetReadDeadline(time.Now().Add(2 * time.Second))
 		n, from, err := sock.ReadFromUDP(l.readBuffer)
 		if err == nil {
-			//log.Println("recv", string(tempBuff[:10]), from)
+			//log.Println("recv", n, from)
 			addr := from.String()
 			session, bHave := l.sessions[addr]
 			if bHave {
@@ -128,7 +125,7 @@ func (l *Listener) inner_loop() {
 					continue
 				}
 				sessionId, _ := strconv.Atoi(common.GetId("udp"))
-				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan string), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), id: sessionId, handShakeChan: make(chan string), listener: l, closeChan: make(chan bool)}
+				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan string), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), id: sessionId, handShakeChan: make(chan string), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5)}
 				l.sessions[addr] = session
 				session.serverInit(l)
 				session.serverDo(string(l.readBuffer[:n]))
@@ -207,7 +204,7 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 		log.Println("dial addr fail", _err.Error())
 		return nil, _err
 	}
-	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), quitChan: make(chan bool), recvChan: make(chan string), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan bool)}
+	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), quitChan: make(chan bool), recvChan: make(chan string), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan bool), encodeBuffer: make([]byte, 5)}
 	session.remote = udpAddr
 	session.sock = sock
 	session.status = "firstsyn"
@@ -217,7 +214,7 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 		timeout = 5
 	}
 	code := session.doAndWait(func() {
-		sock.WriteToUDP(makeEncode(FirstSYN, timeout), udpAddr)
+		sock.WriteToUDP(makeEncode(session.encodeBuffer, FirstSYN, timeout), udpAddr)
 	}, _timeout, func(status byte, arg int32) int {
 		if status != FirstACK {
 			return -1
@@ -231,7 +228,7 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 		return nil, errors.New("handshake fail,1")
 	}
 	code = session.doAndWait(func() {
-		sock.WriteToUDP(makeEncode(SndSYN, session.id), udpAddr)
+		sock.WriteToUDP(makeEncode(session.encodeBuffer, SndSYN, session.id), udpAddr)
 	}, _timeout, func(status byte, arg int32) int {
 		if status != SndACK {
 			return -1
@@ -316,12 +313,12 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 				switch session.status {
 				case "init":
 					if status != FirstSYN {
-						session.sock.WriteToUDP(makeEncode(Reset, 0), session.remote)
+						session.sock.WriteToUDP(makeEncode(session.encodeBuffer, Reset, 0), session.remote)
 						return
 					}
 					session.status = "firstack"
 					session.timeout = int64(arg)
-					session.sock.WriteToUDP(makeEncode(FirstACK, session.id), session.remote)
+					session.sock.WriteToUDP(makeEncode(session.encodeBuffer, FirstACK, session.id), session.remote)
 					overTime = time.Now().Unix() + session.timeout
 				case "firstack":
 					if status != SndSYN {
@@ -336,7 +333,7 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 					go func() {
 						l.connChan <- session
 					}()
-					session.sock.WriteToUDP(makeEncode(SndACK, session.id), session.remote)
+					session.sock.WriteToUDP(makeEncode(session.encodeBuffer, SndACK, session.id), session.remote)
 					overTime = time.Now().Unix() + session.timeout
 				}
 			case <-c.C:
@@ -345,9 +342,9 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 				}
 				switch session.status {
 				case "firstack":
-					session.sock.WriteToUDP(makeEncode(FirstACK, session.id), session.remote)
+					session.sock.WriteToUDP(makeEncode(session.encodeBuffer, FirstACK, session.id), session.remote)
 				case "ok":
-					session.sock.WriteToUDP(makeEncode(SndACK, session.id), session.remote)
+					session.sock.WriteToUDP(makeEncode(session.encodeBuffer, SndACK, session.id), session.remote)
 				}
 			}
 		}
@@ -361,8 +358,9 @@ func (session *UDPMakeSession) loop() {
 	if session.listener == nil {
 		go func() {
 			tmp := session.readBuffer
+			t := time.Time{}
+			session.sock.SetReadDeadline(t)
 			for {
-				session.sock.SetReadDeadline(time.Now().Add(time.Second * 2))
 				n, _, err := session.sock.ReadFromUDP(tmp)
 				if err != nil {
 					e, ok := err.(net.Error)
@@ -380,7 +378,7 @@ out:
 	for {
 		select {
 		case <-ping.C:
-			session.DoAction("write", string(makeEncode(Ping, 0)))
+			session.DoAction("write", string(makeEncode(session.encodeBuffer, Ping, 0)))
 			if time.Now().Unix() > session.overTime {
 				log.Println("overtime close")
 				go session.Close()
@@ -414,7 +412,7 @@ out:
 					//log.Println("close over, step3")
 					session.DoAction("closeover")
 				})
-				session.DoAction("write", string(makeEncode(Close, 0)))
+				session.DoAction("write", string(makeEncode(session.encodeBuffer, Close, 0)))
 			case "closeover":
 				//A call timeover
 				close(session.closeChan)
@@ -438,7 +436,7 @@ out:
 						session._Close(false)
 					} else {
 						//log.Println("recv remote close, step1")
-						session.DoAction("write", string(makeEncode(CloseBack, 0)))
+						session.DoAction("write", string(makeEncode(session.encodeBuffer, CloseBack, 0)))
 						time.AfterFunc(time.Millisecond*500, func() {
 							//log.Println("close remote over, step4")
 							session.DoAction("closeend")
@@ -472,7 +470,6 @@ func (session *UDPMakeSession) _Close(bFirstCall bool) {
 		return
 	}
 	session.closed = true
-	close(session.recvChan)
 	//session.wait.Wait()
 	go func() {
 		//log.Println("pipe begin close")
@@ -484,6 +481,7 @@ func (session *UDPMakeSession) _Close(bFirstCall bool) {
 		}
 		//log.Println("pipe end close")
 		close(session.quitChan)
+		close(session.recvChan)
 		if session.listener != nil {
 			session.listener.remove(session.remote.String())
 		} else {
