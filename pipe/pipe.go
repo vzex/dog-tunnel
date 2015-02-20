@@ -289,7 +289,7 @@ out:
 
 func (session *UDPMakeSession) serverDo(s string) {
 	go func() {
-		log.Println("prepare handshake", session.remote)
+		//log.Println("prepare handshake", session.remote)
 		session.handShakeChan <- s
 	}()
 }
@@ -308,7 +308,7 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 		for {
 			select {
 			case s := <-session.handShakeChan:
-				log.Println("process handshake", session.remote)
+				//log.Println("process handshake", session.remote)
 				status, arg := makeDecode([]byte(s))
 				switch session.status {
 				case "init":
@@ -380,7 +380,7 @@ out:
 		case <-ping.C:
 			session.DoAction("write", string(makeEncode(session.encodeBuffer, Ping, 0)))
 			if time.Now().Unix() > session.overTime {
-				log.Println("overtime close")
+				//log.Println("overtime close", session.LocalAddr().String(), session.RemoteAddr().String())
 				go session.Close()
 			}
 		case <-update.C:
@@ -405,11 +405,14 @@ out:
 				//log.Println("send", b[0])
 				ikcp.Ikcp_send(session.kcp, b, len(b))
 			case "quit":
+				if session.closed {
+					break
+				}
 				session._Close(true)
 			case "closebegin":
 				//A tell B to close and wait
 				time.AfterFunc(time.Millisecond*500, func() {
-					//log.Println("close over, step3")
+					//log.Println("close over, step3", session.LocalAddr().String(), session.RemoteAddr().String())
 					session.DoAction("closeover")
 				})
 				session.DoAction("write", string(makeEncode(session.encodeBuffer, Close, 0)))
@@ -429,16 +432,22 @@ out:
 				switch status {
 				case CloseBack:
 					//A call from B
-					//log.Println("recv back close, step2")
+					//log.Println("recv back close, step2", session.LocalAddr().String(), session.RemoteAddr().String())
 					session.DoAction("closeover")
 				case Close:
+					if session.closed {
+						break
+					}
 					if session.status != "ok" {
 						session._Close(false)
 					} else {
-						//log.Println("recv remote close, step1")
+						//log.Println("recv remote close, step1", session.LocalAddr().String(), session.RemoteAddr().String())
 						session.DoAction("write", string(makeEncode(session.encodeBuffer, CloseBack, 0)))
 						time.AfterFunc(time.Millisecond*500, func() {
-							//log.Println("close remote over, step4")
+							//log.Println("close remote over, step4", session.LocalAddr().String(), session.RemoteAddr().String())
+							if session.closed {
+								return
+							}
 							session.DoAction("closeend")
 						})
 					}
@@ -448,8 +457,8 @@ out:
 				case Data:
 					go func() {
 						select {
-						case session.recvChan <- string(data[1:]):
 						case <-session.quitChan:
+						case session.recvChan <- string(data[1:]):
 						}
 					}()
 				case Ping:
@@ -472,16 +481,24 @@ func (session *UDPMakeSession) _Close(bFirstCall bool) {
 	session.closed = true
 	//session.wait.Wait()
 	go func() {
-		//log.Println("pipe begin close")
+		//log.Println("pipe begin close", session.LocalAddr().String(), session.RemoteAddr().String())
 		if bFirstCall {
-			session.DoAction("closebegin")
+			session.DoAction("closebegin", session.LocalAddr().String())
 			<-session.closeChan
 		} else {
 			close(session.closeChan)
 		}
-		//log.Println("pipe end close")
+		//log.Println("pipe end close", session.id)
 		close(session.quitChan)
-		close(session.recvChan)
+		go func() {
+			for {
+				select {
+				case session.recvChan <- "":
+					close(session.recvChan)
+					return
+				}
+			}
+		}()
 		if session.listener != nil {
 			session.listener.remove(session.remote.String())
 		} else {
@@ -493,6 +510,9 @@ func (session *UDPMakeSession) _Close(bFirstCall bool) {
 }
 
 func (session *UDPMakeSession) Close() error {
+	if session.closed {
+		return nil
+	}
 	if session.status != "ok" {
 		session._Close(false)
 		return nil
@@ -564,6 +584,7 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 	return sendL, err
 }
 
+//udp read does not relay on the len(p), please make a big enough array to cache data
 func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
 	if session.closed {
 		return 0, errors.New("closed")

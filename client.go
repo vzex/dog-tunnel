@@ -44,6 +44,10 @@ var bReverse = flag.Bool("r", false, "reverse mode, if true, client 's \"-local\
 
 var clientType = 1
 
+const maxPipes = 10
+
+var clientReportSessionChan chan bool
+
 type dnsInfo struct {
 	Ip                  string
 	Status              string
@@ -128,6 +132,14 @@ func getDecodeFunc(aesBlock cipher.Block) func([]byte) []byte {
 	}
 }
 
+func CreateSessionAndLoop(bIsTcp bool, idindex int) {
+	CreateSession(bIsTcp, idindex)
+	time.AfterFunc(time.Second*3, func() {
+		CreateSessionAndLoop(bIsTcp, idindex)
+	})
+	log.Println("sys will reconnect pipe", idindex, "after 3 seconds")
+}
+
 func CreateSession(bIsTcp bool, idindex int) bool {
 	var s_conn net.Conn
 	var err error
@@ -140,51 +152,50 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		log.Println("try dial err", err.Error())
 		return false
 	}
-	log.Println("try dial", *serviceAddr, "ok")
+	log.Println("try dial", *serviceAddr, "ok", idindex, s_conn.LocalAddr().String())
 	id := *serviceAddr
 	client, bHave := g_ClientMap[id]
 	if !bHave {
 		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool)}
 		g_ClientMap[id] = client
 	}
+	if idindex == 0 {
+		if !client.authed && *authKey != "" {
+			log.Println("request auth key", *authKey)
+			common.Write(s_conn, "-1", "auth", common.Xor(*authKey))
+		}
+		client.authed = true
+		if *bEncrypt {
+			log.Println("request encrypt")
+			encrypt_tail := string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
+			aesKey := "asd4" + encrypt_tail
+			log.Println("debug aeskey", encrypt_tail)
+			aesBlock, _ := aes.NewCipher([]byte(aesKey))
+			common.Write(s_conn, "-1", "init_enc", common.Xor(encrypt_tail))
+			client.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
+		}
+		client.reverseAddr = *localAddr
+		client.action = *remoteAction
+		common.WriteCrypt(s_conn, "-1", "init_action", *remoteAction, client.encode)
+	}
 	client.pipes[idindex] = s_conn
+	clientReportSessionChan <- true
 	callback := func(conn net.Conn, sessionId, action, content string) {
 		if client.decode != nil {
 			content = string(client.decode([]byte(content)))
 		}
 		client.OnTunnelRecv(conn, sessionId, action, content)
 	}
-	if *authKey != "" {
-		common.Write(s_conn, "-1", "auth", common.Xor(*authKey))
-	}
-	client.authed = true
-	if *bEncrypt {
-		encrypt_tail := string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
-		aesKey := "asd4" + encrypt_tail
-		log.Println("debug aeskey", encrypt_tail)
-		aesBlock, _ := aes.NewCipher([]byte(aesKey))
-		common.Write(s_conn, "-1", "init_enc", common.Xor(encrypt_tail))
-		client.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
-	}
-	client.reverseAddr = *localAddr
-	if *bReverse {
-		common.WriteCrypt(s_conn, "-1", "reverse", *localAddr, client.encode)
-	} else {
-		go client.MultiListen()
-	}
-	client.action = *remoteAction
-	common.WriteCrypt(s_conn, "-1", "init_action", *remoteAction, client.encode)
 	if bIsTcp {
 		common.Read(s_conn, callback)
 	} else {
 		common.ReadUDP(s_conn, callback, pipe.ReadBufferSize)
 	}
-	delete(g_ClientMap, id)
-	log.Println("remove tcp session", id)
+	log.Println("remove pipe", idindex)
+	clientReportSessionChan <- false
 	delete(client.pipes, idindex)
-	if client.listener != nil {
-		client.listener.Close()
-		client.listener = nil
+	if len(client.pipes) == 0 {
+		client.Quit()
 	}
 	return true
 }
@@ -201,55 +212,80 @@ func Listen(bIsTcp bool, addr string) bool {
 		return false
 	}
 	println("service start success,please connect", addr)
-	func() {
-		for {
-			conn, err := g_LocalConn.Accept()
-			if err != nil {
-				log.Println("server err:", err.Error())
-				break
-			}
-			//log.Println("client", sc.id, "create session", sessionId)
+	for {
+		conn, err := g_LocalConn.Accept()
+		if err != nil {
+			log.Println("server err:", err.Error())
+			break
+		}
+		//log.Println("client", sc.id, "create session", sessionId)
 
-			id := conn.RemoteAddr().String()
-			if bIsTcp {
-				log.Println("add tcp session", id)
-			} else {
-				log.Println("add udp session", id)
-			}
-			client := &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool)}
-			client.pipes[0] = conn
+		id := conn.RemoteAddr().String()
+		if bIsTcp {
+			log.Println("add tcp session", id)
+		} else {
+			log.Println("add udp session", id)
+		}
+		client, have := g_ClientMap[id]
+		if !have {
+			client = &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool)}
+			g_ClientMap[id] = client
 			if *authKey == "" {
 				client.authed = true
 			}
-			g_ClientMap[id] = client
-			go client.ServerProcess(bIsTcp, id)
 		}
-		g_LocalConn = nil
-	}()
+
+		idindex := -1
+		for i := 0; i < maxPipes; i++ {
+			_, bHave := client.pipes[i]
+			if !bHave {
+				idindex = i
+				client.pipes[i] = conn
+				break
+			}
+		}
+		if idindex == -1 {
+			log.Println("cannot over max pipes", maxPipes, "for", id)
+		} else {
+			log.Println("add pipe", idindex, "for", id)
+		}
+		go client.ServerProcess(bIsTcp, idindex)
+	}
+	g_LocalConn = nil
 	return true
 }
 
-func (client *Client) ServerProcess(bIsTcp bool, id string) {
+func (client *Client) ServerProcess(bIsTcp bool, idindex int) {
+	f := func() {
+		if client.owner != nil {
+			old := client.id
+			delete(g_ClientMap, old)
+			idindex = client.newindex
+			client = client.owner
+			log.Println(old, "pipe >>", client.id, idindex)
+		}
+	}
 	callback := func(conn net.Conn, sessionId, action, content string) {
+		f()
 		if client.decode != nil {
 			content = string(client.decode([]byte(content)))
 		}
 		client.OnTunnelRecv(conn, sessionId, action, content)
 	}
 	if bIsTcp {
-		common.Read(client.pipes[0], callback)
+		common.Read(client.pipes[idindex], callback)
 	} else {
-		common.ReadUDP(client.pipes[0], callback, pipe.ReadBufferSize)
+		common.ReadUDP(client.pipes[idindex], callback, pipe.ReadBufferSize)
 	}
-	delete(g_ClientMap, id)
+	f()
+	delete(client.pipes, idindex)
 	if bIsTcp {
-		log.Println("remove tcp session", id)
+		log.Println("remove tcp pipe", idindex, "for", client.id)
 	} else {
-		log.Println("remove udp session", id)
+		log.Println("remove udp pipe", idindex, "for", client.id)
 	}
-	if client.listener != nil {
-		client.listener.Close()
-		client.listener = nil
+	if len(client.pipes) == 0 {
+		client.Quit()
 	}
 }
 
@@ -419,8 +455,10 @@ func main() {
 	if *xorData != "" {
 		common.XorSetKey(*xorData)
 	}
+	g_ClientMap = make(map[string]*Client)
 	var w sync.WaitGroup
 	w.Add(2)
+	pipen := 0
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -436,6 +474,7 @@ func main() {
 			bForceQuit = true
 			for _, client := range g_ClientMap {
 				client.Quit()
+				pipen = 0
 			}
 			if g_LocalConn != nil {
 				g_LocalConn.Close()
@@ -450,35 +489,65 @@ func main() {
 		w.Done()
 	}()
 
-	loop := func() bool {
-		if bForceQuit {
-			return true
-		}
-		g_ClientMap = make(map[string]*Client)
+	loop := func() {
 		if clientType == 0 {
 			Listen(*bTcp, *serviceAddr)
+			if !bForceQuit {
+				w.Done()
+			}
+			w.Done()
 		} else {
-			CreateSession(*bTcp, 0)
+			clientReportSessionChan = make(chan bool)
+			go func() {
+				for {
+					select {
+					case r := <-clientReportSessionChan:
+						if r {
+							pipen++
+							if pipen == *pipeN {
+								client, bHave := g_ClientMap[*serviceAddr]
+								if bHave {
+									pipe, bH := client.pipes[0]
+									if !bH {
+										log.Println("error!,no pipe 0")
+										client.Quit()
+									} else {
+										s := ""
+										for _, conn := range client.pipes {
+											host := conn.LocalAddr().String()
+											_, port, _ := net.SplitHostPort(host)
+											s += port + ";"
+										}
+										common.WriteCrypt(pipe, "-1", "collect", s, client.encode)
+									}
+									if *bReverse {
+										common.WriteCrypt(pipe, "-1", "reverse", *localAddr, client.encode)
+									} else {
+										go client.MultiListen()
+									}
+								}
+							}
+						} else {
+							pipen--
+							if pipen <= 0 {
+								pipen = 0
+								client, bHave := g_ClientMap[*serviceAddr]
+								if bHave {
+									client.Quit()
+								}
+							}
+						}
+					}
+				}
+			}()
+			for i := 0; i < *pipeN; i++ {
+				go CreateSessionAndLoop(*bTcp, i)
+			}
+			w.Done()
 		}
-		if bForceQuit {
-			return true
-		}
-		return false
 	}
-	//if clientType == 0 {
-	for {
-		if loop() {
-			break
-		}
-		time.Sleep(3 * time.Second)
-	}
-	//} else {
-	//	loop()
-	//}
-	if bForceQuit {
-		w.Done()
-		w.Wait()
-	}
+	loop()
+	w.Wait()
 	log.Println("service shutdown")
 }
 
@@ -656,6 +725,8 @@ type Client struct {
 	localconn      net.Conn
 	listener       net.Listener
 	reverseAddr    string
+	owner          *Client
+	newindex       int
 }
 
 // pipe : client to client
@@ -692,6 +763,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	}
 	if clientType == 0 && !sc.authed {
 		if action != "auth" || common.Xor(content) != *authKey {
+			log.Println("auth fail", common.Xor(content), *authKey, pipe.RemoteAddr().String())
 			go common.Write(pipe, sessionId, "authfail", "")
 			return
 		}
@@ -703,13 +775,8 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		timeout, _ := strconv.Atoi(content)
 		log.Println("set timeout", timeout)
 	case "authfail":
-		bForceQuit = true
 		fmt.Println("auth key not eq")
 		sc.Quit()
-		if sc.listener != nil {
-			sc.listener.Close()
-			sc.listener = nil
-		}
 	case "tunnel_error":
 		if conn != nil {
 			conn.Write([]byte(content))
@@ -740,6 +807,36 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	case "reverse":
 		sc.reverseAddr = content
 		go sc.MultiListen()
+	case "collect":
+		arr := strings.Split(content, ";")
+		ip, port, e := net.SplitHostPort(sc.id)
+		if e != nil {
+			common.WriteCrypt(pipe, "-1", "showandquit", e.Error(), sc.encode)
+			return
+		}
+		for _, _port := range arr {
+			if _port != port && _port != "" {
+				addr := ip + ":" + _port
+				log.Println("collect", addr, "=>", sc.id)
+				client, bHave := g_ClientMap[addr]
+				if bHave {
+					p, ok := client.pipes[0]
+					if ok {
+						for i := 0; i < maxPipes; i++ {
+							_, b := sc.pipes[i]
+							if !b {
+								sc.pipes[i] = p
+								log.Println("collect", addr, "=>", sc.id, "pipe", i)
+								client.owner = sc
+								client.newindex = i
+								break
+							}
+						}
+					}
+					delete(g_ClientMap, addr)
+				}
+			}
+		}
 	case "init_enc":
 		tail := common.Xor(content)
 		log.Println("got encrpyt key", tail)
@@ -898,27 +995,6 @@ func (sc *Client) getOnePipe() net.Conn {
 }
 
 ///////////////////////multi pipe support
-
-func (sc *Client) Run(index int, specPipe string) {
-	func() {
-		t := time.NewTicker(2 * time.Second)
-	out:
-		for {
-			select {
-			case <-t.C:
-				if sc.getOnePipe() == nil {
-					log.Println("recreate pipe for client", sc.id)
-					id, _ := strconv.Atoi(sc.id)
-					go CreateSession(*bTcp, id)
-				}
-			case <-sc.quit:
-				break out
-			}
-		}
-		t.Stop()
-	}()
-}
-
 func handleLocalPortResponse(client *Client, id, url string) {
 	sessionId := id
 	session := client.getSession(sessionId)
