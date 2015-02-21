@@ -586,9 +586,6 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 
 //udp read does not relay on the len(p), please make a big enough array to cache data
 func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
-	if session.closed {
-		return 0, errors.New("closed")
-	}
 	b := []byte(<-session.recvChan)
 	l := len(b)
 	copy(p, b[:l])

@@ -94,7 +94,7 @@ func ReadUDP(conn net.Conn, callback ReadCallBack, bufsize int) {
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil {
-			println(err.Error())
+			log.Println(err.Error())
 			break
 		}
 		split(buffer[:n], false, conn, callback)
@@ -135,7 +135,7 @@ func Read(conn net.Conn, callback ReadCallBack) {
 	for scanner.Scan() {
 	}
 	if scanner.Err() != nil {
-		println(scanner.Err().Error())
+		log.Println(scanner.Err().Error())
 	}
 }
 

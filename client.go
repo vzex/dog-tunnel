@@ -498,13 +498,14 @@ func main() {
 			w.Done()
 		} else {
 			clientReportSessionChan = make(chan bool)
+			bDropFromZero := true
 			go func() {
 				for {
 					select {
 					case r := <-clientReportSessionChan:
 						if r {
 							pipen++
-							if pipen == *pipeN {
+							if pipen == *pipeN && bDropFromZero {
 								client, bHave := g_ClientMap[*serviceAddr]
 								if bHave {
 									pipe, bH := client.pipes[0]
@@ -512,29 +513,29 @@ func main() {
 										log.Println("error!,no pipe 0")
 										client.Quit()
 									} else {
-										s := ""
+										/*s := ""
 										for _, conn := range client.pipes {
 											host := conn.LocalAddr().String()
 											_, port, _ := net.SplitHostPort(host)
 											s += port + ";"
 										}
 										common.WriteCrypt(pipe, "-1", "collect", s, client.encode)
-									}
-									if *bReverse {
-										common.WriteCrypt(pipe, "-1", "reverse", *localAddr, client.encode)
-									} else {
-										go client.MultiListen()
+										*/
+										common.WriteCrypt(pipe, "-1", "ready", "", client.encode)
 									}
 								}
 							}
 						} else {
 							pipen--
 							if pipen <= 0 {
+								bDropFromZero = true
 								pipen = 0
 								client, bHave := g_ClientMap[*serviceAddr]
 								if bHave {
 									client.Quit()
 								}
+							} else {
+								bDropFromZero = false
 							}
 						}
 					}
@@ -726,6 +727,7 @@ type Client struct {
 	listener       net.Listener
 	reverseAddr    string
 	owner          *Client
+	readyId        string
 	newindex       int
 }
 
@@ -761,9 +763,9 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	if session != nil {
 		conn = session.localConn
 	}
-	if clientType == 0 && !sc.authed {
+	if clientType == 0 && !sc.authed && action != "collect" {
 		if action != "auth" || common.Xor(content) != *authKey {
-			log.Println("auth fail", common.Xor(content), *authKey, pipe.RemoteAddr().String())
+			log.Println("auth fail", action, common.Xor(content), *authKey, pipe.RemoteAddr().String())
 			go common.Write(pipe, sessionId, "authfail", "")
 			return
 		}
@@ -807,34 +809,40 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	case "reverse":
 		sc.reverseAddr = content
 		go sc.MultiListen()
-	case "collect":
-		arr := strings.Split(content, ";")
-		ip, port, e := net.SplitHostPort(sc.id)
-		if e != nil {
-			common.WriteCrypt(pipe, "-1", "showandquit", e.Error(), sc.encode)
-			return
-		}
-		for _, _port := range arr {
-			if _port != port && _port != "" {
-				addr := ip + ":" + _port
-				log.Println("collect", addr, "=>", sc.id)
-				client, bHave := g_ClientMap[addr]
-				if bHave {
-					p, ok := client.pipes[0]
-					if ok {
-						for i := 0; i < maxPipes; i++ {
-							_, b := sc.pipes[i]
-							if !b {
-								sc.pipes[i] = p
-								log.Println("collect", addr, "=>", sc.id, "pipe", i)
-								client.owner = sc
-								client.newindex = i
-								break
-							}
-						}
+	case "ready":
+		sc.readyId = common.GetId("ready")
+		common.WriteCrypt(pipe, "-1", "readyback", sc.readyId, sc.encode)
+		time.AfterFunc(time.Minute, func() { common.RmId("ready", sc.readyId) })
+	case "readyback":
+		go func() {
+			for i, conn := range sc.pipes {
+				if i > 0 {
+					common.Write(conn, "-1", "collect", content)
+				} else if i == 0 {
+					if *bReverse {
+						common.WriteCrypt(conn, "-1", "reverse", *localAddr, sc.encode)
+					} else {
+						go sc.MultiListen()
 					}
-					delete(g_ClientMap, addr)
 				}
+			}
+		}()
+	case "collect":
+		readyId := content
+		for _, c := range g_ClientMap {
+			if c.readyId == readyId {
+				log.Println("collect", sc.id, "=>", c.id)
+				for i := 1; i < maxPipes; i++ {
+					_, b := c.pipes[i]
+					if !b {
+						c.pipes[i] = pipe
+						log.Println("collect", sc.id, "=>", c.id, "pipe", i)
+						sc.owner = c
+						sc.newindex = i
+						break
+					}
+				}
+				break
 			}
 		}
 	case "init_enc":
@@ -933,7 +941,6 @@ func (sc *Client) Quit() {
 	}
 	if sc.listener != nil {
 		sc.listener.Close()
-		sc.listener = nil
 	}
 }
 
@@ -988,7 +995,7 @@ func (sc *Client) getOnePipe() net.Conn {
 		return nil
 	}
 	index := rand.Intn(size)
-	//log.Println("choose pipe for ", sc.id, ",", index, "of", size)
+	log.Println("choose pipe for ", sc.id, ",", index, "of", size)
 	hitId := tmp[index]
 	pipe, _ := sc.pipes[hitId]
 	return pipe
@@ -1081,8 +1088,4 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 	}
 	common.WriteCrypt(pipe, sessionId, "tunnel_close", "", client.encode)
 	client.removeSession(sessionId)
-}
-
-func isServer() bool {
-	return (clientType == 0 || *bReverse)
 }
