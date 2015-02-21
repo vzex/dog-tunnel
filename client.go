@@ -995,7 +995,7 @@ func (sc *Client) getOnePipe() net.Conn {
 		return nil
 	}
 	index := rand.Intn(size)
-	log.Println("choose pipe for ", sc.id, ",", index, "of", size)
+	//log.Println("choose pipe for ", sc.id, ",", index, "of", size)
 	hitId := tmp[index]
 	pipe, _ := sc.pipes[hitId]
 	return pipe
