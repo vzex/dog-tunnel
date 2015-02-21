@@ -468,6 +468,10 @@ func main() {
 	if *localAddr == "" {
 		clientType = 0
 	}
+	if clientType == 1 && *pipeN > maxPipes {
+		println("pipe need <=", maxPipes)
+		return
+	}
 	if *bEncrypt {
 		if clientType != 1 {
 			println("only client side need encrypt")
