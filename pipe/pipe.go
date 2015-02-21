@@ -110,7 +110,7 @@ func (l *Listener) inner_loop() {
 			session, bHave := l.sessions[addr]
 			if bHave {
 				if session.status == "ok" {
-					if session.remote.String() == from.String() {
+					if session.remote.String() == from.String() && n >= int(ikcp.IKCP_OVERHEAD) {
 						session.DoAction("input", string(l.readBuffer[:n]), n)
 					}
 					continue
@@ -352,9 +352,11 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 }
 
 func (session *UDPMakeSession) loop() {
-	session.overTime = time.Now().Unix() + session.timeout
+	curr := time.Now().Unix()
+	session.overTime = curr + session.timeout
 	ping := time.NewTicker(time.Second)
-	update := time.NewTicker(10 * time.Millisecond)
+	callUpdate := false
+	updateC := make(chan bool)
 	if session.listener == nil {
 		go func() {
 			tmp := session.readBuffer
@@ -368,11 +370,19 @@ func (session *UDPMakeSession) loop() {
 						break
 					}
 				}
-				if n > 0 {
+				if n >= int(ikcp.IKCP_OVERHEAD) || n < 5 {
 					session.DoAction("input", string(session.readBuffer[:n]), n)
 				}
 			}
 		}()
+	}
+	updateF := func() {
+		if !callUpdate {
+			callUpdate = true
+			time.AfterFunc(10 * time.Millisecond, func() {
+				updateC <- true
+			})
+		}
 	}
 out:
 	for {
@@ -383,10 +393,9 @@ out:
 				//log.Println("overtime close", session.LocalAddr().String(), session.RemoteAddr().String())
 				go session.Close()
 			}
-		case <-update.C:
-			if session.status == "ok" {
-				go ikcp.Ikcp_update(session.kcp, uint32(iclock()))
-			}
+		case <-updateC:
+			go ikcp.Ikcp_update(session.kcp, uint32(iclock()))
+			callUpdate = false
 		case action := <-session.do:
 			//session.wait.Done()
 			switch action.t {
@@ -400,10 +409,11 @@ out:
 					break
 				}
 				session.processInput(s, n)
+				updateF()
 			case "write":
 				b := []byte(action.args[0].(string))
-				//log.Println("send", b[0])
 				ikcp.Ikcp_send(session.kcp, b, len(b))
+				updateF()
 			case "quit":
 				if session.closed {
 					break
@@ -428,7 +438,6 @@ out:
 				session.overTime = time.Now().Unix() + session.timeout
 				data := []byte(action.args[0].(string))
 				status := data[0]
-				//log.Println("recv", status, len(data[1:]))
 				switch status {
 				case CloseBack:
 					//A call from B
@@ -471,7 +480,6 @@ out:
 		}
 	}
 	ping.Stop()
-	update.Stop()
 }
 
 func (session *UDPMakeSession) _Close(bFirstCall bool) {
