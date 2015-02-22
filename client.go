@@ -163,7 +163,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		g_ClientMap[id] = client
 	}
 	if idindex == 0 {
-		if !client.authed && *authKey != "" {
+		if *authKey != "" {
 			log.Println("request auth key", *authKey)
 			common.Write(s_conn, "-1", "auth", common.Xor(*authKey))
 		}
