@@ -46,6 +46,7 @@ var bDebug = flag.Bool("debug", false, "more output log")
 var bReverse = flag.Bool("r", false, "reverse mode, if true, client 's \"-local\" address will be listened on server side")
 
 var clientType = 1
+var currReadyId = 0
 
 const maxPipes = 10
 
@@ -879,7 +880,8 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		sc.reverseAddr = content
 		go sc.MultiListen()
 	case "ready":
-		sc.readyId = common.GetId("ready")
+		currReadyId ++
+		sc.readyId = strconv.Itoa(currReadyId)
 		common.WriteCrypt(pipe, "-1", "readyback", sc.readyId, sc.encode)
 	case "readyback":
 		go func() {
