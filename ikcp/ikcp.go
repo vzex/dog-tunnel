@@ -768,7 +768,7 @@ func Ikcp_flush(kcp *Ikcpcb) {
         count = int32(kcp.ackcount)
         for i = 0; i < count; i++ {
                 //size = int32(ptr - buffer)
-                if (size > int32(kcp.mtu)) {
+		if size + int32(IKCP_OVERHEAD) > int32(kcp.mtu) {
                         ikcp_output(kcp, buffer, size)
                         ptr = buffer
                         size = 0
@@ -806,7 +806,7 @@ func Ikcp_flush(kcp *Ikcpcb) {
         // flush window probing commands
         if ((kcp.probe & IKCP_ASK_SEND) !=0 ) {
                 seg.cmd = IKCP_CMD_WASK
-                if (size > int32(kcp.mtu)) {
+		if size + int32(IKCP_OVERHEAD) > int32(kcp.mtu) {
                         ikcp_output(kcp, buffer, size)
                         ptr = buffer
                         size = 0
@@ -818,7 +818,7 @@ func Ikcp_flush(kcp *Ikcpcb) {
         // flush window probing commands
         if ((kcp.probe & IKCP_ASK_TELL)!=0) {
                 seg.cmd = IKCP_CMD_WINS
-                if (size > int32(kcp.mtu)) {
+		if size + int32(IKCP_OVERHEAD) > int32(kcp.mtu) {
                         ikcp_output(kcp, buffer, size)
                         ptr = buffer
                         size = 0
@@ -919,7 +919,7 @@ func Ikcp_flush(kcp *Ikcpcb) {
                         need = int32(IKCP_OVERHEAD + segment._len)
 
                         ////fmt.Printf("vzex:need send%d, %d,%d,%d\n", kcp.nsnd_buf, size, need, kcp.mtu)
-                        if (size + need >= int32(kcp.mtu)) {
+                        if (size + need > int32(kcp.mtu)) {
                           //      //fmt.Printf("trigger!\n");
                                 ikcp_output(kcp, buffer, size)
                                 ptr = buffer
