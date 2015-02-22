@@ -586,7 +586,6 @@ func main() {
 							}
 						} else {
 							pipen--
-							log.Println("done",pipen)
 							if pipen <= 0 {
 								bDropFromZero = true
 								pipen = 0
