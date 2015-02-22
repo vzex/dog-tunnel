@@ -49,7 +49,7 @@ var clientType = 1
 
 const maxPipes = 10
 
-var clientReportSessionChan chan bool
+var clientReportSessionChan chan int
 
 type dnsInfo struct {
 	Ip                  string
@@ -162,29 +162,32 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), pipesInfo: make(map[int]*pipeInfo)}
 		g_ClientMap[id] = client
 	}
-	if idindex == 0 {
-		if *authKey != "" {
-			log.Println("request auth key", *authKey)
-			common.Write(s_conn, "-1", "auth", common.Xor(*authKey))
+	if *authKey != "" {
+		log.Println("request auth key", *authKey)
+		common.Write(s_conn, "-1", "auth", common.Xor(*authKey))
+	}
+	if *bEncrypt {
+		log.Println("request encrypt")
+		encrypt_tail := client.encryptstr
+		if encrypt_tail == "" {
+			encrypt_tail = string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
 		}
-		client.authed = true
-		if *bEncrypt {
-			log.Println("request encrypt")
-			encrypt_tail := string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
-			aesKey := "asd4" + encrypt_tail
-			log.Println("debug aeskey", encrypt_tail)
-			aesBlock, _ := aes.NewCipher([]byte(aesKey))
-			common.Write(s_conn, "-1", "init_enc", common.Xor(encrypt_tail))
+		aesKey := "asd4" + encrypt_tail
+		log.Println("debug aeskey", encrypt_tail)
+		aesBlock, _ := aes.NewCipher([]byte(aesKey))
+		common.Write(s_conn, "-1", "init_enc", common.Xor(encrypt_tail))
+		if client.encode == nil {
 			client.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
 		}
-		client.reverseAddr = *localAddr
-		client.action = *remoteAction
-		common.WriteCrypt(s_conn, "-1", "init_action", *remoteAction, client.encode)
 	}
+	client.reverseAddr = *localAddr
+	client.action = *remoteAction
+	common.WriteCrypt(s_conn, "-1", "init_action", *remoteAction, client.encode)
+
 	client.pipes[idindex] = s_conn
-	pinfo := &pipeInfo{0, 0, 0}
+	pinfo := &pipeInfo{0, 0, 0, nil, 0}
 	client.pipesInfo[idindex] = pinfo
-	clientReportSessionChan <- true
+	clientReportSessionChan <- idindex
 	pinfo.t = time.Now().Unix()
 	callback := func(conn net.Conn, sessionId, action, content string) {
 		t := time.Now().Unix()
@@ -207,7 +210,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		common.ReadUDP(s_conn, callback, pipe.ReadBufferSize)
 	}
 	log.Println("remove pipe", idindex)
-	clientReportSessionChan <- false
+	clientReportSessionChan <- -1
 	delete(client.pipes, idindex)
 	delete(client.pipesInfo, idindex)
 	if len(client.pipes) == 0 {
@@ -257,7 +260,7 @@ func Listen(bIsTcp bool, addr string) bool {
 			if !bHave {
 				idindex = i
 				client.pipes[i] = conn
-				client.pipesInfo[i] = &pipeInfo{0, 0, 0}
+				client.pipesInfo[i] = &pipeInfo{0, 0, 0, nil, 0}
 				break
 			}
 		}
@@ -273,19 +276,35 @@ func Listen(bIsTcp bool, addr string) bool {
 }
 
 func (client *Client) ServerProcess(bIsTcp bool, idindex int) {
+	pipeInfo, _ := client.pipesInfo[idindex]
 	f := func() {
-		if client.owner != nil {
+		if pipeInfo.owner != nil {
 			old := client.id
-			delete(g_ClientMap, old)
-			idindex = client.newindex
-			client = client.owner
+			delete(client.pipes, idindex)
+			if len(client.pipes) == 0 {
+				delete(g_ClientMap, old)
+			}
+			idindex = pipeInfo.newindex
+			client = pipeInfo.owner
+			pipeInfo.owner = nil
 			log.Println(old, "pipe >>", client.id, idindex)
+			pipeInfo, _ = client.pipesInfo[idindex]
 		}
 	}
+	pipeInfo.t = time.Now().Unix()
 	callback := func(conn net.Conn, sessionId, action, content string) {
 		f()
 		if client.decode != nil {
 			content = string(client.decode([]byte(content)))
+		}
+		t := time.Now().Unix()
+		if t-pipeInfo.t < 60 {
+			pipeInfo.bytes += len(content)
+			pipeInfo.times = int(t - pipeInfo.t)
+		} else {
+			pipeInfo.t = t
+			pipeInfo.bytes = len(content)
+			pipeInfo.times = 1
 		}
 		client.OnTunnelRecv(conn, sessionId, action, content)
 	}
@@ -440,6 +459,8 @@ func dnsLoop() {
 	}
 }
 
+var readyIndex int = 0
+
 func main() {
 	flag.Parse()
 	/*if *cpuprofile != "" {
@@ -495,6 +516,21 @@ func main() {
 		n := 0
 		f := func() {
 			<-c
+			/*if clientType == 1 {
+				for _, client := range g_ClientMap {
+					for i, pipe := range client.pipes {
+						pipe.Close()
+						log.Println("close pipe", i)
+						break
+					}
+				}
+			} else {
+				for addr, client := range g_ClientMap {
+					for i, _ := range client.pipes {
+						log.Println("show pipe", addr, i)
+					}
+				}
+			}*/
 			n++
 			if n > 2 {
 				log.Println("force shutdown")
@@ -527,28 +563,30 @@ func main() {
 			}
 			w.Done()
 		} else {
-			clientReportSessionChan = make(chan bool)
+			clientReportSessionChan = make(chan int)
 			bDropFromZero := true
 			go func() {
 				for {
 					select {
 					case r := <-clientReportSessionChan:
-						if r {
+						if r >= 0 {
 							pipen++
-							if pipen == *pipeN && bDropFromZero {
+							if pipen == *pipeN {
 								client, bHave := g_ClientMap[*serviceAddr]
 								if bHave {
-									pipe, bH := client.pipes[0]
+									pipe, bH := client.pipes[r]
 									if !bH {
-										log.Println("error!,no pipe 0")
+										log.Println("error!,no pipe", r)
 										client.Quit()
 									} else {
+										readyIndex = r
 										common.WriteCrypt(pipe, "-1", "ready", "", client.encode)
 									}
 								}
 							}
 						} else {
 							pipen--
+							log.Println("done",pipen)
 							if pipen <= 0 {
 								bDropFromZero = true
 								pipen = 0
@@ -738,6 +776,8 @@ type pipeInfo struct {
 	bytes int
 	times int
 	t     int64
+	owner *Client
+	newindex int
 }
 
 type Client struct {
@@ -755,9 +795,9 @@ type Client struct {
 	localconn      net.Conn
 	listener       net.Listener
 	reverseAddr    string
-	owner          *Client
 	readyId        string
 	newindex       int
+	encryptstr    string
 }
 
 // pipe : client to client
@@ -841,13 +881,12 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	case "ready":
 		sc.readyId = common.GetId("ready")
 		common.WriteCrypt(pipe, "-1", "readyback", sc.readyId, sc.encode)
-		time.AfterFunc(time.Minute, func() { common.RmId("ready", sc.readyId) })
 	case "readyback":
 		go func() {
 			for i, conn := range sc.pipes {
-				if i > 0 {
+				if i != readyIndex {
 					common.Write(conn, "-1", "collect", content)
-				} else if i == 0 {
+				} else {
 					if *bReverse {
 						common.WriteCrypt(conn, "-1", "reverse", *localAddr, sc.encode)
 					} else {
@@ -865,10 +904,18 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 					_, b := c.pipes[i]
 					if !b {
 						c.pipes[i] = pipe
-						c.pipesInfo[i] = &pipeInfo{0, 0, 0}
-						log.Println("collect", sc.id, "=>", c.id, "pipe", i)
-						sc.owner = c
-						sc.newindex = i
+						c.pipesInfo[i] = &pipeInfo{0, 0, 0, nil, 0}
+						newindex := 0
+						for _i, _info := range sc.pipes{
+							if _info == pipe {
+								pinfo, _ := sc.pipesInfo[_i]
+								pinfo.newindex = i
+								pinfo.owner = c
+								newindex = _i
+								break
+							}
+						}
+						log.Println("collect", sc.id, "pipe", newindex, "=>", c.id, "pipe", i)
 						break
 					}
 				}
