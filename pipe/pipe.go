@@ -363,15 +363,17 @@ func (session *UDPMakeSession) loop() {
 			t := time.Time{}
 			session.sock.SetReadDeadline(t)
 			for {
-				n, _, err := session.sock.ReadFromUDP(tmp)
+				n, from, err := session.sock.ReadFromUDP(tmp)
 				if err != nil {
 					e, ok := err.(net.Error)
 					if !ok || !e.Timeout() {
 						break
 					}
 				}
-				if n >= int(ikcp.IKCP_OVERHEAD) || n < 5 {
-					session.DoAction("input", string(session.readBuffer[:n]), n)
+				if session.remote.String() == from.String() {
+					if n >= int(ikcp.IKCP_OVERHEAD) || n < 5 {
+						session.DoAction("input", string(session.readBuffer[:n]), n)
+					}
 				}
 			}
 		}()
