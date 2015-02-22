@@ -392,7 +392,7 @@ out:
 		case <-ping.C:
 			session.DoAction("write", string(makeEncode(session.encodeBuffer, Ping, 0)))
 			if time.Now().Unix() > session.overTime {
-				//log.Println("overtime close", session.LocalAddr().String(), session.RemoteAddr().String())
+				log.Println("overtime close", session.LocalAddr().String(), session.RemoteAddr().String())
 				go session.Close()
 			}
 		case <-updateC:
