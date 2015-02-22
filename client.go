@@ -171,6 +171,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		encrypt_tail := client.encryptstr
 		if encrypt_tail == "" {
 			encrypt_tail = string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
+			client.encryptstr = encrypt_tail
 		}
 		aesKey := "asd4" + encrypt_tail
 		log.Println("debug aeskey", encrypt_tail)
