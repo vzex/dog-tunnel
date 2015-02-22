@@ -882,12 +882,13 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	case "ready":
 		currReadyId ++
 		sc.readyId = strconv.Itoa(currReadyId)
+		log.Println("currid", sc.readyId, sc.id)
 		common.WriteCrypt(pipe, "-1", "readyback", sc.readyId, sc.encode)
 	case "readyback":
 		go func() {
 			for i, conn := range sc.pipes {
 				if i != readyIndex {
-					common.Write(conn, "-1", "collect", content)
+					common.WriteCrypt(conn, "-1", "collect", content, sc.encode)
 				} else {
 					if *bReverse {
 						common.WriteCrypt(conn, "-1", "reverse", *localAddr, sc.encode)
@@ -901,7 +902,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		readyId := content
 		for _, c := range g_ClientMap {
 			if c.readyId == readyId {
-				log.Println("collect", sc.id, "=>", c.id)
+				log.Println("collect", sc.id, "=>", c.id, readyId)
 				for i := 1; i < maxPipes; i++ {
 					_, b := c.pipes[i]
 					if !b {
