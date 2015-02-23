@@ -1,7 +1,6 @@
 package ikcp
 import "container/list"
 import "encoding/binary"
-import _ "fmt"
 //=====================================================================
 //
 // KCP - A Better ARQ Protocol Implementation
@@ -835,11 +834,9 @@ func Ikcp_flush(kcp *Ikcpcb) {
 
         // move data from snd_queue to snd_buf
         ////println("check",kcp.snd_queue.Len())
-        t:=0
         for p:= kcp.snd_queue.Front(); p!=nil; {
                 ////println("debug check:", t, p.Next(), kcp.snd_nxt, kcp.snd_una, cwnd, _itimediff(kcp.snd_nxt, kcp.snd_una + cwnd))
                 ////fmt.Printf("timediff %d,%d,%d,%d\n", kcp.snd_nxt, kcp.snd_una, cwnd, _itimediff(kcp.snd_nxt, kcp.snd_una + cwnd));
-                t++
                 if _itimediff(kcp.snd_nxt, kcp.snd_una + cwnd) >= 0 { 
                         //if kcp.user[0] == 0 {
                                 ////fmt.Println("=======", kcp.snd_nxt, kcp.snd_una, cwnd)
@@ -880,11 +877,9 @@ func Ikcp_flush(kcp *Ikcpcb) {
                 rtomin = 0
         }
 
-        a:=0
         // flush data segments
         for p := kcp.snd_buf.Front(); p != nil; p = p.Next() {
                 ////println("debug loop", a, kcp.snd_buf.Len())
-                a++
                 segment := p.Value.(*IKCPSEG)
                 needsend := 0
                 if (segment.xmit == 0) {
