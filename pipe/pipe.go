@@ -74,6 +74,7 @@ type UDPMakeSession struct {
 	remote        *net.UDPAddr
 	kcp           *ikcp.Ikcpcb
 	do            chan Action
+	do2            chan Action
 	wait          sync.WaitGroup
 	listener      *Listener
 	closed        bool
@@ -111,7 +112,7 @@ func (l *Listener) inner_loop() {
 			if bHave {
 				if session.status == "ok" {
 					if session.remote.String() == from.String() && n >= int(ikcp.IKCP_OVERHEAD) {
-						session.DoAction("input", string(l.readBuffer[:n]), n)
+						session.DoAction2("input", string(l.readBuffer[:n]), n)
 					}
 					continue
 				} else {
@@ -125,7 +126,7 @@ func (l *Listener) inner_loop() {
 					continue
 				}
 				sessionId, _ := strconv.Atoi(common.GetId("udp"))
-				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan string), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), id: sessionId, handShakeChan: make(chan string), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5)}
+				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan string), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5)}
 				l.sessions[addr] = session
 				session.serverInit(l)
 				session.serverDo(string(l.readBuffer[:n]))
@@ -204,7 +205,7 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 		log.Println("dial addr fail", _err.Error())
 		return nil, _err
 	}
-	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), quitChan: make(chan bool), recvChan: make(chan string), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan bool), encodeBuffer: make([]byte, 5)}
+	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), do2: make(chan Action), quitChan: make(chan bool), recvChan: make(chan string), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan bool), encodeBuffer: make([]byte, 5)}
 	session.remote = udpAddr
 	session.sock = sock
 	session.status = "firstsyn"
@@ -372,7 +373,7 @@ func (session *UDPMakeSession) loop() {
 				}
 				if session.remote.String() == from.String() {
 					if n >= int(ikcp.IKCP_OVERHEAD) || n < 5 {
-						session.DoAction("input", string(session.readBuffer[:n]), n)
+						session.DoAction2("input", string(session.readBuffer[:n]), n)
 					}
 				}
 			}
@@ -386,36 +387,59 @@ func (session *UDPMakeSession) loop() {
 			})
 		}
 	}
+	go func() {
+out:
+		for {
+			select {
+			//session.wait.Done()
+			case action := <- session.do2:
+				switch action.t {
+				case "input":
+					args := action.args
+					s := args[0].(string)
+					n := args[1].(int)
+					if n < 5 {
+						log.Println("recv reset")
+						go session.Close()
+						break
+					}
+					ikcp.Ikcp_input(session.kcp, []byte(s), n)
+					for {
+						tmp := session.processBuffer
+						hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
+						if hr > 0 {
+							s := string(tmp[:hr])
+							session.DoAction("recv", s)
+							//log.Println("try recved", hr)
+						} else {
+							break
+						}
+					}
+					updateF()
+				case "write":
+					b := []byte(action.args[0].(string))
+					ikcp.Ikcp_send(session.kcp, b, len(b))
+					updateF()
+				}
+			case <- session.quitChan:
+				break out
+			case <-updateC:
+				ikcp.Ikcp_update(session.kcp, uint32(iclock()))
+				callUpdate = false
+			}
+		}
+	}()
 out:
 	for {
 		select {
 		case <-ping.C:
-			session.DoAction("write", string(makeEncode(session.encodeBuffer, Ping, 0)))
+			session.DoAction2("write", string(makeEncode(session.encodeBuffer, Ping, 0)))
 			if time.Now().Unix() > session.overTime {
 				log.Println("overtime close", session.LocalAddr().String(), session.RemoteAddr().String())
 				go session.Close()
 			}
-		case <-updateC:
-			go ikcp.Ikcp_update(session.kcp, uint32(iclock()))
-			callUpdate = false
 		case action := <-session.do:
-			//session.wait.Done()
-			switch action.t {
-			case "input":
-				args := action.args
-				s := args[0].(string)
-				n := args[1].(int)
-				if n < 5 {
-					log.Println("recv reset")
-					go session.Close()
-					break
-				}
-				session.processInput(s, n)
-				updateF()
-			case "write":
-				b := []byte(action.args[0].(string))
-				ikcp.Ikcp_send(session.kcp, b, len(b))
-				updateF()
+		     switch action.t {
 			case "quit":
 				if session.closed {
 					break
@@ -427,7 +451,7 @@ out:
 					//log.Println("close over, step3", session.LocalAddr().String(), session.RemoteAddr().String())
 					session.DoAction("closeover")
 				})
-				session.DoAction("write", string(makeEncode(session.encodeBuffer, Close, 0)))
+				session.DoAction2("write", string(makeEncode(session.encodeBuffer, Close, 0)))
 			case "closeover":
 				//A call timeover
 				close(session.closeChan)
@@ -453,7 +477,7 @@ out:
 						session._Close(false)
 					} else {
 						//log.Println("recv remote close, step1", session.LocalAddr().String(), session.RemoteAddr().String())
-						session.DoAction("write", string(makeEncode(session.encodeBuffer, CloseBack, 0)))
+						session.DoAction2("write", string(makeEncode(session.encodeBuffer, CloseBack, 0)))
 						time.AfterFunc(time.Millisecond*500, func() {
 							//log.Println("close remote over, step4", session.LocalAddr().String(), session.RemoteAddr().String())
 							if session.closed {
@@ -532,6 +556,17 @@ func (session *UDPMakeSession) Close() error {
 	return nil
 }
 
+func (session *UDPMakeSession) DoAction2(action string, args ...interface{}) {
+	//session.wait.Add(1)
+	go func() {
+		//log.Println(action, len(args))
+		select {
+		case session.do2 <- Action{t: action, args: args}:
+		case <-session.quitChan:
+			//session.wait.Done()
+		}
+	}()
+}
 func (session *UDPMakeSession) DoAction(action string, args ...interface{}) {
 	//session.wait.Add(1)
 	go func() {
@@ -545,18 +580,6 @@ func (session *UDPMakeSession) DoAction(action string, args ...interface{}) {
 }
 
 func (session *UDPMakeSession) processInput(s string, n int) {
-	ikcp.Ikcp_input(session.kcp, []byte(s), n)
-	for {
-		tmp := session.processBuffer
-		hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
-		if hr > 0 {
-			s := string(tmp[:hr])
-			session.DoAction("recv", s)
-			//log.Println("try recved", hr)
-		} else {
-			break
-		}
-	}
 }
 
 func (session *UDPMakeSession) LocalAddr() net.Addr {
@@ -590,7 +613,7 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 	data := make([]byte, sendL+1)
 	data[0] = Data
 	copy(data[1:], b)
-	session.DoAction("write", string(data))
+	session.DoAction2("write", string(data))
 	return sendL, err
 }
 
