@@ -384,7 +384,10 @@ func (session *UDPMakeSession) loop() {
 		if !callUpdate {
 			callUpdate = true
 			time.AfterFunc(n*time.Millisecond, func() {
-				updateC <- true
+				select {
+				case updateC <- true:
+				case <-session.quitChan:
+				}
 			})
 		}
 	}
@@ -404,10 +407,10 @@ func (session *UDPMakeSession) loop() {
 					log.Println("overtime close", session.LocalAddr().String(), session.RemoteAddr().String())
 					go session.Close()
 				} else {
-					time.AfterFunc(300 * time.Millisecond, func() {
+					time.AfterFunc(300*time.Millisecond, func() {
 						select {
 						case ping <- true:
-						case <- session.quitChan:
+						case <-session.quitChan:
 						}
 					})
 				}
@@ -456,8 +459,8 @@ func (session *UDPMakeSession) loop() {
 		}
 	}()
 	select {
-		case ping <- true:
-		case <- session.quitChan:
+	case ping <- true:
+	case <-session.quitChan:
 	}
 out:
 	for {
