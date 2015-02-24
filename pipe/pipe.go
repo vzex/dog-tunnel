@@ -74,7 +74,7 @@ type UDPMakeSession struct {
 	remote        *net.UDPAddr
 	kcp           *ikcp.Ikcpcb
 	do            chan Action
-	do2            chan Action
+	do2           chan Action
 	wait          sync.WaitGroup
 	listener      *Listener
 	closed        bool
@@ -355,7 +355,8 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 func (session *UDPMakeSession) loop() {
 	curr := time.Now().Unix()
 	session.overTime = curr + session.timeout
-	ping := time.NewTicker(time.Second)
+	ping := time.NewTicker(time.Millisecond * 300)
+	pingC := 0
 	callUpdate := false
 	updateC := make(chan bool)
 	if session.listener == nil {
@@ -379,22 +380,34 @@ func (session *UDPMakeSession) loop() {
 			}
 		}()
 	}
-	updateF := func() {
+	updateF := func(n time.Duration) {
 		if !callUpdate {
 			callUpdate = true
-			time.AfterFunc(10 * time.Millisecond, func() {
+			time.AfterFunc(n*time.Millisecond, func() {
 				updateC <- true
 			})
 		}
 	}
 	go func() {
-out:
+	out:
 		for {
 			select {
 			//session.wait.Done()
-			case action := <- session.do2:
+			case <-ping.C:
+				updateF(50)
+				pingC++
+				if pingC >= 4 {
+					pingC = 0
+					session.DoAction2("write", string(makeEncode(session.encodeBuffer, Ping, 0)))
+				}
+				if time.Now().Unix() > session.overTime {
+					log.Println("overtime close", session.LocalAddr().String(), session.RemoteAddr().String())
+					go session.Close()
+				}
+			case action := <-session.do2:
 				switch action.t {
 				case "input":
+					session.overTime = time.Now().Unix() + session.timeout
 					args := action.args
 					s := args[0].(string)
 					n := args[1].(int)
@@ -415,31 +428,31 @@ out:
 							break
 						}
 					}
-					updateF()
+					updateF(10)
 				case "write":
 					b := []byte(action.args[0].(string))
 					ikcp.Ikcp_send(session.kcp, b, len(b))
-					updateF()
+					updateF(10)
 				}
-			case <- session.quitChan:
+			case <-session.quitChan:
 				break out
 			case <-updateC:
-				ikcp.Ikcp_update(session.kcp, uint32(iclock()))
+				now := uint32(iclock())
+				ikcp.Ikcp_update(session.kcp, now)
 				callUpdate = false
+				n := ikcp.Ikcp_check(session.kcp, now)
+				if n > 0 {
+					log.Println("force update, poor network", n)
+					updateF(20)
+				}
 			}
 		}
 	}()
 out:
 	for {
 		select {
-		case <-ping.C:
-			session.DoAction2("write", string(makeEncode(session.encodeBuffer, Ping, 0)))
-			if time.Now().Unix() > session.overTime {
-				log.Println("overtime close", session.LocalAddr().String(), session.RemoteAddr().String())
-				go session.Close()
-			}
 		case action := <-session.do:
-		     switch action.t {
+			switch action.t {
 			case "quit":
 				if session.closed {
 					break
@@ -461,7 +474,6 @@ out:
 				session._Close(false)
 				break out
 			case "recv":
-				session.overTime = time.Now().Unix() + session.timeout
 				data := []byte(action.args[0].(string))
 				status := data[0]
 				switch status {

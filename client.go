@@ -774,10 +774,10 @@ func (msg *reqMsg) read(bytes []byte) (bool, []byte) {
 }
 
 type pipeInfo struct {
-	bytes int
-	times int
-	t     int64
-	owner *Client
+	bytes    int
+	times    int
+	t        int64
+	owner    *Client
 	newindex int
 }
 
@@ -798,7 +798,7 @@ type Client struct {
 	reverseAddr    string
 	readyId        string
 	newindex       int
-	encryptstr    string
+	encryptstr     string
 }
 
 // pipe : client to client
@@ -880,7 +880,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		sc.reverseAddr = content
 		go sc.MultiListen()
 	case "ready":
-		currReadyId ++
+		currReadyId++
 		sc.readyId = strconv.Itoa(currReadyId)
 		log.Println("currid", sc.readyId, sc.id)
 		common.WriteCrypt(pipe, "-1", "readyback", sc.readyId, sc.encode)
@@ -909,7 +909,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 						c.pipes[i] = pipe
 						c.pipesInfo[i] = &pipeInfo{0, 0, 0, nil, 0}
 						newindex := 0
-						for _i, _info := range sc.pipes{
+						for _i, _info := range sc.pipes {
 							if _info == pipe {
 								pinfo, _ := sc.pipesInfo[_i]
 								pinfo.newindex = i
