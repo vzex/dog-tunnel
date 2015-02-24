@@ -355,7 +355,7 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 func (session *UDPMakeSession) loop() {
 	curr := time.Now().Unix()
 	session.overTime = curr + session.timeout
-	ping := time.NewTicker(time.Millisecond * 300)
+	ping := make(chan bool)
 	pingC := 0
 	callUpdate := false
 	updateC := make(chan bool)
@@ -393,7 +393,7 @@ func (session *UDPMakeSession) loop() {
 		for {
 			select {
 			//session.wait.Done()
-			case <-ping.C:
+			case <-ping:
 				updateF(50)
 				pingC++
 				if pingC >= 4 {
@@ -403,6 +403,13 @@ func (session *UDPMakeSession) loop() {
 				if time.Now().Unix() > session.overTime {
 					log.Println("overtime close", session.LocalAddr().String(), session.RemoteAddr().String())
 					go session.Close()
+				} else {
+					time.AfterFunc(300 * time.Millisecond, func() {
+						select {
+						case ping <- true:
+						case <- session.quitChan:
+						}
+					})
 				}
 			case action := <-session.do2:
 				switch action.t {
@@ -448,6 +455,10 @@ func (session *UDPMakeSession) loop() {
 			}
 		}
 	}()
+	select {
+		case ping <- true:
+		case <- session.quitChan:
+	}
 out:
 	for {
 		select {
@@ -517,7 +528,6 @@ out:
 			}
 		}
 	}
-	ping.Stop()
 }
 
 func (session *UDPMakeSession) _Close(bFirstCall bool) {
