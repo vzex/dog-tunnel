@@ -8,12 +8,13 @@ import (
 	"log"
 	"net"
 	"strconv"
-	"sync"
 	"time"
 )
 
 const WriteBufferSize = 5000 //udp writer will add some data for checksum or encrypt
 const ReadBufferSize = 7000  //so reader must be larger
+
+const dataLimit = 1280
 
 func init() {
 }
@@ -75,7 +76,8 @@ type UDPMakeSession struct {
 	kcp           *ikcp.Ikcpcb
 	do            chan Action
 	do2           chan Action
-	wait          sync.WaitGroup
+	checkCanWrite chan bool
+	waitWrite     chan bool
 	listener      *Listener
 	closed        bool
 
@@ -126,7 +128,7 @@ func (l *Listener) inner_loop() {
 					continue
 				}
 				sessionId, _ := strconv.Atoi(common.GetId("udp"))
-				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan string), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5)}
+				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan string), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan bool), waitWrite: make(chan bool)}
 				l.sessions[addr] = session
 				session.serverInit(l)
 				session.serverDo(string(l.readBuffer[:n]))
@@ -205,7 +207,7 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 		log.Println("dial addr fail", _err.Error())
 		return nil, _err
 	}
-	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), do2: make(chan Action), quitChan: make(chan bool), recvChan: make(chan string), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan bool), encodeBuffer: make([]byte, 5)}
+	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), do2: make(chan Action), quitChan: make(chan bool), recvChan: make(chan string), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan bool), waitWrite: make(chan bool)}
 	session.remote = udpAddr
 	session.sock = sock
 	session.status = "firstsyn"
@@ -401,7 +403,9 @@ func (session *UDPMakeSession) loop() {
 				pingC++
 				if pingC >= 4 {
 					pingC = 0
-					session.DoAction2("write", string(makeEncode(session.encodeBuffer, Ping, 0)))
+					if ikcp.Ikcp_waitsnd(session.kcp) <= dataLimit/2 {
+						go session.DoWrite(string(makeEncode(session.encodeBuffer, Ping, 0)))
+					}
 				}
 				if time.Now().Unix() > session.overTime {
 					log.Println("overtime close", session.LocalAddr().String(), session.RemoteAddr().String())
@@ -413,6 +417,25 @@ func (session *UDPMakeSession) loop() {
 						case <-session.quitChan:
 						}
 					})
+				}
+			case <-session.checkCanWrite:
+				if ikcp.Ikcp_waitsnd(session.kcp) > dataLimit {
+					log.Println("wait for data limit")
+					var checkF func()
+					checkF = func() {
+						if ikcp.Ikcp_waitsnd(session.kcp) <= dataLimit/2 {
+							log.Println("recover writing data")
+							select {
+							case session.waitWrite <- true:
+							case <-session.quitChan:
+							}
+						} else {
+							time.AfterFunc(time.Second, checkF)
+						}
+					}
+					time.AfterFunc(time.Second, checkF)
+				} else {
+					session.waitWrite <- true
 				}
 			case action := <-session.do2:
 				switch action.t {
@@ -450,11 +473,6 @@ func (session *UDPMakeSession) loop() {
 				now := uint32(iclock())
 				ikcp.Ikcp_update(session.kcp, now)
 				callUpdate = false
-				n := ikcp.Ikcp_check(session.kcp, now)
-				if n > 0 {
-					log.Println("force update, poor network", n)
-					updateF(20)
-				}
 			}
 		}
 	}()
@@ -478,7 +496,7 @@ out:
 					//log.Println("close over, step3", session.LocalAddr().String(), session.RemoteAddr().String())
 					session.DoAction("closeover")
 				})
-				session.DoAction2("write", string(makeEncode(session.encodeBuffer, Close, 0)))
+				go session.DoWrite(string(makeEncode(session.encodeBuffer, Close, 0)))
 			case "closeover":
 				//A call timeover
 				close(session.closeChan)
@@ -503,7 +521,7 @@ out:
 						session._Close(false)
 					} else {
 						//log.Println("recv remote close, step1", session.LocalAddr().String(), session.RemoteAddr().String())
-						session.DoAction2("write", string(makeEncode(session.encodeBuffer, CloseBack, 0)))
+						go session.DoWrite(string(makeEncode(session.encodeBuffer, CloseBack, 0)))
 						time.AfterFunc(time.Millisecond*500, func() {
 							//log.Println("close remote over, step4", session.LocalAddr().String(), session.RemoteAddr().String())
 							if session.closed {
@@ -627,6 +645,18 @@ func (session *UDPMakeSession) SetWriteDeadline(t time.Time) error {
 	return session.sock.SetWriteDeadline(t)
 }
 
+func (session *UDPMakeSession) DoWrite(s string) {
+	select {
+	case session.checkCanWrite <- true:
+		select {
+		case <-session.waitWrite:
+		case <-session.quitChan:
+		}
+		session.DoAction2("write", s)
+	case <-session.quitChan:
+	}
+}
+
 func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 	if session.closed {
 		return 0, errors.New("closed")
@@ -638,7 +668,7 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 	data := make([]byte, sendL+1)
 	data[0] = Data
 	copy(data[1:], b)
-	session.DoAction2("write", string(data))
+	session.DoWrite(string(data))
 	return sendL, err
 }
 

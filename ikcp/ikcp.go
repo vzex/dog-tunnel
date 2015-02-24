@@ -905,7 +905,6 @@ func Ikcp_flush(kcp *Ikcpcb) {
 	}
 
 	// flush data segments
-	ind := 0
 	for p := kcp.snd_buf.Front(); p != nil; p = p.Next() {
 		////println("debug loop", a, kcp.snd_buf.Len())
 		segment := p.Value.(*IKCPSEG)
@@ -915,7 +914,7 @@ func Ikcp_flush(kcp *Ikcpcb) {
 			segment.xmit++
 			segment.rto = kcp.rx_rto
 			segment.resendts = current + segment.rto + rtomin
-		} else if _itimediff(current, segment.resendts) >= 0 || ind == 0 {
+		} else if _itimediff(current, segment.resendts) >= 0 {
 			needsend = 1
 			segment.xmit++
 			kcp.xmit++
@@ -962,7 +961,6 @@ func Ikcp_flush(kcp *Ikcpcb) {
 				kcp.state = 0
 			}
 		}
-		ind++
 	}
 
 	// flash remain segments
@@ -1026,7 +1024,6 @@ func Ikcp_update(kcp *Ikcpcb, current uint32) {
 }
 
 func Ikcp_check(kcp *Ikcpcb, current uint32) uint32 {
-	return uint32(kcp.snd_queue.Len())
 	ts_flush := kcp.ts_flush
 	tm_flush := 0x7fffffff
 	tm_packet := 0x7fffffff
