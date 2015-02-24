@@ -14,7 +14,7 @@ import (
 const WriteBufferSize = 5000 //udp writer will add some data for checksum or encrypt
 const ReadBufferSize = 7000  //so reader must be larger
 
-const dataLimit = 1280
+const dataLimit = 4000
 
 func init() {
 }
