@@ -76,8 +76,7 @@ type UDPMakeSession struct {
 	kcp           *ikcp.Ikcpcb
 	do            chan Action
 	do2           chan Action
-	checkCanWrite chan bool
-	waitWrite     chan bool
+	checkCanWrite chan (chan bool)
 	listener      *Listener
 	closed        bool
 
@@ -128,7 +127,7 @@ func (l *Listener) inner_loop() {
 					continue
 				}
 				sessionId, _ := strconv.Atoi(common.GetId("udp"))
-				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan string), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan bool), waitWrite: make(chan bool)}
+				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan string), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
 				l.sessions[addr] = session
 				session.serverInit(l)
 				session.serverDo(string(l.readBuffer[:n]))
@@ -207,7 +206,7 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 		log.Println("dial addr fail", _err.Error())
 		return nil, _err
 	}
-	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), do2: make(chan Action), quitChan: make(chan bool), recvChan: make(chan string), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan bool), waitWrite: make(chan bool)}
+	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), do2: make(chan Action), quitChan: make(chan bool), recvChan: make(chan string), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
 	session.remote = udpAddr
 	session.sock = sock
 	session.status = "firstsyn"
@@ -393,6 +392,9 @@ func (session *UDPMakeSession) loop() {
 			})
 		}
 	}
+	fastCheck := false
+	waitList := [](chan bool){}
+	recoverChan := make(chan bool)
 	go func() {
 	out:
 		for {
@@ -418,15 +420,44 @@ func (session *UDPMakeSession) loop() {
 						}
 					})
 				}
-			case <-session.checkCanWrite:
+			case <-recoverChan:
+				fastCheck = false
+				for _, r := range waitList {
+					log.Println("recover writing data")
+					select {
+					case r <- true:
+					case <-session.quitChan:
+					}
+				}
+				waitList = [](chan bool){}
+			case c := <-session.checkCanWrite:
 				if ikcp.Ikcp_waitsnd(session.kcp) > dataLimit {
 					log.Println("wait for data limit")
+					waitList = append(waitList, c)
+					if !fastCheck {
+						fastCheck = true
+						var f func()
+						f = func() {
+							n := ikcp.Ikcp_waitsnd(session.kcp)
+							//log.Println("fast check!", n, len(waitList))
+							if n <= dataLimit/2 {
+								select {
+								case <-session.quitChan:
+								case recoverChan <- true:
+								}
+							} else {
+								updateF(20)
+								time.AfterFunc(40*time.Millisecond, f)
+							}
+						}
+						time.AfterFunc(20*time.Millisecond, f)
+					}
 					var checkF func()
 					checkF = func() {
 						if ikcp.Ikcp_waitsnd(session.kcp) <= dataLimit/2 {
 							log.Println("recover writing data")
 							select {
-							case session.waitWrite <- true:
+							case c <- true:
 							case <-session.quitChan:
 							}
 						} else {
@@ -435,7 +466,7 @@ func (session *UDPMakeSession) loop() {
 					}
 					time.AfterFunc(time.Second, checkF)
 				} else {
-					session.waitWrite <- true
+					c <- true
 				}
 			case action := <-session.do2:
 				switch action.t {
@@ -646,10 +677,11 @@ func (session *UDPMakeSession) SetWriteDeadline(t time.Time) error {
 }
 
 func (session *UDPMakeSession) DoWrite(s string) {
+	wc := make(chan bool)
 	select {
-	case session.checkCanWrite <- true:
+	case session.checkCanWrite <- wc:
 		select {
-		case <-session.waitWrite:
+		case <-wc:
 		case <-session.quitChan:
 		}
 		session.DoAction2("write", s)
@@ -674,6 +706,15 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 
 //udp read does not relay on the len(p), please make a big enough array to cache data
 func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
+	wc := make(chan bool)
+	select {
+	case session.checkCanWrite <- wc:
+		select {
+		case <-wc:
+		case <-session.quitChan:
+		}
+	case <-session.quitChan:
+	}
 	b := []byte(<-session.recvChan)
 	l := len(b)
 	copy(p, b[:l])
