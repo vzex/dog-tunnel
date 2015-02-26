@@ -365,6 +365,7 @@ func loadSettings(info *fileSetting) error {
 
 var checkDns chan *dnsQueryReq
 var checkDnsRes chan *dnsQueryBack
+var checkRealAddrChan chan *queryRealAddrInfo
 
 type dnsQueryReq struct {
 	c       chan *dnsQueryRes
@@ -385,6 +386,37 @@ type dnsQueryRes struct {
 	conn net.Conn
 	err  error
 	ip   string
+}
+
+type queryRealAddrInfo struct {
+	conn net.Conn
+	c    chan string
+}
+
+func checkRealAddr() {
+	for {
+		select {
+		case info := <-checkRealAddrChan:
+			conn := info.conn
+			f, er := conn.(*net.TCPConn).File()
+			defer f.Close()
+			if er == nil {
+				fd := f.Fd()
+				addr, _er := syscall.GetsockoptIPv6Mreq(int(fd), syscall.SOL_IP, 80)
+				if _er == nil {
+					remote := fmt.Sprintf("%d.%d.%d.%d:%d", uint(addr.Multiaddr[4]), uint(addr.Multiaddr[5]), uint(addr.Multiaddr[6]), uint(addr.Multiaddr[7]), uint16(addr.Multiaddr[2])<<8+uint16(addr.Multiaddr[3]))
+					log.Println("redirect ip", remote)
+					info.c <- remote
+				} else {
+					log.Println("get ip fail:", _er.Error())
+					close(info.c)
+				}
+			} else {
+				log.Println(er.Error())
+				close(info.c)
+			}
+		}
+	}
 }
 
 func dnsLoop() {
@@ -476,7 +508,9 @@ func main() {
 	rand.Seed(time.Now().Unix())
 	checkDns = make(chan *dnsQueryReq)
 	checkDnsRes = make(chan *dnsQueryBack)
+	checkRealAddrChan = make(chan *queryRealAddrInfo)
 	go dnsLoop()
+	go checkRealAddr()
 	if *bShowVersion {
 		fmt.Printf("%.2f\n", common.Version)
 		return
@@ -937,10 +971,14 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		sc.removeSession(sessionId)
 	case "tunnel_open":
 		if sc.action != "socks5" {
-			s_conn, err := net.DialTimeout("tcp", sc.action, 10*time.Second)
+			remote := sc.action
+			if sc.action == "route" {
+				remote = content
+			}
+			s_conn, err := net.DialTimeout("tcp", remote, 10*time.Second)
 			if err != nil {
-				log.Println("connect to local server fail:", err.Error(), sc.action)
-				msg := "cannot connect to bind addr" + sc.action
+				log.Println("connect to local server fail:", err.Error(), remote)
+				msg := "cannot connect to bind addr" + remote
 				go common.WriteCrypt(pipe, sessionId, "tunnel_error", msg, sc.encode)
 				return
 			} else {
@@ -1141,8 +1179,18 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 		return
 	}
 	conn := session.localConn
+	remote := ""
+	if client.action == "route" {
+		c := make(chan string)
+		checkRealAddrChan <- &queryRealAddrInfo{conn, c}
+		remote = <-c
+		if remote == "" {
+			client.removeSession(sessionId)
+			return
+		}
+	}
 	if client.action != "socks5" {
-		common.WriteCrypt(pipe, sessionId, "tunnel_open", "", client.encode)
+		common.WriteCrypt(pipe, sessionId, "tunnel_open", remote, client.encode)
 	}
 	arr := make([]byte, buffSize)
 	reader := bufio.NewReader(conn)
