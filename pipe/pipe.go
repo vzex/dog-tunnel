@@ -16,6 +16,9 @@ const ReadBufferSize = 7000  //so reader must be larger
 
 const dataLimit = 4000
 
+const mainV = 0
+const subV = 1
+
 func init() {
 }
 
@@ -45,6 +48,7 @@ const (
 	Ping      byte = 5
 	Close     byte = 6
 	CloseBack byte = 7
+	ResetAck  byte = 8
 )
 
 func makeEncode(buf []byte, status byte, arg int) []byte {
@@ -123,7 +127,7 @@ func (l *Listener) inner_loop() {
 				status, _ := makeDecode(l.readBuffer[:n])
 				if status != FirstSYN {
 					go sock.WriteToUDP([]byte("0"), from)
-					log.Println("invalid package,reset", from)
+					log.Println("invalid package,reset", from, status)
 					continue
 				}
 				sessionId, _ := strconv.Atoi(common.GetId("udp"))
@@ -194,8 +198,16 @@ func Dial(addr string) (*UDPMakeSession, error) {
 }
 
 func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
+	bReset := false
 	if timeout < 5 {
+		bReset = true
 		timeout = 5
+	} else if timeout > 255 {
+		bReset = true
+		timeout = 255
+	}
+	if bReset {
+		log.Println("timeout should in [5, 255], force reset timeout to", timeout)
 	}
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
@@ -215,9 +227,16 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 	if _timeout < 5 {
 		timeout = 5
 	}
+	arg := int(int32(timeout) + int32(mainV<<24) + int32(subV<<16))
+	info := makeEncode(session.encodeBuffer, FirstSYN, arg)
 	code := session.doAndWait(func() {
-		sock.WriteToUDP(makeEncode(session.encodeBuffer, FirstSYN, timeout), udpAddr)
+		sock.WriteToUDP(info, udpAddr)
 	}, _timeout, func(status byte, arg int32) int {
+		if status == ResetAck {
+			_mainV, _subV := int(byte(arg>>24)), int(byte(arg>>16))
+			log.Printf("pipe version not eq,%d.%d=>%d.%d", mainV, subV, _mainV, _subV)
+			return 1
+		}
 		if status != FirstACK {
 			return -1
 		} else {
@@ -253,7 +272,7 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 }
 
 func (session *UDPMakeSession) doAndWait(f func(), sec int, readf func(status byte, arg int32) int) (code int) {
-	t := time.NewTicker(10 * time.Millisecond)
+	t := time.NewTicker(50 * time.Millisecond)
 	currT := time.Now().Unix()
 	f()
 out:
@@ -297,7 +316,7 @@ func (session *UDPMakeSession) serverDo(s string) {
 }
 func (session *UDPMakeSession) serverInit(l *Listener) {
 	go func() {
-		c := time.NewTicker(10 * time.Millisecond)
+		c := time.NewTicker(50 * time.Millisecond)
 		defer func() {
 			if c != nil {
 				c.Stop()
@@ -318,8 +337,14 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 						session.sock.WriteToUDP(makeEncode(session.encodeBuffer, Reset, 0), session.remote)
 						return
 					}
+					_mainV, _subV := int(byte(arg>>24)), int(byte(arg>>16))
+					if _mainV != mainV || _subV != subV {
+						session.sock.WriteToUDP(makeEncode(session.encodeBuffer, ResetAck, (mainV<<24)+(subV<<16)), session.remote)
+						log.Printf("pipe version not eq,kickout,%d.%d=>%d.%d", mainV, subV, _mainV, _subV)
+						return
+					}
 					session.status = "firstack"
-					session.timeout = int64(arg)
+					session.timeout = int64(arg & 0xff)
 					session.sock.WriteToUDP(makeEncode(session.encodeBuffer, FirstACK, session.id), session.remote)
 					overTime = time.Now().Unix() + session.timeout
 				case "firstack":
