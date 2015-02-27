@@ -160,7 +160,8 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	id := *serviceAddr
 	client, bHave := g_ClientMap[id]
 	if !bHave {
-		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), pipesInfo: make(map[int]*pipeInfo)}
+		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), pipesInfo: make(map[int]*pipeInfo), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
+		go client.sessionLoop()
 		g_ClientMap[id] = client
 	}
 	if *authKey != "" {
@@ -249,7 +250,8 @@ func Listen(bIsTcp bool, addr string) bool {
 		}
 		client, have := g_ClientMap[id]
 		if !have {
-			client = &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), pipesInfo: make(map[int]*pipeInfo)}
+			client = &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), pipesInfo: make(map[int]*pipeInfo), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
+			go client.sessionLoop()
 			g_ClientMap[id] = client
 			if *authKey == "" {
 				client.authed = true
@@ -387,6 +389,23 @@ type dnsQueryRes struct {
 	err  error
 	ip   string
 }
+
+type createSessionInfo struct {
+	sessionId string
+	session   *clientSession
+	c         chan string
+}
+
+type removeSessionInfo struct {
+	sessionId string
+	c         chan bool
+}
+
+type getSessionInfo struct {
+	sessionId string
+	c         chan *clientSession
+}
+
 
 type queryRealAddrInfo struct {
 	conn net.Conn
@@ -653,7 +672,6 @@ type clientSession struct {
 	status    string
 	recvMsg   string
 	extra     uint8
-	quit      chan bool
 }
 
 func (session *clientSession) processSockProxy(sessionId, content string, callback func([]byte)) {
@@ -824,40 +842,44 @@ type Client struct {
 	ready          bool
 	bUdp           bool
 	action         string
-	quit           chan bool
-	encode, decode func([]byte) []byte
-	authed         bool
-	localconn      net.Conn
-	listener       net.Listener
-	reverseAddr    string
-	readyId        string
-	newindex       int
-	encryptstr     string
+	quit              chan bool
+	closed            bool
+	encode, decode    func([]byte) []byte
+	authed            bool
+	localconn         net.Conn
+	listener          net.Listener
+	reverseAddr       string
+	readyId           string
+	newindex          int
+	encryptstr        string
+	createSessionChan chan createSessionInfo
+	removeSessionChan chan removeSessionInfo
+	getSessionChan    chan getSessionInfo
 }
 
 // pipe : client to client
 // local : client to local apps
 func (sc *Client) getSession(sessionId string) *clientSession {
-	session, _ := sc.sessions[sessionId]
+	c := make(chan *clientSession)
+	request := getSessionInfo{sessionId, c}
+	select {
+	case sc.getSessionChan <- request:
+	case <-sc.quit:
+		return nil
+	}
+	session := <-c
 	return session
 }
 
 func (sc *Client) removeSession(sessionId string) bool {
-	common.RmId("session", sessionId)
-	session, bHave := sc.sessions[sessionId]
-	if bHave {
-		if session.quit != nil {
-			close(session.quit)
-			session.quit = nil
-		}
-		if session.localConn != nil {
-			session.localConn.Close()
-		}
-		delete(sc.sessions, sessionId)
-		//log.Println("client", sc.id, "remove session", sessionId)
-		return true
+	c := make(chan bool)
+	request := removeSessionInfo{sessionId, c}
+	select {
+	case sc.removeSessionChan <- request:
+	case <-sc.quit:
+		return false
 	}
-	return false
+	return <-c
 }
 
 func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, content string) {
@@ -885,7 +907,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		sc.Quit()
 	case "tunnel_error":
 		log.Println("tunnel error", content, sessionId)
-		sc.removeSession(sessionId)
+		go sc.removeSession(sessionId)
 	case "showandquit":
 		println(content)
 		sc.Quit()
@@ -896,7 +918,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 			//log.Println("cannot tunnel msg", sessionId)
 		}
 	case "tunnel_close_s":
-		sc.removeSession(sessionId)
+		go sc.removeSession(sessionId)
 	case "init_action_back":
 		log.Println("server force do action", content)
 		sc.action = content
@@ -968,8 +990,9 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 			conn.Write([]byte(content))
 		}
 	case "tunnel_close":
-		sc.removeSession(sessionId)
+		go sc.removeSession(sessionId)
 	case "tunnel_open":
+		go func() {
 		if sc.action != "socks5" {
 			remote := sc.action
 			if sc.action == "route" {
@@ -982,12 +1005,23 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 				go common.WriteCrypt(pipe, sessionId, "tunnel_error", msg, sc.encode)
 				return
 			} else {
-				sc.sessions[sessionId] = &clientSession{pipe: pipe, localConn: s_conn, quit: make(chan bool)}
-				go handleLocalPortResponse(sc, sessionId, "")
-			}
+					session := &clientSession{pipe: pipe, localConn: s_conn}
+					c := make(chan string)
+					request := createSessionInfo{sessionId: sessionId, session: session, c: c}
+					select {
+					case sc.createSessionChan <- request:
+						<-c
+						go session.handleLocalPortResponse(sc, sessionId, "")
+					case <-sc.quit:
+					}
+				}
 		} else {
-			session = &clientSession{pipe: pipe, localConn: nil, status: "init", recvMsg: "", quit: make(chan bool)}
-			sc.sessions[sessionId] = session
+				session = &clientSession{pipe: pipe, localConn: nil, status: "init", recvMsg: ""}
+				c := make(chan string)
+				request := createSessionInfo{sessionId: sessionId, session: session, c: c}
+				select {
+				case sc.createSessionChan <- request:
+					<-c
 			go func() {
 				var hello reqMsg
 				bOk, _ := hello.read([]byte(content))
@@ -1025,12 +1059,15 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 					go common.WriteCrypt(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]), sc.encode)
 				} else {
 					session.localConn = s_conn
-					go handleLocalPortResponse(sc, sessionId, hello.url)
-					ansmsg.gen(&hello, 0)
-					go common.WriteCrypt(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]), sc.encode)
+							go session.handleLocalPortResponse(sc, sessionId, hello.url)
+							ansmsg.gen(&hello, 0)
+							go common.WriteCrypt(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]), sc.encode)
+						}
+					}()
+				case <-sc.quit:
 				}
-			}()
-		}
+			}
+		}()
 	}
 }
 
@@ -1039,17 +1076,61 @@ func (sc *Client) SetCrypt(encode, decode func([]byte) []byte) {
 	sc.decode = decode
 }
 
+func (sc *Client) sessionLoop() {
+out:
+	for {
+		select {
+		case sessionInfo := <-sc.createSessionChan:
+			if sessionInfo.sessionId == "" {
+				sessionInfo.sessionId = common.GetId("session")
+			}
+			old, bHave := sc.sessions[sessionInfo.sessionId]
+			if bHave {
+				if old.localConn != nil {
+					old.localConn.Close()
+				}
+			} else {
+				sc.sessions[sessionInfo.sessionId] = sessionInfo.session
+			}
+			sessionInfo.c <- sessionInfo.sessionId
+		case sessionInfo := <-sc.removeSessionChan:
+			common.RmId("session", sessionInfo.sessionId)
+			session, bHave := sc.sessions[sessionInfo.sessionId]
+			if bHave {
+				delete(sc.sessions, sessionInfo.sessionId)
+				if session.localConn != nil {
+					session.localConn.Close()
+				}
+			}
+			sessionInfo.c <- bHave
+		case sessionInfo := <-sc.getSessionChan:
+			session, bHave := sc.sessions[sessionInfo.sessionId]
+			if bHave {
+				sessionInfo.c <- session
+			} else {
+				sessionInfo.c <- nil
+			}
+		case <-sc.quit:
+			for _, session := range sc.sessions {
+				if session.localConn != nil {
+					session.localConn.Close()
+				}
+			}
+			break out
+
+		}
+	}
+}
+
 func (sc *Client) Quit() {
-	if sc.quit == nil {
+	if !sc.closed {
+		sc.closed = true
+	} else {
 		return
 	}
 	close(sc.quit)
-	sc.quit = nil
 	log.Println("client quit", sc.id)
 	delete(g_ClientMap, sc.id)
-	for id, _ := range sc.sessions {
-		sc.removeSession(id)
-	}
 	for id, pipe := range sc.pipes {
 		pipe.Close()
 		delete(sc.pipes, id)
@@ -1081,20 +1162,26 @@ func (sc *Client) MultiListen() bool {
 				if err != nil {
 					break
 				}
-				sessionId := common.GetId("session")
 				pipe := sc.getOnePipe()
 				if pipe == nil {
 					log.Println("cannot get pipe for client, wait for recover...")
 					time.Sleep(time.Second)
 					continue
 				}
-				sc.sessions[sessionId] = &clientSession{pipe: pipe, localConn: conn, status: "init"}
-				//log.Println("client", sc.id, "create session", sessionId)
-				go handleLocalServerResponse(sc, sessionId)
+				session := &clientSession{pipe: pipe, localConn: conn, status: "init"}
+				c := make(chan string)
+				request := createSessionInfo{sessionId: "", session: session, c: c}
+				select {
+				case sc.createSessionChan <- request:
+					sessionId := <-c
+					//log.Println("client", sc.id, "create session", sessionId)
+					go session.handleLocalServerResponse(sc, sessionId)
+				case <-sc.quit:
+				}
 			}
 			sc.listener = nil
 			for _, pipe := range sc.pipes {
-				common.WriteCrypt(pipe, "-1", "showandquit", "server lisnter quit", sc.encode)
+				common.WriteCrypt(pipe, "-1", "showandquit", "server listener quit", sc.encode)
 			}
 		}()
 	}
@@ -1138,12 +1225,8 @@ func (sc *Client) getOnePipe() net.Conn {
 }
 
 ///////////////////////multi pipe support
-func handleLocalPortResponse(client *Client, id, url string) {
+func (session *clientSession) handleLocalPortResponse(client *Client, id, url string) {
 	sessionId := id
-	session := client.getSession(sessionId)
-	if session == nil {
-		return
-	}
 	conn := session.localConn
 	if conn == nil {
 		return
@@ -1167,11 +1250,7 @@ func handleLocalPortResponse(client *Client, id, url string) {
 	common.WriteCrypt(session.pipe, id, "tunnel_close_s", "", client.encode)
 }
 
-func handleLocalServerResponse(client *Client, sessionId string) {
-	session := client.getSession(sessionId)
-	if session == nil {
-		return
-	}
+func (session *clientSession) handleLocalServerResponse(client *Client, sessionId string) {
 	buffSize := pipe.WriteBufferSize
 	pipe := session.pipe
 	if pipe == nil {

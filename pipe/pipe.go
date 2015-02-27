@@ -371,7 +371,8 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 				case "firstack":
 					session.sock.WriteToUDP(makeEncode(session.encodeBuffer, FirstACK, session.id), session.remote)
 				case "ok":
-					session.sock.WriteToUDP(makeEncode(session.encodeBuffer, SndACK, session.id), session.remote)
+                                        buf:= make([]byte, 5)
+					session.sock.WriteToUDP(makeEncode(buf, SndACK, session.id), session.remote)
 				}
 			}
 		}
@@ -552,7 +553,8 @@ out:
 					//log.Println("close over, step3", session.LocalAddr().String(), session.RemoteAddr().String())
 					session.DoAction("closeover")
 				})
-				go session.DoWrite(string(makeEncode(session.encodeBuffer, Close, 0)))
+                                buf:=make([]byte, 5)
+				go session.DoWrite(string(makeEncode(buf, Close, 0)))
 			case "closeover":
 				//A call timeover
 				close(session.closeChan)
@@ -577,7 +579,8 @@ out:
 						session._Close(false)
 					} else {
 						//log.Println("recv remote close, step1", session.LocalAddr().String(), session.RemoteAddr().String())
-						go session.DoWrite(string(makeEncode(session.encodeBuffer, CloseBack, 0)))
+                                                buf:=make([]byte, 5)
+						go session.DoWrite(string(makeEncode(buf, CloseBack, 0)))
 						time.AfterFunc(time.Millisecond*500, func() {
 							//log.Println("close remote over, step4", session.LocalAddr().String(), session.RemoteAddr().String())
 							if session.closed {
@@ -701,23 +704,23 @@ func (session *UDPMakeSession) SetWriteDeadline(t time.Time) error {
 	return session.sock.SetWriteDeadline(t)
 }
 
-func (session *UDPMakeSession) DoWrite(s string) {
+func (session *UDPMakeSession) DoWrite(s string) bool {
 	wc := make(chan bool)
 	select {
 	case session.checkCanWrite <- wc:
 		select {
 		case <-wc:
 		case <-session.quitChan:
+                        return false
 		}
 		session.DoAction2("write", s)
+                return true
 	case <-session.quitChan:
+                return false
 	}
 }
 
 func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
-	if session.closed {
-		return 0, errors.New("closed")
-	}
 	sendL := len(b)
 	if sendL == 0 || session.status != "ok" {
 		return 0, nil
@@ -725,7 +728,10 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 	data := make([]byte, sendL+1)
 	data[0] = Data
 	copy(data[1:], b)
-	session.DoWrite(string(data))
+        ok := session.DoWrite(string(data))
+        if !ok {
+		return 0, errors.New("closed")
+        }
 	return sendL, err
 }
 
