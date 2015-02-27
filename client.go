@@ -976,82 +976,80 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	case "tunnel_close":
 		go sc.removeSession(sessionId)
 	case "tunnel_open":
-		go func() {
-			if sc.action != "socks5" {
-				remote := sc.action
-				if sc.action == "route" {
-					remote = content
-				}
-				s_conn, err := net.DialTimeout("tcp", remote, 10*time.Second)
-				if err != nil {
-					log.Println("connect to local server fail:", err.Error(), remote)
-					msg := "cannot connect to bind addr" + remote
-					go common.WriteCrypt(pipe, sessionId, "tunnel_error", msg, sc.encode)
-					return
-				} else {
-					session := &clientSession{pipe: pipe, localConn: s_conn}
-					c := make(chan string)
-					request := createSessionInfo{sessionId: sessionId, session: session, c: c}
-					select {
-					case sc.createSessionChan <- request:
-						<-c
-						go session.handleLocalPortResponse(sc, sessionId, "")
-					case <-sc.quit:
-					}
-				}
+		if sc.action != "socks5" {
+			remote := sc.action
+			if sc.action == "route" {
+				remote = content
+			}
+			s_conn, err := net.DialTimeout("tcp", remote, 10*time.Second)
+			if err != nil {
+				log.Println("connect to local server fail:", err.Error(), remote)
+				msg := "cannot connect to bind addr" + remote
+				go common.WriteCrypt(pipe, sessionId, "tunnel_error", msg, sc.encode)
+				return
 			} else {
-				session = &clientSession{pipe: pipe, localConn: nil, status: "init", recvMsg: ""}
+				session := &clientSession{pipe: pipe, localConn: s_conn}
 				c := make(chan string)
 				request := createSessionInfo{sessionId: sessionId, session: session, c: c}
 				select {
 				case sc.createSessionChan <- request:
 					<-c
-					go func() {
-						var hello reqMsg
-						bOk, _ := hello.read([]byte(content))
-						if !bOk {
-							msg := "hello read err"
-							go common.WriteCrypt(pipe, sessionId, "tunnel_error", msg, sc.encode)
-							return
-						}
-						var ansmsg ansMsg
-						url := hello.url
-						var s_conn net.Conn
-						var err error
-						if *dnsCacheNum > 0 && hello.atyp == 3 {
-							host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
-							resChan := make(chan *dnsQueryRes)
-							debug("try cache", resChan)
-							checkDns <- &dnsQueryReq{c: resChan, host: host, port: int(hello.dst_port2), reqtype: hello.reqtype, url: url}
-							debug("try cache2")
-							res := <-resChan
-							debug("try cache3")
-							s_conn = res.conn
-							err = res.err
-							if res.ip != "" {
-								url = res.ip + fmt.Sprintf(":%d", hello.dst_port2)
-							}
-						}
-						if s_conn == nil && err == nil {
-							//log.Println("try dial", url)
-							s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
-							//log.Println("try dial", url, "ok")
-						}
-						if err != nil {
-							log.Println("connect to local server fail:", err.Error())
-							ansmsg.gen(&hello, 4)
-							go common.WriteCrypt(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]), sc.encode)
-						} else {
-							session.localConn = s_conn
-							go session.handleLocalPortResponse(sc, sessionId, hello.url)
-							ansmsg.gen(&hello, 0)
-							go common.WriteCrypt(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]), sc.encode)
-						}
-					}()
+					go session.handleLocalPortResponse(sc, sessionId, "")
 				case <-sc.quit:
 				}
 			}
-		}()
+		} else {
+			session = &clientSession{pipe: pipe, localConn: nil, status: "init", recvMsg: ""}
+			c := make(chan string)
+			request := createSessionInfo{sessionId: sessionId, session: session, c: c}
+			select {
+			case sc.createSessionChan <- request:
+				<-c
+				go func() {
+					var hello reqMsg
+					bOk, _ := hello.read([]byte(content))
+					if !bOk {
+						msg := "hello read err"
+						go common.WriteCrypt(pipe, sessionId, "tunnel_error", msg, sc.encode)
+						return
+					}
+					var ansmsg ansMsg
+					url := hello.url
+					var s_conn net.Conn
+					var err error
+					if *dnsCacheNum > 0 && hello.atyp == 3 {
+						host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
+						resChan := make(chan *dnsQueryRes)
+						debug("try cache", resChan)
+						checkDns <- &dnsQueryReq{c: resChan, host: host, port: int(hello.dst_port2), reqtype: hello.reqtype, url: url}
+						debug("try cache2")
+						res := <-resChan
+						debug("try cache3")
+						s_conn = res.conn
+						err = res.err
+						if res.ip != "" {
+							url = res.ip + fmt.Sprintf(":%d", hello.dst_port2)
+						}
+					}
+					if s_conn == nil && err == nil {
+						//log.Println("try dial", url)
+						s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
+						//log.Println("try dial", url, "ok")
+					}
+					if err != nil {
+						log.Println("connect to local server fail:", err.Error())
+						ansmsg.gen(&hello, 4)
+						go common.WriteCrypt(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]), sc.encode)
+					} else {
+						session.localConn = s_conn
+						go session.handleLocalPortResponse(sc, sessionId, hello.url)
+						ansmsg.gen(&hello, 0)
+						go common.WriteCrypt(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]), sc.encode)
+					}
+				}()
+			case <-sc.quit:
+			}
+		}
 	}
 }
 
