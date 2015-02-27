@@ -3,6 +3,7 @@ package main
 import (
 	"./common"
 	"./pipe"
+	"./platform"
 	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
@@ -35,7 +36,7 @@ var xorData = flag.String("xor", "", "xor key,c/s must use a some key")
 
 var serviceAddr = flag.String("service", "", "listen addr for client connect")
 var localAddr = flag.String("local", "", "if local not empty, treat me as client, this is the addr for local listen, otherwise, treat as server")
-var remoteAction = flag.String("action", "socks5", "for client control server, if action is socks5,remote is socks5 server, if is addr like 127.0.0.1:22, remote server is a port redirect server")
+var remoteAction = flag.String("action", "socks5", "for client control server, if action is socks5,remote is socks5 server, if is addr like 127.0.0.1:22, remote server is a port redirect server,\"route\" is for transparent socks")
 var bVerbose = flag.Bool("v", false, "verbose mode")
 var bShowVersion = flag.Bool("version", false, "show version")
 var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
@@ -367,6 +368,7 @@ func loadSettings(info *fileSetting) error {
 
 var checkDns chan *dnsQueryReq
 var checkDnsRes chan *dnsQueryBack
+var checkRealAddrChan chan *queryRealAddrInfo
 
 type dnsQueryReq struct {
 	c       chan *dnsQueryRes
@@ -403,6 +405,21 @@ type removeSessionInfo struct {
 type getSessionInfo struct {
 	sessionId string
 	c         chan *clientSession
+}
+
+type queryRealAddrInfo struct {
+	conn net.Conn
+	c    chan string
+}
+
+func checkRealAddr() {
+	for {
+		select {
+		case info := <-checkRealAddrChan:
+			remote := platform.GetDestAddrFromConn(info.conn)
+			info.c <- remote
+		}
+	}
 }
 
 func dnsLoop() {
@@ -494,7 +511,9 @@ func main() {
 	rand.Seed(time.Now().Unix())
 	checkDns = make(chan *dnsQueryReq)
 	checkDnsRes = make(chan *dnsQueryBack)
+	checkRealAddrChan = make(chan *queryRealAddrInfo)
 	go dnsLoop()
+	go checkRealAddr()
 	if *bShowVersion {
 		fmt.Printf("%.2f\n", common.Version)
 		return
@@ -959,10 +978,14 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	case "tunnel_open":
 		go func() {
 			if sc.action != "socks5" {
-				s_conn, err := net.DialTimeout("tcp", sc.action, 10*time.Second)
+				remote := sc.action
+				if sc.action == "route" {
+					remote = content
+				}
+				s_conn, err := net.DialTimeout("tcp", remote, 10*time.Second)
 				if err != nil {
-					log.Println("connect to local server fail:", err.Error(), sc.action)
-					msg := "cannot connect to bind addr" + sc.action
+					log.Println("connect to local server fail:", err.Error(), remote)
+					msg := "cannot connect to bind addr" + remote
 					go common.WriteCrypt(pipe, sessionId, "tunnel_error", msg, sc.encode)
 					return
 				} else {
@@ -1219,8 +1242,18 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 		return
 	}
 	conn := session.localConn
+	remote := ""
+	if client.action == "route" {
+		c := make(chan string)
+		checkRealAddrChan <- &queryRealAddrInfo{conn, c}
+		remote = <-c
+		if remote == "" {
+			client.removeSession(sessionId)
+			return
+		}
+	}
 	if client.action != "socks5" {
-		common.WriteCrypt(pipe, sessionId, "tunnel_open", "", client.encode)
+		common.WriteCrypt(pipe, sessionId, "tunnel_open", remote, client.encode)
 	}
 	arr := make([]byte, buffSize)
 	reader := bufio.NewReader(conn)
