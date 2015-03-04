@@ -67,22 +67,23 @@ func makeDecode(data []byte) (status byte, arg int32) {
 }
 
 type UDPMakeSession struct {
-	id            int
-	idstr         string
-	status        string
-	overTime      int64
-	quitChan      chan bool
-	closeChan     chan bool
-	recvChan      chan string
-	handShakeChan chan string
-	sock          *net.UDPConn
-	remote        *net.UDPAddr
-	kcp           *ikcp.Ikcpcb
-	do            chan Action
-	do2           chan Action
-	checkCanWrite chan (chan bool)
-	listener      *Listener
-	closed        bool
+	id                int
+	idstr             string
+	status            string
+	overTime          int64
+	quitChan          chan bool
+	closeChan         chan bool
+	recvChan          chan string
+	handShakeChan     chan string
+	handShakeChanQuit chan bool
+	sock              *net.UDPConn
+	remote            *net.UDPAddr
+	kcp               *ikcp.Ikcpcb
+	do                chan Action
+	do2               chan Action
+	checkCanWrite     chan (chan bool)
+	listener          *Listener
+	closed            bool
 
 	readBuffer    []byte
 	processBuffer []byte
@@ -92,14 +93,19 @@ type UDPMakeSession struct {
 
 type Listener struct {
 	connChan   chan *UDPMakeSession
+	quitChan   chan bool
 	sock       *net.UDPConn
 	readBuffer []byte
 	sessions   map[string]*UDPMakeSession
 }
 
 func (l *Listener) Accept() (net.Conn, error) {
-	c := <-l.connChan
+	var c *UDPMakeSession
 	var err error
+	select {
+	case c = <-l.connChan:
+	case <-l.quitChan:
+	}
 	if c == nil {
 		err = errors.New("listener quit")
 	}
@@ -137,7 +143,7 @@ func (l *Listener) inner_loop() {
 					continue
 				}
 				sessionId, _ := strconv.Atoi(common.GetId("udp"))
-				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan string), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
+				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan string), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), handShakeChanQuit: make(chan bool), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
 				l.sessions[addr] = session
 				session.serverInit(l)
 				session.serverDo(string(l.readBuffer[:n]))
@@ -172,7 +178,7 @@ func (l *Listener) Close() error {
 	} else {
 		return nil
 	}
-	close(l.connChan)
+	close(l.quitChan)
 	return nil
 }
 
@@ -194,7 +200,7 @@ func Listen(addr string) (*Listener, error) {
 		return nil, _err
 	}
 
-	listener := &Listener{connChan: make(chan *UDPMakeSession), sock: sock, readBuffer: make([]byte, ReadBufferSize), sessions: make(map[string]*UDPMakeSession)}
+	listener := &Listener{connChan: make(chan *UDPMakeSession), quitChan: make(chan bool), sock: sock, readBuffer: make([]byte, ReadBufferSize), sessions: make(map[string]*UDPMakeSession)}
 	go listener.loop()
 	return listener, nil
 }
@@ -317,16 +323,18 @@ out:
 func (session *UDPMakeSession) serverDo(s string) {
 	go func() {
 		//log.Println("prepare handshake", session.remote)
-		session.handShakeChan <- s
+		select {
+		case <-session.handShakeChanQuit:
+		case session.handShakeChan <- s:
+		}
 	}()
 }
 func (session *UDPMakeSession) serverInit(l *Listener) {
 	go func() {
 		c := time.NewTicker(50 * time.Millisecond)
 		defer func() {
-			if c != nil {
-				c.Stop()
-			}
+			close(session.handShakeChanQuit)
+			c.Stop()
 			if session.status != "ok" {
 				session.Close()
 			}
@@ -364,7 +372,10 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 					ikcp.Ikcp_nodelay(session.kcp, 1, 10, 2, 1)
 					go session.loop()
 					go func() {
-						l.connChan <- session
+						select {
+						case l.connChan <- session:
+						case <-l.quitChan:
+						}
 					}()
 					session.sock.WriteToUDP(makeEncode(session.encodeBuffer, SndACK, session.id), session.remote)
 					overTime = time.Now().Unix() + session.timeout
@@ -484,21 +495,11 @@ func (session *UDPMakeSession) loop() {
 						}
 						time.AfterFunc(20*time.Millisecond, f)
 					}
-					var checkF func()
-					checkF = func() {
-						if ikcp.Ikcp_waitsnd(session.kcp) <= dataLimit/2 {
-							log.Println("recover writing data")
-							select {
-							case c <- true:
-							case <-session.quitChan:
-							}
-						} else {
-							time.AfterFunc(time.Second, checkF)
-						}
-					}
-					time.AfterFunc(time.Second, checkF)
 				} else {
-					c <- true
+					select {
+					case c <- true:
+					case <-session.quitChan:
+					}
 				}
 			case action := <-session.do2:
 				switch action.t {
