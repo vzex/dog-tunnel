@@ -45,6 +45,7 @@ var timeOut = flag.Int("timeout", 100, "udp pipe set timeout(seconds)")
 
 var bDebug = flag.Bool("debug", false, "more output log")
 var bReverse = flag.Bool("r", false, "reverse mode, if true, client 's \"-local\" address will be listened on server side")
+var sessionTimeout = flag.Int("session_timeout", 0, "if > 0, session will check itself if it's alive, if no msg tranfer for some seconds, socket will be closed, use this to avoid of zombie tcp sockets")
 
 var clientType = 1
 var currReadyId = 0
@@ -164,6 +165,9 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), pipesInfo: make(map[int]*pipeInfo), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
 		go client.sessionLoop()
 		g_ClientMap[id] = client
+		if *sessionTimeout > 0 {
+			go client.sessionCheckDie()
+		}
 	}
 	if *authKey != "" {
 		log.Println("request auth key", *authKey)
@@ -187,6 +191,10 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	client.reverseAddr = *localAddr
 	client.action = *remoteAction
 	common.WriteCrypt(s_conn, "-1", "init_action", *remoteAction, client.encode)
+	client.stimeout = *sessionTimeout
+	if *sessionTimeout > 0 {
+		common.WriteCrypt(s_conn, "-1", "s_timeout", strconv.Itoa(*sessionTimeout), client.encode)
+	}
 
 	client.pipes[idindex] = s_conn
 	pinfo := &pipeInfo{0, 0, 0, nil, 0}
@@ -656,6 +664,7 @@ type clientSession struct {
 	status    string
 	recvMsg   string
 	extra     uint8
+	dieT      time.Time
 }
 
 func (session *clientSession) processSockProxy(sessionId, content string, callback func([]byte)) {
@@ -839,6 +848,7 @@ type Client struct {
 	createSessionChan chan createSessionInfo
 	removeSessionChan chan removeSessionInfo
 	getSessionChan    chan getSessionInfo
+	stimeout          int
 }
 
 // pipe : client to client
@@ -897,6 +907,9 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		sc.Quit()
 	case "tunnel_msg_s":
 		if conn != nil {
+			if sc.stimeout > 0 {
+				session.dieT = time.Now().Add(time.Duration(sc.stimeout) * time.Second)
+			}
 			conn.Write([]byte(content))
 		} else {
 			//log.Println("cannot tunnel msg", sessionId)
@@ -906,6 +919,12 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	case "init_action_back":
 		log.Println("server force do action", content)
 		sc.action = content
+	case "s_timeout":
+		sc.stimeout, _ = strconv.Atoi(content)
+		if sc.stimeout > 0 {
+			log.Println("init session timeout", sc.stimeout)
+			go sc.sessionCheckDie()
+		}
 	case "init_action":
 		sc.action = content
 		log.Println("init action", content)
@@ -971,6 +990,9 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 	case "tunnel_msg_c":
 		if conn != nil {
 			//log.Println("tunnel", (content), sessionId)
+			if sc.stimeout > 0 {
+				session.dieT = time.Now().Add(time.Duration(sc.stimeout) * time.Second)
+			}
 			conn.Write([]byte(content))
 		}
 	case "tunnel_close":
@@ -988,7 +1010,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 				go common.WriteCrypt(pipe, sessionId, "tunnel_error", msg, sc.encode)
 				return
 			} else {
-				session := &clientSession{pipe: pipe, localConn: s_conn}
+				session := &clientSession{pipe: pipe, localConn: s_conn, dieT: time.Now().Add(time.Duration(sc.stimeout) * time.Second)}
 				c := make(chan string)
 				request := createSessionInfo{sessionId: sessionId, session: session, c: c}
 				select {
@@ -999,7 +1021,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 				}
 			}
 		} else {
-			session = &clientSession{pipe: pipe, localConn: nil, status: "init", recvMsg: ""}
+			session = &clientSession{pipe: pipe, localConn: nil, status: "init", recvMsg: "", dieT: time.Now().Add(time.Duration(sc.stimeout) * time.Second)}
 			c := make(chan string)
 			request := createSessionInfo{sessionId: sessionId, session: session, c: c}
 			select {
@@ -1056,6 +1078,29 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 func (sc *Client) SetCrypt(encode, decode func([]byte) []byte) {
 	sc.encode = encode
 	sc.decode = decode
+}
+
+func (sc *Client) sessionCheckDie() {
+	t := time.NewTicker(time.Second)
+out:
+	for {
+		select {
+		case <-t.C:
+			now := time.Now()
+			for id, session := range sc.sessions {
+				log.Println("check", now.Unix(), session.dieT.Unix())
+				if now.After(session.dieT) {
+					log.Println("try close timeout session connection", sc.id, id)
+					if session.localConn != nil {
+						session.localConn.Close()
+					}
+				}
+			}
+		case <-sc.quit:
+			break out
+		}
+	}
+	t.Stop()
 }
 
 func (sc *Client) sessionLoop() {
@@ -1150,7 +1195,7 @@ func (sc *Client) MultiListen() bool {
 					time.Sleep(time.Second)
 					continue
 				}
-				session := &clientSession{pipe: pipe, localConn: conn, status: "init"}
+				session := &clientSession{pipe: pipe, localConn: conn, status: "init", dieT: time.Now().Add(time.Duration(sc.stimeout) * time.Second)}
 				c := make(chan string)
 				request := createSessionInfo{sessionId: "", session: session, c: c}
 				select {
@@ -1221,6 +1266,9 @@ func (session *clientSession) handleLocalPortResponse(client *Client, id, url st
 		if err != nil {
 			break
 		}
+		if client.stimeout > 0 {
+			session.dieT = time.Now().Add(time.Duration(client.stimeout) * time.Second)
+		}
 		debug("====debug read", size, url)
 		if common.WriteCrypt(session.pipe, id, "tunnel_msg_s", string(arr[0:size]), client.encode) != nil {
 			break
@@ -1261,6 +1309,9 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 		size, err := reader.Read(arr)
 		if err != nil {
 			break
+		}
+		if client.stimeout > 0 {
+			session.dieT = time.Now().Add(time.Duration(client.stimeout) * time.Second)
 		}
 		if client.action == "socks5" && !bParsed {
 			session.processSockProxy(sessionId, string(arr[0:size]), func(head []byte) {
