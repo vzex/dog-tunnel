@@ -1088,7 +1088,6 @@ out:
 		case <-t.C:
 			now := time.Now()
 			for id, session := range sc.sessions {
-				log.Println("check", now.Unix(), session.dieT.Unix())
 				if now.After(session.dieT) {
 					log.Println("try close timeout session connection", sc.id, id)
 					if session.localConn != nil {
