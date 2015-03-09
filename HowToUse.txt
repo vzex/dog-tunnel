@@ -14,3 +14,26 @@
 -v 更多输出信息
 -version 版本信息
 -xor 两端需一致，用于udp模式握手加密,内容为任意字符串
+-session_timeout 指定连接会话在不活跃状态时多久（秒）后被销毁，防止被动连接的情况下产生僵尸socket，默认0不自动销毁
+
+
+使用：
+服务端开启
+dtunnel_lite -service 127.0.0.1:1234 -v -action "" -xor 1213343
+监听本地1234的udp服务端口，action为空表示客户端连接时不限制action行为,如果服务端想限制客户端行为，可强制设置action内容
+xor为用户指定字符串用于握手加密，可不指定
+
+之后，客户端可连接服务端进行使用
+1. socks5代理
+dtunnel_lite -service 127.0.0.1:1234 -v -action socks5 -encrypt -xor 1213343 -local :8787 -pipe 5 -session_timeout 30
+客户端连接本地1234的udp端口，监听本地的8787端口作为socks5服务，传输内容加密，默认建立5条固定通道（防止大数据传输或者网络不好时单条通道拥堵）
+web请求中不可避免的会有一些非正常关闭的tcp连接，加session_timeout可以清除这些无用连接，防止描述符泄露
+2. 开启透明代理
+dtunnel_lite -service 127.0.0.1:1234 -v -action route -encrypt -xor 1213343 -local :8787 -pipe 5
+参数类似1，action设置route，并设置iptables将所有需要转发的tcp连接转发至8787端口
+3. 端口映射
+dtunnel_lite -service 127.0.0.1:1234 -v -action 127.0.0.1:22 -encrypt -xor 1213343 -local :8787 -pipe 5
+执行后，服务端22端口将被映射至本地8787端口
+4. 反向映射
+dtunnel_lite -service 127.0.0.1:1234 -v -action 127.0.0.1:80 -encrypt -xor 1213343 -local :8080 -pipe 5 -r
+执行后，本地80端口，被映射到远端8080端口
