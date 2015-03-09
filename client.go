@@ -1089,7 +1089,7 @@ out:
 			now := time.Now()
 			for id, session := range sc.sessions {
 				if now.After(session.dieT) {
-					log.Println("try close timeout session connection", sc.id, id)
+					log.Println("try close timeout session connection", session.localConn.RemoteAddr(), id)
 					if session.localConn != nil {
 						session.localConn.Close()
 					}
