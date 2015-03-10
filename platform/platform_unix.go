@@ -13,6 +13,7 @@ func GetDestAddrFromConn(conn net.Conn) string {
 	defer f.Close()
 	if er == nil {
 		fd := f.Fd()
+		syscall.SetNonblock(int(fd), true)
 		addr, _er := syscall.GetsockoptIPv6Mreq(int(fd), syscall.SOL_IP, 80)
 		if _er == nil {
 			remote := fmt.Sprintf("%d.%d.%d.%d:%d", uint(addr.Multiaddr[4]), uint(addr.Multiaddr[5]), uint(addr.Multiaddr[6]), uint(addr.Multiaddr[7]), uint16(addr.Multiaddr[2])<<8+uint16(addr.Multiaddr[3]))
