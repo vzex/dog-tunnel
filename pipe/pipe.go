@@ -674,14 +674,12 @@ func (session *UDPMakeSession) Close() error {
 
 func (session *UDPMakeSession) DoAction2(action string, args ...interface{}) {
 	//session.wait.Add(1)
-	go func() {
-		//log.Println(action, len(args))
-		select {
-		case session.do2 <- Action{t: action, args: args}:
-		case <-session.quitChan:
-			//session.wait.Done()
-		}
-	}()
+	//log.Println(action, len(args))
+	select {
+	case session.do2 <- Action{t: action, args: args}:
+	case <-session.quitChan:
+		//session.wait.Done()
+	}
 }
 func (session *UDPMakeSession) DoAction(action string, args ...interface{}) {
 	//session.wait.Add(1)
