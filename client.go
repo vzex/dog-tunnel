@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path"
+	"runtime"
 	//"runtime/pprof"
 	"strconv"
 	"strings"
@@ -31,6 +32,7 @@ import (
 
 var authKey = flag.String("auth", "", "key for auth")
 var pipeN = flag.Int("pipe", 1, "pipe num(todo...)")
+var threadN = flag.Int("thread", 1, "replace of GOMAXPROCS")
 var bTcp = flag.Bool("tcp", false, "use tcp to replace udp")
 var xorData = flag.String("xor", "", "xor key,c/s must use a some key")
 
@@ -507,6 +509,7 @@ func dnsLoop() {
 var readyIndex int = 0
 
 func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
 	flag.Parse()
 	/*if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
