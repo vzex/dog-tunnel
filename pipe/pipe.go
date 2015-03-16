@@ -159,7 +159,6 @@ func (l *Listener) inner_loop() {
 			}
 		}
 	}
-	l.Close()
 }
 
 func (l *Listener) remove(addr string) {
