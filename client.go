@@ -274,8 +274,8 @@ func Listen(bIsTcp bool, addr string) bool {
 			_, bHave := client.pipes[i]
 			if !bHave {
 				idindex = i
-				client.pipes[i] = conn
 				client.pipesInfo[i] = &pipeInfo{0, 0, 0, nil, 0}
+				client.pipes[i] = conn
 				break
 			}
 		}
@@ -509,7 +509,7 @@ func dnsLoop() {
 var readyIndex int = 0
 
 func main() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
+	runtime.GOMAXPROCS(*threadN)
 	flag.Parse()
 	/*if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
