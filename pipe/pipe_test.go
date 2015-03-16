@@ -48,7 +48,9 @@ func client() {
 	for {
 		<-t
 		i++
-		conn.Write([]byte("hello world" + strconv.Itoa(i)))
+		for j := 0; j < 30; j++ {
+			conn.Write([]byte("hello world" + strconv.Itoa(i+j)))
+		}
 		log.Println("loop", i)
 		n, e := conn.Read(buff)
 		log.Println("get", string(buff[:n]))
