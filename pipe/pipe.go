@@ -73,7 +73,7 @@ type UDPMakeSession struct {
 	overTime          int64
 	quitChan          chan bool
 	closeChan         chan bool
-	recvChan          chan (chan string)
+	recvChan          chan (chan ([]byte))
 	handShakeChan     chan string
 	handShakeChanQuit chan bool
 	sock              *net.UDPConn
@@ -143,7 +143,7 @@ func (l *Listener) inner_loop() {
 					continue
 				}
 				sessionId, _ := strconv.Atoi(common.GetId("udp"))
-				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan (chan string)), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), handShakeChanQuit: make(chan bool), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
+				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan (chan ([]byte))), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), handShakeChanQuit: make(chan bool), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
 				l.sessions[addr] = session
 				session.serverInit(l)
 				session.serverDo(string(l.readBuffer[:n]))
@@ -229,7 +229,7 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 		log.Println("dial addr fail", _err.Error())
 		return nil, _err
 	}
-	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), do2: make(chan Action), quitChan: make(chan bool), recvChan: make(chan (chan string)), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
+	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), do2: make(chan Action), quitChan: make(chan bool), recvChan: make(chan (chan ([]byte))), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
 	session.remote = udpAddr
 	session.sock = sock
 	session.status = "firstsyn"
@@ -524,7 +524,8 @@ func (session *UDPMakeSession) loop() {
 						tmp := session.processBuffer
 						hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
 						if hr > 0 {
-							s := string(tmp[:hr])
+							s := make([]byte, hr)
+							copy(s, tmp[:hr])
 							session.DoAction("recv", s)
 							//log.Println("try recved", hr)
 						} else {
@@ -550,17 +551,17 @@ func (session *UDPMakeSession) loop() {
 	case ping <- true:
 	case <-session.quitChan:
 	}
-	recvQueue := []string{}
-	waitRecvQueue := [](chan string){}
+	recvQueue := []([]byte){}
+	waitRecvQueue := [](chan ([]byte)){}
 out:
 	for {
 		select {
 		case c := <-session.recvChan:
-                        if c == nil {
-                                for _, ch := range waitRecvQueue {
-                                        close(ch)
-                                }
-                        }
+			if c == nil {
+				for _, ch := range waitRecvQueue {
+					close(ch)
+				}
+			}
 			if len(recvQueue) > 0 {
 				select {
 				case c <- recvQueue[0]:
@@ -594,7 +595,7 @@ out:
 				session._Close(false)
 				break out
 			case "recv":
-				data := []byte(action.args[0].(string))
+				data := (action.args[0]).([]byte)
 				status := data[0]
 				switch status {
 				case CloseBack:
@@ -623,13 +624,13 @@ out:
 					log.Println("recv reset")
 					go session._Close(false)
 				case Data:
-					s := string(data[1:])
+					s := data[1:]
 					if len(waitRecvQueue) > 0 {
 						select {
 						case waitRecvQueue[0] <- s:
+							waitRecvQueue = waitRecvQueue[1:]
 						case <-session.quitChan:
 						}
-						waitRecvQueue = waitRecvQueue[1:]
 					} else {
 						recvQueue = append(recvQueue, s)
 					}
@@ -663,7 +664,7 @@ func (session *UDPMakeSession) _Close(bFirstCall bool) {
 		go func() {
 			for {
 				select {
-                                case session.recvChan <- nil:
+				case session.recvChan <- nil:
 					//close(session.recvChan)
 					return
 				}
@@ -767,13 +768,12 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 
 //udp read does not relay on the len(p), please make a big enough array to cache data
 func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
-	wc := make(chan string)
+	wc := make(chan ([]byte))
 	var b []byte
 	select {
 	case session.recvChan <- wc:
 		select {
-		case s := <-wc:
-			b = []byte(s)
+		case b = <-wc:
 		case <-session.quitChan:
 		}
 	case <-session.quitChan:
