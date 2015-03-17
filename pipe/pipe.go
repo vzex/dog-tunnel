@@ -13,6 +13,7 @@ import (
 
 const WriteBufferSize = 5000 //udp writer will add some data for checksum or encrypt
 const ReadBufferSize = 7000  //so reader must be larger
+const CacheNum = 10
 
 const dataLimit = 4000
 
@@ -434,6 +435,44 @@ func (session *UDPMakeSession) loop() {
 			})
 		}
 	}
+
+	type cache struct {
+		b []byte
+		l int
+	}
+	cacheQueue := []cache{}
+	for i := 0; i < CacheNum; i++ {
+		cacheQueue = append(cacheQueue, cache{make([]byte, ReadBufferSize), 0})
+	}
+	getBufferChan := make(chan (chan cache))
+	returnBufferChan := make(chan cache)
+	waitGetBufferQueue := [](chan cache){}
+	go func() {
+	out:
+		for {
+			select {
+			case c := <-getBufferChan:
+				if len(cacheQueue) > 0 {
+					c <- cacheQueue[0]
+					cacheQueue = cacheQueue[1:]
+					//log.Println("get buffer", len(cacheQueue))
+				} else {
+					waitGetBufferQueue = append(waitGetBufferQueue, c)
+				}
+			case s := <-returnBufferChan:
+				if len(waitGetBufferQueue) > 0 {
+					waitGetBufferQueue[0] <- s
+					waitGetBufferQueue = waitGetBufferQueue[1:]
+				} else {
+					cacheQueue = append(cacheQueue, s)
+					//log.Println("return buffer", len(cacheQueue))
+				}
+			case <-session.quitChan:
+				break out
+			}
+		}
+	}()
+
 	fastCheck := false
 	waitList := [](chan bool){}
 	recoverChan := make(chan bool)
@@ -524,9 +563,19 @@ func (session *UDPMakeSession) loop() {
 						tmp := session.processBuffer
 						hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
 						if hr > 0 {
-							s := make([]byte, hr)
-							copy(s, tmp[:hr])
-							session.DoAction("recv", s)
+							c := make(chan cache)
+							select {
+							case getBufferChan <- c:
+								select {
+								case ca := <-c:
+									copy(ca.b, tmp[:hr])
+									ca.l = int(hr)
+									session.DoAction("recv", ca)
+								case <-session.quitChan:
+								}
+							case <-session.quitChan:
+								break
+							}
 							//log.Println("try recved", hr)
 						} else {
 							break
@@ -551,25 +600,28 @@ func (session *UDPMakeSession) loop() {
 	case ping <- true:
 	case <-session.quitChan:
 	}
-	recvQueue := []([]byte){}
+	recvQueue := []cache{}
 	waitRecvQueue := [](chan ([]byte)){}
 out:
 	for {
 		select {
 		case c := <-session.recvChan:
-			if c == nil {
-				for _, ch := range waitRecvQueue {
-					close(ch)
+			if c != nil {
+				if len(recvQueue) > 0 {
+					ca := recvQueue[0]
+					data := ca.b[1:ca.l]
+					select {
+					case c <- data:
+						recvQueue = recvQueue[1:]
+						select {
+						case returnBufferChan <- ca:
+						case <-session.quitChan:
+						}
+					case <-session.quitChan:
+					}
+				} else {
+					waitRecvQueue = append(waitRecvQueue, c)
 				}
-			}
-			if len(recvQueue) > 0 {
-				select {
-				case c <- recvQueue[0]:
-					recvQueue = recvQueue[1:]
-				case <-session.quitChan:
-				}
-			} else {
-				waitRecvQueue = append(waitRecvQueue, c)
 			}
 		case action := <-session.do:
 			switch action.t {
@@ -595,14 +647,23 @@ out:
 				session._Close(false)
 				break out
 			case "recv":
-				data := (action.args[0]).([]byte)
+				ca := (action.args[0]).(cache)
+				data := ca.b[:ca.l]
 				status := data[0]
 				switch status {
 				case CloseBack:
+					select {
+					case returnBufferChan <- ca:
+					case <-session.quitChan:
+					}
 					//A call from B
 					//log.Println("recv back close, step2", session.LocalAddr().String(), session.RemoteAddr().String())
 					go session.DoAction("closeover")
 				case Close:
+					select {
+					case returnBufferChan <- ca:
+					case <-session.quitChan:
+					}
 					if session.closed {
 						break
 					}
@@ -621,6 +682,10 @@ out:
 						})
 					}
 				case Reset:
+					select {
+					case returnBufferChan <- ca:
+					case <-session.quitChan:
+					}
 					log.Println("recv reset")
 					go session._Close(false)
 				case Data:
@@ -629,13 +694,25 @@ out:
 						select {
 						case waitRecvQueue[0] <- s:
 							waitRecvQueue = waitRecvQueue[1:]
+							select {
+							case returnBufferChan <- ca:
+							case <-session.quitChan:
+							}
 						case <-session.quitChan:
 						}
 					} else {
-						recvQueue = append(recvQueue, s)
+						recvQueue = append(recvQueue, ca)
 					}
 				case Ping:
+					select {
+					case returnBufferChan <- ca:
+					case <-session.quitChan:
+					}
 				default:
+					select {
+					case returnBufferChan <- ca:
+					case <-session.quitChan:
+					}
 					if session.status != "ok" {
 						session.Close()
 					}
@@ -661,15 +738,6 @@ func (session *UDPMakeSession) _Close(bFirstCall bool) {
 		}
 		//log.Println("pipe end close", session.id)
 		close(session.quitChan)
-		go func() {
-			for {
-				select {
-				case session.recvChan <- nil:
-					//close(session.recvChan)
-					return
-				}
-			}
-		}()
 		if session.listener != nil {
 			session.listener.remove(session.remote.String())
 		} else {
