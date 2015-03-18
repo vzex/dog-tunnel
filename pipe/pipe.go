@@ -19,6 +19,12 @@ const dataLimit = 4000
 const mainV = 0
 const subV = 1
 
+type cache struct {
+	b []byte
+	l int
+	c chan int
+}
+
 func init() {
 }
 
@@ -73,7 +79,7 @@ type UDPMakeSession struct {
 	overTime          int64
 	quitChan          chan bool
 	closeChan         chan bool
-	recvChan          chan (chan ([]byte))
+	recvChan          chan cache
 	handShakeChan     chan string
 	handShakeChanQuit chan bool
 	sock              *net.UDPConn
@@ -143,7 +149,7 @@ func (l *Listener) inner_loop() {
 					continue
 				}
 				sessionId, _ := strconv.Atoi(common.GetId("udp"))
-				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan (chan ([]byte))), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), handShakeChanQuit: make(chan bool), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
+				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan cache), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), handShakeChanQuit: make(chan bool), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
 				l.sessions[addr] = session
 				session.serverInit(l)
 				session.serverDo(string(l.readBuffer[:n]))
@@ -229,7 +235,7 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 		log.Println("dial addr fail", _err.Error())
 		return nil, _err
 	}
-	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), do2: make(chan Action), quitChan: make(chan bool), recvChan: make(chan (chan ([]byte))), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
+	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), do2: make(chan Action), quitChan: make(chan bool), recvChan: make(chan cache), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
 	session.remote = udpAddr
 	session.sock = sock
 	session.status = "firstsyn"
@@ -434,6 +440,7 @@ func (session *UDPMakeSession) loop() {
 			})
 		}
 	}
+
 	fastCheck := false
 	waitList := [](chan bool){}
 	recoverChan := make(chan bool)
@@ -500,6 +507,15 @@ func (session *UDPMakeSession) loop() {
 					case <-session.quitChan:
 					}
 				}
+			case c := <-session.recvChan:
+				tmp := session.processBuffer
+				hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
+				if hr > 0 {
+					c.l = int(hr)
+					session.DoAction("recv", c)
+				} else {
+					c.c <- 0
+				}
 			case action := <-session.do2:
 				switch action.t {
 				case "input":
@@ -520,18 +536,6 @@ func (session *UDPMakeSession) loop() {
 						break
 					}
 					ikcp.Ikcp_input(session.kcp, []byte(s), n)
-					for {
-						tmp := session.processBuffer
-						hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
-						if hr > 0 {
-							s := make([]byte, hr)
-							copy(s, tmp[:hr])
-							session.DoAction("recv", s)
-							//log.Println("try recved", hr)
-						} else {
-							break
-						}
-					}
 					updateF(10)
 				case "write":
 					b := []byte(action.args[0].(string))
@@ -551,26 +555,9 @@ func (session *UDPMakeSession) loop() {
 	case ping <- true:
 	case <-session.quitChan:
 	}
-	recvQueue := []([]byte){}
-	waitRecvQueue := [](chan ([]byte)){}
 out:
 	for {
 		select {
-		case c := <-session.recvChan:
-			if c == nil {
-				for _, ch := range waitRecvQueue {
-					close(ch)
-				}
-			}
-			if len(recvQueue) > 0 {
-				select {
-				case c <- recvQueue[0]:
-					recvQueue = recvQueue[1:]
-				case <-session.quitChan:
-				}
-			} else {
-				waitRecvQueue = append(waitRecvQueue, c)
-			}
 		case action := <-session.do:
 			switch action.t {
 			case "quit":
@@ -595,14 +582,23 @@ out:
 				session._Close(false)
 				break out
 			case "recv":
-				data := (action.args[0]).([]byte)
+				ca := (action.args[0]).(cache)
+				data := session.processBuffer[:ca.l]
 				status := data[0]
 				switch status {
 				case CloseBack:
+					select {
+					case ca.c <- 0:
+					case <-session.quitChan:
+					}
 					//A call from B
 					//log.Println("recv back close, step2", session.LocalAddr().String(), session.RemoteAddr().String())
 					go session.DoAction("closeover")
 				case Close:
+					select {
+					case ca.c <- 0:
+					case <-session.quitChan:
+					}
 					if session.closed {
 						break
 					}
@@ -621,21 +617,25 @@ out:
 						})
 					}
 				case Reset:
+					select {
+					case ca.c <- 0:
+					case <-session.quitChan:
+					}
 					log.Println("recv reset")
 					go session._Close(false)
 				case Data:
-					s := data[1:]
-					if len(waitRecvQueue) > 0 {
-						select {
-						case waitRecvQueue[0] <- s:
-							waitRecvQueue = waitRecvQueue[1:]
-						case <-session.quitChan:
-						}
-					} else {
-						recvQueue = append(recvQueue, s)
-					}
+					copy(ca.b, data[1:])
+					ca.c <- (ca.l - 1)
 				case Ping:
+					select {
+					case ca.c <- 0:
+					case <-session.quitChan:
+					}
 				default:
+					select {
+					case ca.c <- 0:
+					case <-session.quitChan:
+					}
 					if session.status != "ok" {
 						session.Close()
 					}
@@ -661,15 +661,6 @@ func (session *UDPMakeSession) _Close(bFirstCall bool) {
 		}
 		//log.Println("pipe end close", session.id)
 		close(session.quitChan)
-		go func() {
-			for {
-				select {
-				case session.recvChan <- nil:
-					//close(session.recvChan)
-					return
-				}
-			}
-		}()
 		if session.listener != nil {
 			session.listener.remove(session.remote.String())
 		} else {
@@ -768,22 +759,21 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 
 //udp read does not relay on the len(p), please make a big enough array to cache data
 func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
-	wc := make(chan ([]byte))
-	var b []byte
+	wc := cache{p, 0, make(chan int)}
 	select {
 	case session.recvChan <- wc:
 		select {
-		case b = <-wc:
+		case n = <-wc.c:
 		case <-session.quitChan:
+			n = -1
 		}
 	case <-session.quitChan:
+		n = -1
 	}
-	l := len(b)
-	copy(p, b[:l])
 	//log.Println("real recv", l, string(b[:l]))
-	if l == 0 {
+	if n == -1 {
 		return 0, errors.New("force quit for read error")
 	} else {
-		return l, nil
+		return n, nil
 	}
 }

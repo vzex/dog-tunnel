@@ -24,8 +24,10 @@ func server() {
 				if e != nil {
 					break
 				}
-				log.Println("got", conn.RemoteAddr().String(), string(buff[:n]))
-				conn.Write(buff[:n])
+				if n > 0 {
+					log.Println("got", conn.RemoteAddr().String(), string(buff[:n]))
+					conn.Write(buff[:n])
+				}
 			}
 			log.Println("server begin close connection")
 			conn.Close()
@@ -45,6 +47,7 @@ func client() {
 	t := time.Tick(time.Second)
 	i := 0
 	buff := make([]byte, 500)
+	out:
 	for {
 		<-t
 		i++
@@ -52,8 +55,16 @@ func client() {
 			conn.Write([]byte("hello world" + strconv.Itoa(i+j)))
 		}
 		log.Println("loop", i)
-		n, e := conn.Read(buff)
-		log.Println("get", string(buff[:n]))
+		for {
+			n, e := conn.Read(buff)
+			if n > 0 {
+				log.Println("get", string(buff[:n]))
+				break
+			} else if e != nil {
+				log.Println("hehe", e.Error())
+				break out
+			}
+		}
 		if i == 4 {
 			conn.Close()
 		}
