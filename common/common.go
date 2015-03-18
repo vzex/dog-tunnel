@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"strconv"
-	"time"
 )
 
 var encodingData []byte = []byte("bertdfvuifu4359c")
@@ -100,8 +99,6 @@ func ReadUDP(conn net.Conn, callback ReadCallBack, bufsize int) {
 		}
 		if n > 0 {
 			split(buffer[:n], false, conn, callback)
-		} else {
-			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }

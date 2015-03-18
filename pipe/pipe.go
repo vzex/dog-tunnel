@@ -444,6 +444,8 @@ func (session *UDPMakeSession) loop() {
 	fastCheck := false
 	waitList := [](chan bool){}
 	recoverChan := make(chan bool)
+
+	var waitRecvCache *cache
 	go func() {
 	out:
 		for {
@@ -507,14 +509,23 @@ func (session *UDPMakeSession) loop() {
 					case <-session.quitChan:
 					}
 				}
-			case c := <-session.recvChan:
+			case ca := <-session.recvChan:
 				tmp := session.processBuffer
-				hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
-				if hr > 0 {
-					c.l = int(hr)
-					session.DoAction("recv", c)
-				} else {
-					c.c <- 0
+				for {
+					hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
+					if hr > 0 {
+						status := tmp[0]
+						if status == Data {
+							copy(ca.b, tmp[1:hr])
+							ca.c <- int(hr - 1)
+							break
+						} else {
+							session.DoAction("recv", status)
+						}
+					} else {
+						waitRecvCache = &ca
+						break
+					}
 				}
 			case action := <-session.do2:
 				switch action.t {
@@ -536,6 +547,26 @@ func (session *UDPMakeSession) loop() {
 						break
 					}
 					ikcp.Ikcp_input(session.kcp, []byte(s), n)
+					if waitRecvCache != nil {
+						ca := *waitRecvCache
+						tmp := session.processBuffer
+						for {
+							hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
+							if hr > 0 {
+								status := tmp[0]
+								if status == Data {
+									waitRecvCache = nil
+									copy(ca.b, tmp[1:hr])
+									ca.c <- int(hr - 1)
+									break
+								} else {
+									session.DoAction("recv", status)
+								}
+							} else {
+								break
+							}
+						}
+					}
 					updateF(10)
 				case "write":
 					b := []byte(action.args[0].(string))
@@ -582,23 +613,13 @@ out:
 				session._Close(false)
 				break out
 			case "recv":
-				ca := (action.args[0]).(cache)
-				data := session.processBuffer[:ca.l]
-				status := data[0]
+				status := (action.args[0]).(byte)
 				switch status {
 				case CloseBack:
-					select {
-					case ca.c <- 0:
-					case <-session.quitChan:
-					}
 					//A call from B
 					//log.Println("recv back close, step2", session.LocalAddr().String(), session.RemoteAddr().String())
 					go session.DoAction("closeover")
 				case Close:
-					select {
-					case ca.c <- 0:
-					case <-session.quitChan:
-					}
 					if session.closed {
 						break
 					}
@@ -617,25 +638,10 @@ out:
 						})
 					}
 				case Reset:
-					select {
-					case ca.c <- 0:
-					case <-session.quitChan:
-					}
 					log.Println("recv reset")
 					go session._Close(false)
-				case Data:
-					copy(ca.b, data[1:])
-					ca.c <- (ca.l - 1)
 				case Ping:
-					select {
-					case ca.c <- 0:
-					case <-session.quitChan:
-					}
 				default:
-					select {
-					case ca.c <- 0:
-					case <-session.quitChan:
-					}
 					if session.status != "ok" {
 						session.Close()
 					}
