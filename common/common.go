@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"strconv"
 )
 
 var encodingData []byte = []byte("bertdfvuifu4359c")
@@ -23,7 +22,7 @@ func init() {
 	initxor()
 }
 
-const Version = 0.71
+const Version = 0.8
 
 type ClientSetting struct {
 	AccessKey string
@@ -55,30 +54,41 @@ func Xor(s string) string {
 	return string(r)
 }
 
-func WriteCrypt(conn net.Conn, id string, action string, content string, encode func([]byte) []byte) error {
+func WriteCrypt(conn net.Conn, id int, action byte, content []byte, encode func([]byte) []byte) error {
 	if encode != nil {
-		return Write(conn, id, action, string(encode([]byte(content))))
+		return Write(conn, id, action, encode(content))
 	} else {
 		return Write(conn, id, action, content)
 	}
 }
 
-func Write(conn net.Conn, id string, action string, content string) error {
+func Write(conn net.Conn, id int, action byte, content []byte) error {
 	if conn == nil {
 		return nil
 	}
-	l1 := len(id)
-	action = Xor(action)
-	l2 := len(action)
-	l3 := len(content)
-	var buf []byte = make([]byte, l1+l2+l3+4*3)
-	binary.LittleEndian.PutUint32(buf, uint32(l1))
-	binary.LittleEndian.PutUint32(buf[4:], uint32(l2))
-	binary.LittleEndian.PutUint32(buf[8:], uint32(l3))
-	copy(buf[12:], []byte(id))
-	copy(buf[12+l1:], []byte(action))
-	copy(buf[12+l1+l2:], []byte(content))
-	_, err := conn.Write(buf)
+	l := len(content)
+	var buf []byte
+	var size int
+	if l > 0 {
+		size = 10 + l
+		buf = make([]byte, size) //4+1+1+4 id action isShort? len(content) content
+	} else {
+		size = 6
+		buf = make([]byte, size) //4+1+1 id action isShort?
+	}
+	buf[0] = byte(id)
+	buf[1] = byte(id >> 8)
+	buf[2] = byte(id >> 16)
+	buf[3] = byte(id >> 24)
+	buf[4] = action
+	if l > 0 {
+		buf[5] = 0
+		binary.LittleEndian.PutUint32(buf[6:], uint32(l))
+		copy(buf[10:], []byte(content))
+	} else {
+		buf[5] = 1
+	}
+	_, err := conn.Write(buf[:size])
 	//println("write!!!", old, l1, l2, l3)
 	if err != nil {
 		log.Println("write err", err.Error())
@@ -86,7 +96,7 @@ func Write(conn net.Conn, id string, action string, content string) error {
 	return err
 }
 
-type ReadCallBack func(conn net.Conn, id string, action string, arg string)
+type ReadCallBack func(conn net.Conn, id int, action byte, arg []byte)
 
 func ReadUDP(conn net.Conn, callback ReadCallBack, bufsize int) {
 	//bufio.Scanner not work for large data, because the udppipe.Read(b []byte) func can't read a non-complete data to b
@@ -105,28 +115,38 @@ func ReadUDP(conn net.Conn, callback ReadCallBack, bufsize int) {
 
 func split(data []byte, atEOF bool, conn net.Conn, callback ReadCallBack) (adv int, token []byte, err error) {
 	l := len(data)
-	if l < 12 {
+	if l < 6 {
 		return 0, nil, nil
 	}
-	if l > 1000000 {
+	if l > 100000 {
 		conn.Close()
 		log.Println("invalid query!")
 		return 0, nil, errors.New("to large data!")
 	}
-	var l1, l2, l3 uint32
-	l1 = binary.LittleEndian.Uint32(data)
-	l2 = binary.LittleEndian.Uint32(data[4:])
-	l3 = binary.LittleEndian.Uint32(data[8:])
-	tail := l - 12
-	if tail < int(l1+l2+l3) {
-		return 0, nil, nil
+	var id int
+	var action byte
+	id = int(int32(data[0]) | int32(data[1])<<8 | int32(data[2])<<16 | int32(data[3])<<24)
+	action = data[4]
+	isShort := data[5]
+	var content []byte
+	var offset int
+	if isShort == 1 {
+		offset = 6
+	} else {
+		if l < 10 {
+			return 0, nil, nil
+		}
+		ls := binary.LittleEndian.Uint32(data[6:])
+		tail := l - 10
+		if tail < int(ls) {
+			return 0, nil, nil
+		}
+		content = data[10 : 10+ls]
+		offset = 10 + int(ls)
 	}
-	id := string(data[12 : 12+l1])
-	action := string(data[12+l1 : 12+l1+l2])
-	content := string(data[12+l1+l2 : 12+l1+l2+l3])
-	callback(conn, string(id), Xor(string(action)), string(content))
+	callback(conn, id, action, content)
 	//println("read11!!", l1,l2, l3,string(id), Xor(string(action)), string(content))
-	return 12 + int(l1+l2+l3), []byte{}, nil
+	return offset, []byte{}, nil
 }
 
 func Read(conn net.Conn, callback ReadCallBack) {
@@ -152,13 +172,13 @@ func HashPasswd(pass string) string {
 }
 
 type _reuseTbl struct {
-	tbl map[string]bool
+	tbl map[int]bool
 }
 
 var currIdMap map[string]int
 var reuseTbl map[string]*_reuseTbl
 
-func GetId(name string) string {
+func GetId(name string) int {
 	if reuseTbl != nil {
 		tbl, bHave := reuseTbl[name]
 		if bHave {
@@ -177,20 +197,16 @@ func GetId(name string) string {
 	}
 	currIdMap[name]++
 	//	println("gen new id", currIdMap[name])
-	return strconv.Itoa(currIdMap[name])
+	return currIdMap[name]
 }
 
-func RmId(name, id string) {
+func RmId(name string, id int) {
 	return
 	if currIdMap == nil {
 		currIdMap = make(map[string]int)
 		currIdMap[name] = 0
 	}
-	n, err := strconv.Atoi(id)
-	if err != nil {
-		return
-	}
-	if n > currIdMap[name] {
+	if id > currIdMap[name] {
 		return
 	}
 	if reuseTbl == nil {
@@ -198,7 +214,7 @@ func RmId(name, id string) {
 	}
 	tbl, bHave := reuseTbl[name]
 	if !bHave {
-		reuseTbl[name] = &_reuseTbl{tbl: make(map[string]bool)}
+		reuseTbl[name] = &_reuseTbl{tbl: make(map[int]bool)}
 		tbl = reuseTbl[name]
 	}
 	tbl.tbl[id] = true

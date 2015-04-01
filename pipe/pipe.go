@@ -7,7 +7,6 @@ import (
 	"errors"
 	"log"
 	"net"
-	"strconv"
 	"time"
 )
 
@@ -148,7 +147,7 @@ func (l *Listener) inner_loop() {
 					log.Println("invalid package,reset", from, status)
 					continue
 				}
-				sessionId, _ := strconv.Atoi(common.GetId("udp"))
+				sessionId := common.GetId("udp")
 				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan cache), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), handShakeChanQuit: make(chan bool), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
 				l.sessions[addr] = session
 				session.serverInit(l)
@@ -171,7 +170,7 @@ func (l *Listener) remove(addr string) {
 	log.Println("listener remove", addr)
 	session, bHave := l.sessions[addr]
 	if bHave {
-		common.RmId("udp", strconv.Itoa(session.id))
+		common.RmId("udp", session.id)
 	}
 	delete(l.sessions, addr)
 }

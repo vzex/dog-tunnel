@@ -28,6 +28,27 @@ import (
 	"time"
 )
 
+const (
+	eAuthfail = byte(iota)
+	eCollect
+	eInit_enc
+	eAuth
+	eInit_action
+	eInit_action_back
+	eS_timeout
+	eShowandquit
+	eReady
+	eReadyback
+	eReverse
+	eSettimeout
+	eTunnel_error
+	eTunnel_msg_s
+	eTunnel_close_s
+	eTunnel_msg_c
+	eTunnel_close
+	eTunnel_open
+)
+
 //var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 
 var authKey = flag.String("auth", "", "key for auth")
@@ -164,7 +185,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	id := *serviceAddr
 	client, bHave := g_ClientMap[id]
 	if !bHave {
-		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), pipesInfo: make(map[int]*pipeInfo), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
+		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), pipesInfo: make(map[int]*pipeInfo), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
 		go client.sessionLoop()
 		g_ClientMap[id] = client
 		if *sessionTimeout > 0 {
@@ -173,7 +194,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	}
 	if *authKey != "" {
 		log.Println("request auth key", *authKey)
-		common.Write(s_conn, "-1", "auth", common.Xor(*authKey))
+		common.Write(s_conn, -1, eAuth, []byte(common.Xor(*authKey)))
 	}
 	if *bEncrypt {
 		log.Println("request encrypt")
@@ -185,17 +206,17 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		aesKey := "asd4" + encrypt_tail
 		log.Println("debug aeskey", encrypt_tail)
 		aesBlock, _ := aes.NewCipher([]byte(aesKey))
-		common.Write(s_conn, "-1", "init_enc", common.Xor(encrypt_tail))
+		common.Write(s_conn, -1, eInit_enc, []byte(common.Xor(encrypt_tail)))
 		if client.encode == nil {
 			client.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
 		}
 	}
 	client.reverseAddr = *localAddr
 	client.action = *remoteAction
-	common.WriteCrypt(s_conn, "-1", "init_action", *remoteAction, client.encode)
+	common.WriteCrypt(s_conn, -1, eInit_action, []byte(*remoteAction), client.encode)
 	client.stimeout = *sessionTimeout
 	if *sessionTimeout > 0 {
-		common.WriteCrypt(s_conn, "-1", "s_timeout", strconv.Itoa(*sessionTimeout), client.encode)
+		common.WriteCrypt(s_conn, -1, eS_timeout, []byte(strconv.Itoa(*sessionTimeout)), client.encode)
 	}
 
 	client.pipes[idindex] = s_conn
@@ -203,7 +224,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	client.pipesInfo[idindex] = pinfo
 	clientReportSessionChan <- idindex
 	pinfo.t = time.Now().Unix()
-	callback := func(conn net.Conn, sessionId, action, content string) {
+	callback := func(conn net.Conn, sessionId int, action byte, content []byte) {
 		t := time.Now().Unix()
 		if t-pinfo.t < 60 {
 			pinfo.bytes += len(content)
@@ -213,10 +234,13 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 			pinfo.bytes = len(content)
 			pinfo.times = 1
 		}
+		var msg string
 		if client.decode != nil {
-			content = string(client.decode([]byte(content)))
+			msg = string(client.decode(content))
+		} else {
+			msg = string(content)
 		}
-		client.OnTunnelRecv(conn, sessionId, action, content)
+		client.OnTunnelRecv(conn, sessionId, action, msg)
 	}
 	if bIsTcp {
 		common.Read(s_conn, callback)
@@ -261,7 +285,7 @@ func Listen(bIsTcp bool, addr string) bool {
 		}
 		client, have := g_ClientMap[id]
 		if !have {
-			client = &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[string]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), pipesInfo: make(map[int]*pipeInfo), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
+			client = &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), pipesInfo: make(map[int]*pipeInfo), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
 			go client.sessionLoop()
 			g_ClientMap[id] = client
 			if *authKey == "" {
@@ -307,10 +331,13 @@ func (client *Client) ServerProcess(bIsTcp bool, idindex int) {
 		}
 	}
 	pipeInfo.t = time.Now().Unix()
-	callback := func(conn net.Conn, sessionId, action, content string) {
+	callback := func(conn net.Conn, sessionId int, action byte, content []byte) {
 		f()
+		var msg string
 		if client.decode != nil {
-			content = string(client.decode([]byte(content)))
+			msg = string(client.decode(content))
+		} else {
+			msg = string(content)
 		}
 		t := time.Now().Unix()
 		if t-pipeInfo.t < 60 {
@@ -321,7 +348,7 @@ func (client *Client) ServerProcess(bIsTcp bool, idindex int) {
 			pipeInfo.bytes = len(content)
 			pipeInfo.times = 1
 		}
-		client.OnTunnelRecv(conn, sessionId, action, content)
+		client.OnTunnelRecv(conn, sessionId, action, msg)
 	}
 	if bIsTcp {
 		common.Read(client.pipes[idindex], callback)
@@ -402,18 +429,18 @@ type dnsQueryRes struct {
 }
 
 type createSessionInfo struct {
-	sessionId string
+	sessionId int
 	session   *clientSession
-	c         chan string
+	c         chan int
 }
 
 type removeSessionInfo struct {
-	sessionId string
+	sessionId int
 	c         chan bool
 }
 
 type getSessionInfo struct {
-	sessionId string
+	sessionId int
 	c         chan *clientSession
 }
 
@@ -630,7 +657,7 @@ func main() {
 										client.Quit()
 									} else {
 										readyIndex = r
-										common.WriteCrypt(pipe, "-1", "ready", "", client.encode)
+										common.WriteCrypt(pipe, -1, eReady, []byte{}, client.encode)
 									}
 								}
 							}
@@ -670,7 +697,7 @@ type clientSession struct {
 	dieT      time.Time
 }
 
-func (session *clientSession) processSockProxy(sessionId, content string, callback func([]byte)) {
+func (session *clientSession) processSockProxy(sessionId int, content string, callback func([]byte)) {
 	session.recvMsg += content
 	bytes := []byte(session.recvMsg)
 	size := len(bytes)
@@ -832,9 +859,9 @@ type pipeInfo struct {
 type Client struct {
 	id                string
 	buster            bool
-	pipes             map[int]net.Conn          // client for pipes
-	pipesInfo         map[int]*pipeInfo         // client for pipes
-	sessions          map[string]*clientSession // session to pipeid
+	pipes             map[int]net.Conn       // client for pipes
+	pipesInfo         map[int]*pipeInfo      // client for pipes
+	sessions          map[int]*clientSession // session to pipeid
 	ready             bool
 	bUdp              bool
 	action            string
@@ -856,7 +883,7 @@ type Client struct {
 
 // pipe : client to client
 // local : client to local apps
-func (sc *Client) getSession(sessionId string) *clientSession {
+func (sc *Client) getSession(sessionId int) *clientSession {
 	c := make(chan *clientSession)
 	request := getSessionInfo{sessionId, c}
 	select {
@@ -868,7 +895,7 @@ func (sc *Client) getSession(sessionId string) *clientSession {
 	return session
 }
 
-func (sc *Client) removeSession(sessionId string) bool {
+func (sc *Client) removeSession(sessionId int) bool {
 	c := make(chan bool)
 	request := removeSessionInfo{sessionId, c}
 	select {
@@ -879,36 +906,36 @@ func (sc *Client) removeSession(sessionId string) bool {
 	return <-c
 }
 
-func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, content string) {
+func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, content string) {
 	debug("recv p2p tunnel", sessionId, action, len(content))
 	session := sc.getSession(sessionId)
 	var conn net.Conn
 	if session != nil {
 		conn = session.localConn
 	}
-	if clientType == 0 && !sc.authed && action != "collect" {
-		if action != "auth" || common.Xor(content) != *authKey {
+	if clientType == 0 && !sc.authed && action != eCollect {
+		if action != eAuth || common.Xor(content) != *authKey {
 			log.Println("auth fail", action, common.Xor(content), *authKey, pipe.RemoteAddr().String())
-			go common.Write(pipe, sessionId, "authfail", "")
+			go common.Write(pipe, sessionId, eAuthfail, []byte{})
 			return
 		}
 		sc.authed = true
 		return
 	}
 	switch action {
-	case "settimeout":
+	case eSettimeout:
 		timeout, _ := strconv.Atoi(content)
 		log.Println("set timeout", timeout)
-	case "authfail":
+	case eAuthfail:
 		fmt.Println("auth key not eq")
 		sc.Quit()
-	case "tunnel_error":
+	case eTunnel_error:
 		log.Println("tunnel error", content, sessionId)
 		go sc.removeSession(sessionId)
-	case "showandquit":
+	case eShowandquit:
 		println(content)
 		sc.Quit()
-	case "tunnel_msg_s":
+	case eTunnel_msg_s:
 		if conn != nil {
 			if sc.stimeout > 0 {
 				session.dieT = time.Now().Add(time.Duration(sc.stimeout) * time.Second)
@@ -917,47 +944,47 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		} else {
 			//log.Println("cannot tunnel msg", sessionId)
 		}
-	case "tunnel_close_s":
+	case eTunnel_close_s:
 		go sc.removeSession(sessionId)
-	case "init_action_back":
+	case eInit_action_back:
 		log.Println("server force do action", content)
 		sc.action = content
-	case "s_timeout":
+	case eS_timeout:
 		sc.stimeout, _ = strconv.Atoi(content)
 		if sc.stimeout > 0 {
 			log.Println("init session timeout", sc.stimeout)
 			go sc.sessionCheckDie()
 		}
-	case "init_action":
+	case eInit_action:
 		sc.action = content
 		log.Println("init action", content)
 		if *remoteAction != "" && *remoteAction != sc.action {
 			sc.action = *remoteAction
-			go common.WriteCrypt(pipe, sessionId, "init_action_back", *remoteAction, sc.encode)
+			go common.WriteCrypt(pipe, sessionId, eInit_action_back, []byte(*remoteAction), sc.encode)
 		}
-	case "reverse":
+	case eReverse:
 		sc.reverseAddr = content
 		go sc.MultiListen()
-	case "ready":
+	case eReady:
 		currReadyId++
 		sc.readyId = strconv.Itoa(currReadyId)
 		log.Println("currid", sc.readyId, sc.id)
-		common.WriteCrypt(pipe, "-1", "readyback", sc.readyId, sc.encode)
-	case "readyback":
+		common.WriteCrypt(pipe, -1, eReadyback, []byte(sc.readyId), sc.encode)
+	case eReadyback:
 		go func() {
 			for i, conn := range sc.pipes {
 				if i != readyIndex {
-					common.WriteCrypt(conn, "-1", "collect", content, sc.encode)
+					common.WriteCrypt(conn, -1, eCollect, []byte(content), sc.encode)
 				} else {
 					if *bReverse {
-						common.WriteCrypt(conn, "-1", "reverse", *localAddr, sc.encode)
+						common.WriteCrypt(conn, -1, eReverse, []byte(*localAddr), sc.encode)
 					} else {
 						go sc.MultiListen()
 					}
 				}
 			}
 		}()
-	case "collect":
+	case eCollect:
 		readyId := content
 		for _, c := range g_ClientMap {
 			if c.readyId == readyId {
@@ -984,13 +1011,13 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 				break
 			}
 		}
-	case "init_enc":
+	case eInit_enc:
 		tail := common.Xor(content)
 		log.Println("got encrpyt key", tail)
 		aesKey := "asd4" + tail
 		aesBlock, _ := aes.NewCipher([]byte(aesKey))
 		sc.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
-	case "tunnel_msg_c":
+	case eTunnel_msg_c:
 		if conn != nil {
 			//log.Println("tunnel", (content), sessionId)
 			if sc.stimeout > 0 {
@@ -998,9 +1025,9 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 			}
 			conn.Write([]byte(content))
 		}
-	case "tunnel_close":
+	case eTunnel_close:
 		go sc.removeSession(sessionId)
-	case "tunnel_open":
+	case eTunnel_open:
 		if sc.action != "socks5" {
 			remote := sc.action
 			if sc.action == "route" {
@@ -1010,11 +1037,11 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 			if err != nil {
 				log.Println("connect to local server fail:", err.Error(), remote)
 				msg := "cannot connect to bind addr" + remote
-				go common.WriteCrypt(pipe, sessionId, "tunnel_error", msg, sc.encode)
+				go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
 				return
 			} else {
 				session := &clientSession{pipe: pipe, localConn: s_conn, dieT: time.Now().Add(time.Duration(sc.stimeout) * time.Second)}
-				c := make(chan string)
+				c := make(chan int)
 				request := createSessionInfo{sessionId: sessionId, session: session, c: c}
 				select {
 				case sc.createSessionChan <- request:
@@ -1025,7 +1052,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 			}
 		} else {
 			session = &clientSession{pipe: pipe, localConn: nil, status: "init", recvMsg: "", dieT: time.Now().Add(time.Duration(sc.stimeout) * time.Second)}
-			c := make(chan string)
+			c := make(chan int)
 			request := createSessionInfo{sessionId: sessionId, session: session, c: c}
 			select {
 			case sc.createSessionChan <- request:
@@ -1035,7 +1062,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 					bOk, _ := hello.read([]byte(content))
 					if !bOk {
 						msg := "hello read err"
-						go common.WriteCrypt(pipe, sessionId, "tunnel_error", msg, sc.encode)
+						go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
 						return
 					}
 					var ansmsg ansMsg
@@ -1064,12 +1091,12 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 					if err != nil {
 						log.Println("connect to local server fail:", err.Error())
 						ansmsg.gen(&hello, 4)
-						go common.WriteCrypt(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]), sc.encode)
+						go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
 					} else {
 						session.localConn = s_conn
 						go session.handleLocalPortResponse(sc, sessionId, hello.url)
 						ansmsg.gen(&hello, 0)
-						go common.WriteCrypt(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]), sc.encode)
+						go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
 					}
 				}()
 			case <-sc.quit:
@@ -1110,7 +1137,7 @@ out:
 	for {
 		select {
 		case sessionInfo := <-sc.createSessionChan:
-			if sessionInfo.sessionId == "" {
+			if sessionInfo.sessionId == -1 {
 				sessionInfo.sessionId = common.GetId("session")
 			}
 			old, bHave := sc.sessions[sessionInfo.sessionId]
@@ -1180,7 +1207,7 @@ func (sc *Client) MultiListen() bool {
 		if err != nil {
 			log.Println("cannot listen addr:" + err.Error())
 			for _, pipe := range sc.pipes {
-				common.WriteCrypt(pipe, "-1", "showandquit", "cannot listen addr:"+err.Error(), sc.encode)
+				common.WriteCrypt(pipe, -1, eShowandquit, []byte("cannot listen addr:"+err.Error()), sc.encode)
 			}
 			return false
 		}
@@ -1198,8 +1225,8 @@ func (sc *Client) MultiListen() bool {
 					continue
 				}
 				session := &clientSession{pipe: pipe, localConn: conn, status: "init", dieT: time.Now().Add(time.Duration(sc.stimeout) * time.Second)}
-				c := make(chan string)
-				request := createSessionInfo{sessionId: "", session: session, c: c}
+				c := make(chan int)
+				request := createSessionInfo{sessionId: -1, session: session, c: c}
 				select {
 				case sc.createSessionChan <- request:
 					sessionId := <-c
@@ -1210,7 +1237,7 @@ func (sc *Client) MultiListen() bool {
 			}
 			sc.listener = nil
 			for _, pipe := range sc.pipes {
-				common.WriteCrypt(pipe, "-1", "showandquit", "server listener quit", sc.encode)
+				common.WriteCrypt(pipe, -1, eShowandquit, []byte("server listener quit"), sc.encode)
 			}
 		}()
 	}
@@ -1254,7 +1281,7 @@ func (sc *Client) getOnePipe() net.Conn {
 }
 
 ///////////////////////multi pipe support
-func (session *clientSession) handleLocalPortResponse(client *Client, id, url string) {
+func (session *clientSession) handleLocalPortResponse(client *Client, id int, url string) {
 	sessionId := id
 	conn := session.localConn
 	if conn == nil {
@@ -1272,17 +1299,17 @@ func (session *clientSession) handleLocalPortResponse(client *Client, id, url st
 			session.dieT = time.Now().Add(time.Duration(client.stimeout) * time.Second)
 		}
 		debug("====debug read", size, url)
-		if common.WriteCrypt(session.pipe, id, "tunnel_msg_s", string(arr[0:size]), client.encode) != nil {
+		if common.WriteCrypt(session.pipe, id, eTunnel_msg_s, arr[0:size], client.encode) != nil {
 			break
 		}
 		debug("!!!!debug write", size, url)
 	}
 	// log.Println("handlerlocal down")
 	client.removeSession(sessionId)
-	common.WriteCrypt(session.pipe, id, "tunnel_close_s", "", client.encode)
+	common.WriteCrypt(session.pipe, id, eTunnel_close_s, []byte{}, client.encode)
 }
 
-func (session *clientSession) handleLocalServerResponse(client *Client, sessionId string) {
+func (session *clientSession) handleLocalServerResponse(client *Client, sessionId int) {
 	buffSize := pipe.WriteBufferSize
 	pipe := session.pipe
 	if pipe == nil {
@@ -1301,7 +1328,7 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 		}
 	}
 	if client.action != "socks5" {
-		common.WriteCrypt(pipe, sessionId, "tunnel_open", remote, client.encode)
+		common.WriteCrypt(pipe, sessionId, eTunnel_open, []byte(remote), client.encode)
 	}
 	arr := make([]byte, buffSize)
 	reader := bufio.NewReader(conn)
@@ -1317,14 +1344,14 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 		}
 		if client.action == "socks5" && !bParsed {
 			session.processSockProxy(sessionId, string(arr[0:size]), func(head []byte) {
-				common.WriteCrypt(pipe, sessionId, "tunnel_open", string(head), client.encode)
-				if common.WriteCrypt(pipe, sessionId, "tunnel_msg_c", session.recvMsg, client.encode) != nil {
+				common.WriteCrypt(pipe, sessionId, eTunnel_open, head, client.encode)
+				if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, []byte(session.recvMsg), client.encode) != nil {
 					bNeedBreak = true
 				}
 				bParsed = true
 			})
 		} else {
-			if common.WriteCrypt(pipe, sessionId, "tunnel_msg_c", string(arr[0:size]), client.encode) != nil {
+			if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, arr[0:size], client.encode) != nil {
 				bNeedBreak = true
 			}
 		}
@@ -1332,6 +1359,6 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 			break
 		}
 	}
-	common.WriteCrypt(pipe, sessionId, "tunnel_close", "", client.encode)
+	common.WriteCrypt(pipe, sessionId, eTunnel_close, []byte{}, client.encode)
 	client.removeSession(sessionId)
 }
