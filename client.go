@@ -66,7 +66,7 @@ var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 var timeOut = flag.Int("timeout", 100, "udp pipe set timeout(seconds)")
 
-var bDebug = flag.Bool("debug", false, "more output log")
+var bDebug = flag.Int("debug", 0, "more output log")
 var bReverse = flag.Bool("r", false, "reverse mode, if true, client 's \"-local\" address will be listened on server side")
 var sessionTimeout = flag.Int("session_timeout", 0, "if > 0, session will check itself if it's alive, if no msg tranfer for some seconds, socket will be closed, use this to avoid of zombie tcp sockets")
 
@@ -85,7 +85,7 @@ type dnsInfo struct {
 }
 
 func debug(args ...interface{}) {
-	if *bDebug {
+	if *bDebug > 1 {
 		log.Println(args...)
 	}
 }
@@ -584,6 +584,21 @@ func main() {
 		common.XorSetKey(*xorData)
 	}
 	g_ClientMap = make(map[string]*Client)
+	if *bDebug > 0 {
+		go func() {
+			c := time.NewTicker(time.Second * 15)
+			for _ = range c.C {
+				log.Println("begin =====")
+				for addr, client := range g_ClientMap {
+					log.Println("----", addr, len(client.pipes), len(client.sessions))
+				}
+				log.Println("end =====")
+			}
+			if g_LocalConn != nil && *bTcp {
+				g_LocalConn.(*pipe.Listener).Dump()
+			}
+		}()
+	}
 	var w sync.WaitGroup
 	w.Add(2)
 	pipen := 0
