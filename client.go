@@ -215,9 +215,6 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	client.action = *remoteAction
 	common.WriteCrypt(s_conn, -1, eInit_action, []byte(*remoteAction), client.encode)
 	client.stimeout = *sessionTimeout
-	if *sessionTimeout > 0 {
-		common.WriteCrypt(s_conn, -1, eS_timeout, []byte(strconv.Itoa(*sessionTimeout)), client.encode)
-	}
 
 	client.pipes[idindex] = s_conn
 	pinfo := &pipeInfo{0, 0, 0, nil, 0}
