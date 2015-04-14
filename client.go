@@ -20,6 +20,7 @@ import (
 	"os/user"
 	"path"
 	"runtime"
+	//de "runtime/debug"
 	//"runtime/pprof"
 	"strconv"
 	"strings"
@@ -319,6 +320,8 @@ func (client *Client) ServerProcess(bIsTcp bool, idindex int) {
 			delete(client.pipes, idindex)
 			if len(client.pipes) == 0 {
 				delete(g_ClientMap, old)
+				close(client.quit)
+				//don't use Quit(), for reuse pipe
 			}
 			idindex = pipeInfo.newindex
 			client = pipeInfo.owner
@@ -896,6 +899,9 @@ type Client struct {
 // pipe : client to client
 // local : client to local apps
 func (sc *Client) getSession(sessionId int) *clientSession {
+	if sessionId < 0 {
+		return nil
+	}
 	c := make(chan *clientSession)
 	request := getSessionInfo{sessionId, c}
 	select {
@@ -1207,6 +1213,7 @@ func (sc *Client) Quit() {
 	if sc.listener != nil {
 		sc.listener.Close()
 	}
+	//de.FreeOSMemory()
 }
 
 ///////////////////////multi pipe support
