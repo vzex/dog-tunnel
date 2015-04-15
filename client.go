@@ -77,6 +77,7 @@ var currReadyId = 0
 const maxPipes = 10
 
 var clientReportSessionChan chan int
+var timeNow time.Time
 
 type dnsInfo struct {
 	Ip                  string
@@ -92,7 +93,7 @@ func debug(args ...interface{}) {
 }
 
 func (u *dnsInfo) IsAlive() bool {
-	return time.Now().Unix() < u.overTime
+	return timeNow.Unix() < u.overTime
 }
 
 func (u *dnsInfo) SetCacheTime(t int64) {
@@ -101,7 +102,7 @@ func (u *dnsInfo) SetCacheTime(t int64) {
 	} else {
 		t = u.cacheTime
 	}
-	u.overTime = t + time.Now().Unix()
+	u.overTime = t + timeNow.Unix()
 }
 
 func (u *dnsInfo) GetCacheTime() int64 {
@@ -113,10 +114,6 @@ func (u *dnsInfo) DeInit() {}
 var g_ClientMap map[string]*Client
 var markName = ""
 var bForceQuit = false
-
-func iclock() int32 {
-	return int32((time.Now().UnixNano() / 1000000) & 0xffffffff)
-}
 
 func getEncodeFunc(aesBlock cipher.Block) func([]byte) []byte {
 	return func(s []byte) []byte {
@@ -201,7 +198,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		log.Println("request encrypt")
 		encrypt_tail := client.encryptstr
 		if encrypt_tail == "" {
-			encrypt_tail = string([]byte(fmt.Sprintf("%d%d", int32(time.Now().Unix()), (rand.Intn(100000) + 100)))[:12])
+			encrypt_tail = string([]byte(fmt.Sprintf("%d%d", int32(timeNow.Unix()), (rand.Intn(100000) + 100)))[:12])
 			client.encryptstr = encrypt_tail
 		}
 		aesKey := "asd4" + encrypt_tail
@@ -217,27 +214,17 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	common.WriteCrypt(s_conn, -1, eInit_action, []byte(*remoteAction), client.encode)
 	client.stimeout = *sessionTimeout
 
-	pinfo := &pipeInfo{s_conn, 0, 0, 0, nil, 0}
+	pinfo := &pipeInfo{s_conn, 0, timeNow.Unix(), nil, 0}
 	client.pipes[idindex] = pinfo
 	clientReportSessionChan <- idindex
-	pinfo.t = time.Now().Unix()
 	callback := func(conn net.Conn, sessionId int, action byte, content []byte) {
-		t := time.Now().Unix()
-		if t-pinfo.t < 60 {
-			pinfo.bytes += len(content)
-			pinfo.times = int(t - pinfo.t)
-		} else {
-			pinfo.t = t
-			pinfo.bytes = len(content)
-			pinfo.times = 1
-		}
 		var msg string
 		if client.decode != nil {
 			msg = string(client.decode(content))
 		} else {
 			msg = string(content)
 		}
-		client.OnTunnelRecv(conn, sessionId, action, msg)
+		client.OnTunnelRecv(conn, sessionId, action, msg, pinfo)
 	}
 	if bIsTcp {
 		common.Read(s_conn, callback)
@@ -295,7 +282,7 @@ func Listen(bIsTcp bool, addr string) bool {
 			_, bHave := client.pipes[i]
 			if !bHave {
 				idindex = i
-				client.pipes[i] = &pipeInfo{conn, 0, 0, 0, nil, 0}
+				client.pipes[i] = &pipeInfo{conn, 0, timeNow.Unix(), nil, 0}
 				break
 			}
 		}
@@ -326,7 +313,6 @@ func (client *Client) ServerProcess(bIsTcp bool, idindex int) {
 			pipeInfo, _ = client.pipes[idindex]
 		}
 	}
-	pipeInfo.t = time.Now().Unix()
 	callback := func(conn net.Conn, sessionId int, action byte, content []byte) {
 		f()
 		var msg string
@@ -335,18 +321,7 @@ func (client *Client) ServerProcess(bIsTcp bool, idindex int) {
 		} else {
 			msg = string(content)
 		}
-		t := time.Now().Unix()
-		if pipeInfo != nil {
-			if t-pipeInfo.t < 60 {
-				pipeInfo.bytes += len(content)
-				pipeInfo.times = int(t - pipeInfo.t)
-			} else {
-				pipeInfo.t = t
-				pipeInfo.bytes = len(content)
-				pipeInfo.times = 1
-			}
-		}
-		client.OnTunnelRecv(conn, sessionId, action, msg)
+		client.OnTunnelRecv(conn, sessionId, action, msg, pipeInfo)
 	}
 	conn := pipeInfo.conn
 	if bIsTcp {
@@ -545,7 +520,13 @@ func main() {
 		pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
 	}*/
-	rand.Seed(time.Now().Unix())
+	go func() {
+		for _ = range time.Tick(time.Second) {
+			timeNow = time.Now()
+		}
+	}()
+	timeNow = time.Now()
+	rand.Seed(timeNow.Unix())
 	checkDns = make(chan *dnsQueryReq)
 	checkDnsRes = make(chan *dnsQueryBack)
 	checkRealAddrChan = make(chan *queryRealAddrInfo)
@@ -588,8 +569,19 @@ func main() {
 			c := time.NewTicker(time.Second * 15)
 			for _ = range c.C {
 				log.Println("begin =====")
+				now := timeNow.Unix()
 				for addr, client := range g_ClientMap {
-					log.Println("----", addr, len(client.pipes), len(client.sessions))
+					var rate float64 = 0
+					for _, pipeInfo := range client.pipes {
+						dt := now - pipeInfo.t
+						if dt <= 0 {
+							dt = 1
+						}
+						_rate := float64(pipeInfo.total) / float64(dt)
+						rate += _rate
+						log.Println("pipe info", _rate, pipeInfo.total, dt)
+					}
+					log.Println("----", addr, len(client.pipes), "pipes;", len(client.sessions), "sessions;", int64(rate), "bytes/second;")
 				}
 				log.Println("end =====")
 			}
@@ -608,20 +600,20 @@ func main() {
 		f := func() {
 			<-c
 			/*if clientType == 1 {
-				for _, client := range g_ClientMap {
-					for i, pipe := range client.pipes {
-						pipe.Close()
-						log.Println("close pipe", i)
-						break
-					}
-				}
-			} else {
-				for addr, client := range g_ClientMap {
-					for i, _ := range client.pipes {
-						log.Println("show pipe", addr, i)
-					}
-				}
-			}*/
+			          for _, client := range g_ClientMap {
+			                  for i, pipe := range client.pipes {
+			                          pipe.Close()
+			                          log.Println("close pipe", i)
+			                          break
+			                  }
+			          }
+			  } else {
+			          for addr, client := range g_ClientMap {
+			                  for i, _ := range client.pipes {
+			                          log.Println("show pipe", addr, i)
+			                  }
+			          }
+			  }*/
 			n++
 			if n > 2 {
 				log.Println("force shutdown")
@@ -703,7 +695,7 @@ func main() {
 }
 
 type clientSession struct {
-	pipe      net.Conn
+	pipe      *pipeInfo
 	localConn net.Conn
 	status    string
 	recvMsg   string
@@ -864,11 +856,19 @@ func (msg *reqMsg) read(bytes []byte) (bool, []byte) {
 
 type pipeInfo struct {
 	conn     net.Conn
-	bytes    int
-	times    int
+	total    int64
 	t        int64
 	owner    *Client
 	newindex int
+}
+
+func (pinfo *pipeInfo) Add(size, now int64) {
+	if now-pinfo.t > 60 {
+		pinfo.total = size
+		pinfo.t = now
+	} else {
+		pinfo.total += size
+	}
 }
 
 type Client struct {
@@ -923,7 +923,7 @@ func (sc *Client) removeSession(sessionId int) bool {
 	return <-c
 }
 
-func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, content string) {
+func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, content string, pinfo *pipeInfo) {
 	debug("recv p2p tunnel", sessionId, action, len(content))
 	session := sc.getSession(sessionId)
 	var conn net.Conn
@@ -955,9 +955,10 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 	case eTunnel_msg_s:
 		if conn != nil {
 			if sc.stimeout > 0 {
-				session.dieT = time.Now().Add(time.Duration(sc.stimeout) * time.Second)
+				session.dieT = timeNow.Add(time.Duration(sc.stimeout) * time.Second)
 			}
 			conn.Write([]byte(content))
+			pinfo.Add(int64(len(content)), timeNow.Unix())
 		} else {
 			//log.Println("cannot tunnel msg", sessionId)
 		}
@@ -1009,7 +1010,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				for i := 1; i < maxPipes; i++ {
 					_, b := c.pipes[i]
 					if !b {
-						c.pipes[i] = &pipeInfo{pipe, 0, 0, 0, nil, 0}
+						c.pipes[i] = &pipeInfo{pipe, 0, timeNow.Unix(), nil, 0}
 						newindex := 0
 						for _i, _info := range sc.pipes {
 							if _info.conn == pipe {
@@ -1036,9 +1037,10 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		if conn != nil {
 			//log.Println("tunnel", (content), sessionId)
 			if sc.stimeout > 0 {
-				session.dieT = time.Now().Add(time.Duration(sc.stimeout) * time.Second)
+				session.dieT = timeNow.Add(time.Duration(sc.stimeout) * time.Second)
 			}
 			conn.Write([]byte(content))
+			pinfo.Add(int64(len(content)), timeNow.Unix())
 		}
 	case eTunnel_close:
 		go sc.removeSession(sessionId)
@@ -1055,7 +1057,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
 				return
 			} else {
-				session := &clientSession{pipe: pipe, localConn: s_conn, dieT: time.Now().Add(time.Duration(sc.stimeout) * time.Second)}
+				session := &clientSession{pipe: pinfo, localConn: s_conn, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
 				c := make(chan int)
 				request := createSessionInfo{sessionId: sessionId, session: session, c: c}
 				select {
@@ -1066,7 +1068,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				}
 			}
 		} else {
-			session = &clientSession{pipe: pipe, localConn: nil, status: "init", recvMsg: "", dieT: time.Now().Add(time.Duration(sc.stimeout) * time.Second)}
+			session = &clientSession{pipe: pinfo, localConn: nil, status: "init", recvMsg: "", dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
 			c := make(chan int)
 			request := createSessionInfo{sessionId: sessionId, session: session, c: c}
 			select {
@@ -1107,11 +1109,13 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 						log.Println("connect to local server fail:", err.Error())
 						ansmsg.gen(&hello, 4)
 						go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
+						pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
 					} else {
 						session.localConn = s_conn
 						go session.handleLocalPortResponse(sc, sessionId, hello.url)
 						ansmsg.gen(&hello, 0)
 						go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
+						pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
 					}
 				}()
 			case <-sc.quit:
@@ -1131,7 +1135,7 @@ out:
 	for {
 		select {
 		case <-t.C:
-			now := time.Now()
+			now := timeNow
 			for id, session := range sc.sessions {
 				if now.After(session.dieT) {
 					if session.localConn != nil {
@@ -1244,7 +1248,7 @@ func (sc *Client) MultiListen() bool {
 					time.Sleep(time.Second)
 					continue
 				}
-				session := &clientSession{pipe: pipe, localConn: conn, status: "init", dieT: time.Now().Add(time.Duration(sc.stimeout) * time.Second)}
+				session := &clientSession{pipe: pipe, localConn: conn, status: "init", dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
 				c := make(chan int)
 				request := createSessionInfo{sessionId: -1, session: session, c: c}
 				select {
@@ -1264,33 +1268,30 @@ func (sc *Client) MultiListen() bool {
 	return true
 }
 
-func (sc *Client) getOnePipe() net.Conn {
+func (sc *Client) getOnePipe() *pipeInfo {
 	size := len(sc.pipes)
 	if size == 1 {
 		pipeInfo, b := sc.pipes[0]
 		if b {
-			return pipeInfo.conn
+			return pipeInfo
 		}
 	}
 	//tmp := []int{}
-	var choose net.Conn
-	min := -1
-	now := time.Now().Unix()
+	var choose *pipeInfo
+	var min float64 = -1
+	now := timeNow.Unix()
 	for _, info := range sc.pipes {
-		rate := info.bytes
-		if now-info.t > 60 {
-			rate = 0
-		} else {
-			if info.times > 1 {
-				rate /= info.times
-			}
+		dt := now - info.t
+		if dt <= 0 {
+			dt = 1
 		}
+		rate := float64(info.total) / float64(dt)
 		if min == -1 {
 			min = rate
-			choose = info.conn
+			choose = info
 		} else if rate < min {
 			min = rate
-			choose = info.conn
+			choose = info
 		}
 	}
 	//log.Println("choose pipe for ", choose, "of", size, min)
@@ -1307,28 +1308,41 @@ func (session *clientSession) handleLocalPortResponse(client *Client, id int, ur
 	arr := make([]byte, pipe.WriteBufferSize)
 	debug("@@@@@@@ debug begin", url)
 	reader := bufio.NewReader(conn)
+	var pipe net.Conn
+	if session.pipe != nil {
+		pipe = session.pipe.conn
+	}
+	if pipe == nil {
+		client.removeSession(sessionId)
+		return
+	}
 	for {
 		size, err := reader.Read(arr)
 		if err != nil {
 			break
 		}
 		if client.stimeout > 0 {
-			session.dieT = time.Now().Add(time.Duration(client.stimeout) * time.Second)
+			session.dieT = timeNow.Add(time.Duration(client.stimeout) * time.Second)
 		}
 		debug("====debug read", size, url)
-		if common.WriteCrypt(session.pipe, id, eTunnel_msg_s, arr[0:size], client.encode) != nil {
+		if common.WriteCrypt(pipe, id, eTunnel_msg_s, arr[0:size], client.encode) != nil {
 			break
+		} else {
+			session.pipe.Add(int64(size), timeNow.Unix())
 		}
 		debug("!!!!debug write", size, url)
 	}
 	// log.Println("handlerlocal down")
 	client.removeSession(sessionId)
-	common.WriteCrypt(session.pipe, id, eTunnel_close_s, []byte{}, client.encode)
+	common.WriteCrypt(pipe, sessionId, eTunnel_close_s, []byte{}, client.encode)
 }
 
 func (session *clientSession) handleLocalServerResponse(client *Client, sessionId int) {
 	buffSize := pipe.WriteBufferSize
-	pipe := session.pipe
+	var pipe net.Conn
+	if session.pipe != nil {
+		pipe = session.pipe.conn
+	}
 	if pipe == nil {
 		client.removeSession(sessionId)
 		return
@@ -1357,19 +1371,23 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 			break
 		}
 		if client.stimeout > 0 {
-			session.dieT = time.Now().Add(time.Duration(client.stimeout) * time.Second)
+			session.dieT = timeNow.Add(time.Duration(client.stimeout) * time.Second)
 		}
 		if client.action == "socks5" && !bParsed {
 			session.processSockProxy(sessionId, string(arr[0:size]), func(head []byte) {
 				common.WriteCrypt(pipe, sessionId, eTunnel_open, head, client.encode)
 				if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, []byte(session.recvMsg), client.encode) != nil {
 					bNeedBreak = true
+				} else {
+					session.pipe.Add(int64(len(session.recvMsg)), timeNow.Unix())
 				}
 				bParsed = true
 			})
 		} else {
 			if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, arr[0:size], client.encode) != nil {
 				bNeedBreak = true
+			} else {
+				session.pipe.Add(int64(size), timeNow.Unix())
 			}
 		}
 		if bNeedBreak {
