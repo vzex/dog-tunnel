@@ -186,7 +186,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	id := *serviceAddr
 	client, bHave := g_ClientMap[id]
 	if !bHave {
-		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), pipesInfo: make(map[int]*pipeInfo), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
+		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
 		go client.sessionLoop()
 		g_ClientMap[id] = client
 		if *sessionTimeout > 0 {
@@ -217,9 +217,8 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	common.WriteCrypt(s_conn, -1, eInit_action, []byte(*remoteAction), client.encode)
 	client.stimeout = *sessionTimeout
 
-	client.pipes[idindex] = s_conn
-	pinfo := &pipeInfo{0, 0, 0, nil, 0}
-	client.pipesInfo[idindex] = pinfo
+	pinfo := &pipeInfo{s_conn, 0, 0, 0, nil, 0}
+	client.pipes[idindex] = pinfo
 	clientReportSessionChan <- idindex
 	pinfo.t = time.Now().Unix()
 	callback := func(conn net.Conn, sessionId int, action byte, content []byte) {
@@ -248,7 +247,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	log.Println("remove pipe", idindex)
 	clientReportSessionChan <- -1
 	delete(client.pipes, idindex)
-	delete(client.pipesInfo, idindex)
+	s_conn.Close()
 	if len(client.pipes) == 0 {
 		client.Quit()
 	}
@@ -283,7 +282,7 @@ func Listen(bIsTcp bool, addr string) bool {
 		}
 		client, have := g_ClientMap[id]
 		if !have {
-			client = &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]net.Conn), quit: make(chan bool), pipesInfo: make(map[int]*pipeInfo), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
+			client = &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
 			go client.sessionLoop()
 			g_ClientMap[id] = client
 			if *authKey == "" {
@@ -296,8 +295,7 @@ func Listen(bIsTcp bool, addr string) bool {
 			_, bHave := client.pipes[i]
 			if !bHave {
 				idindex = i
-				client.pipesInfo[i] = &pipeInfo{0, 0, 0, nil, 0}
-				client.pipes[i] = conn
+				client.pipes[i] = &pipeInfo{conn, 0, 0, 0, nil, 0}
 				break
 			}
 		}
@@ -313,21 +311,19 @@ func Listen(bIsTcp bool, addr string) bool {
 }
 
 func (client *Client) ServerProcess(bIsTcp bool, idindex int) {
-	pipeInfo, _ := client.pipesInfo[idindex]
+	pipeInfo, _ := client.pipes[idindex]
 	f := func() {
 		if pipeInfo.owner != nil {
 			old := client.id
 			delete(client.pipes, idindex)
 			if len(client.pipes) == 0 {
-				delete(g_ClientMap, old)
-				close(client.quit)
-				//don't use Quit(), for reuse pipe
+				client._Quit()
 			}
 			idindex = pipeInfo.newindex
 			client = pipeInfo.owner
 			pipeInfo.owner = nil
 			log.Println(old, "pipe >>", client.id, idindex)
-			pipeInfo, _ = client.pipesInfo[idindex]
+			pipeInfo, _ = client.pipes[idindex]
 		}
 	}
 	pipeInfo.t = time.Now().Unix()
@@ -340,24 +336,27 @@ func (client *Client) ServerProcess(bIsTcp bool, idindex int) {
 			msg = string(content)
 		}
 		t := time.Now().Unix()
-		if t-pipeInfo.t < 60 {
-			pipeInfo.bytes += len(content)
-			pipeInfo.times = int(t - pipeInfo.t)
-		} else {
-			pipeInfo.t = t
-			pipeInfo.bytes = len(content)
-			pipeInfo.times = 1
+		if pipeInfo != nil {
+			if t-pipeInfo.t < 60 {
+				pipeInfo.bytes += len(content)
+				pipeInfo.times = int(t - pipeInfo.t)
+			} else {
+				pipeInfo.t = t
+				pipeInfo.bytes = len(content)
+				pipeInfo.times = 1
+			}
 		}
 		client.OnTunnelRecv(conn, sessionId, action, msg)
 	}
+	conn := pipeInfo.conn
 	if bIsTcp {
-		common.Read(client.pipes[idindex], callback)
+		common.Read(conn, callback)
 	} else {
-		common.ReadUDP(client.pipes[idindex], callback, pipe.ReadBufferSize)
+		common.ReadUDP(conn, callback, pipe.ReadBufferSize)
 	}
 	f()
 	delete(client.pipes, idindex)
-	delete(client.pipesInfo, idindex)
+	conn.Close()
 	if bIsTcp {
 		log.Println("remove tcp pipe", idindex, "for", client.id)
 	} else {
@@ -666,13 +665,13 @@ func main() {
 							if pipen == *pipeN {
 								client, bHave := g_ClientMap[*serviceAddr]
 								if bHave {
-									pipe, bH := client.pipes[r]
+									pipeInfo, bH := client.pipes[r]
 									if !bH {
 										log.Println("error!,no pipe", r)
 										client.Quit()
 									} else {
 										readyIndex = r
-										common.WriteCrypt(pipe, -1, eReady, []byte{}, client.encode)
+										common.WriteCrypt(pipeInfo.conn, -1, eReady, []byte{}, client.encode)
 									}
 								}
 							}
@@ -864,6 +863,7 @@ func (msg *reqMsg) read(bytes []byte) (bool, []byte) {
 }
 
 type pipeInfo struct {
+	conn     net.Conn
 	bytes    int
 	times    int
 	t        int64
@@ -874,8 +874,7 @@ type pipeInfo struct {
 type Client struct {
 	id                string
 	buster            bool
-	pipes             map[int]net.Conn       // client for pipes
-	pipesInfo         map[int]*pipeInfo      // client for pipes
+	pipes             map[int]*pipeInfo      // client for pipes
 	sessions          map[int]*clientSession // session to pipeid
 	ready             bool
 	bUdp              bool
@@ -990,12 +989,12 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		common.WriteCrypt(pipe, -1, eReadyback, []byte(sc.readyId), sc.encode)
 	case eReadyback:
 		go func() {
-			for i, conn := range sc.pipes {
+			for i, pipeInfo := range sc.pipes {
 				if i != readyIndex {
-					common.WriteCrypt(conn, -1, eCollect, []byte(content), sc.encode)
+					common.WriteCrypt(pipeInfo.conn, -1, eCollect, []byte(content), sc.encode)
 				} else {
 					if *bReverse {
-						common.WriteCrypt(conn, -1, eReverse, []byte(*localAddr), sc.encode)
+						common.WriteCrypt(pipeInfo.conn, -1, eReverse, []byte(*localAddr), sc.encode)
 					} else {
 						go sc.MultiListen()
 					}
@@ -1010,14 +1009,12 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				for i := 1; i < maxPipes; i++ {
 					_, b := c.pipes[i]
 					if !b {
-						c.pipes[i] = pipe
-						c.pipesInfo[i] = &pipeInfo{0, 0, 0, nil, 0}
+						c.pipes[i] = &pipeInfo{pipe, 0, 0, 0, nil, 0}
 						newindex := 0
 						for _i, _info := range sc.pipes {
-							if _info == pipe {
-								pinfo, _ := sc.pipesInfo[_i]
-								pinfo.newindex = i
-								pinfo.owner = c
+							if _info.conn == pipe {
+								_info.newindex = i
+								_info.owner = c
 								newindex = _i
 								break
 							}
@@ -1197,6 +1194,18 @@ out:
 }
 
 func (sc *Client) Quit() {
+	sc._Quit()
+	for id, pipeInfo := range sc.pipes {
+		pipeInfo.conn.Close()
+		delete(sc.pipes, id)
+	}
+	if sc.listener != nil {
+		sc.listener.Close()
+	}
+	//de.FreeOSMemory()
+}
+
+func (sc *Client) _Quit() {
 	if !sc.closed {
 		sc.closed = true
 	} else {
@@ -1205,14 +1214,6 @@ func (sc *Client) Quit() {
 	close(sc.quit)
 	log.Println("client quit", sc.id)
 	delete(g_ClientMap, sc.id)
-	for id, pipe := range sc.pipes {
-		pipe.Close()
-		delete(sc.pipes, id)
-		delete(sc.pipesInfo, id)
-	}
-	if sc.listener != nil {
-		sc.listener.Close()
-	}
 	//de.FreeOSMemory()
 }
 
@@ -1225,8 +1226,8 @@ func (sc *Client) MultiListen() bool {
 		sc.listener, err = net.Listen("tcp", sc.reverseAddr)
 		if err != nil {
 			log.Println("cannot listen addr:" + err.Error())
-			for _, pipe := range sc.pipes {
-				common.WriteCrypt(pipe, -1, eShowandquit, []byte("cannot listen addr:"+err.Error()), sc.encode)
+			for _, pipeInfo := range sc.pipes {
+				common.WriteCrypt(pipeInfo.conn, -1, eShowandquit, []byte("cannot listen addr:"+err.Error()), sc.encode)
 			}
 			return false
 		}
@@ -1255,8 +1256,8 @@ func (sc *Client) MultiListen() bool {
 				}
 			}
 			sc.listener = nil
-			for _, pipe := range sc.pipes {
-				common.WriteCrypt(pipe, -1, eShowandquit, []byte("server listener quit"), sc.encode)
+			for _, pipeInfo := range sc.pipes {
+				common.WriteCrypt(pipeInfo.conn, -1, eShowandquit, []byte("server listener quit"), sc.encode)
 			}
 		}()
 	}
@@ -1266,18 +1267,16 @@ func (sc *Client) MultiListen() bool {
 func (sc *Client) getOnePipe() net.Conn {
 	size := len(sc.pipes)
 	if size == 1 {
-		pipe, b := sc.pipes[0]
+		pipeInfo, b := sc.pipes[0]
 		if b {
-			return pipe
+			return pipeInfo.conn
 		}
 	}
 	//tmp := []int{}
-	choose := 0
+	var choose net.Conn
 	min := -1
 	now := time.Now().Unix()
-	for id, _ := range sc.pipes {
-		//tmp = append(tmp, id)
-		info, _ := sc.pipesInfo[id]
+	for _, info := range sc.pipes {
 		rate := info.bytes
 		if now-info.t > 60 {
 			rate = 0
@@ -1288,15 +1287,14 @@ func (sc *Client) getOnePipe() net.Conn {
 		}
 		if min == -1 {
 			min = rate
-			choose = id
+			choose = info.conn
 		} else if rate < min {
 			min = rate
-			choose = id
+			choose = info.conn
 		}
 	}
 	//log.Println("choose pipe for ", choose, "of", size, min)
-	pipe, _ := sc.pipes[choose]
-	return pipe
+	return choose
 }
 
 ///////////////////////multi pipe support
