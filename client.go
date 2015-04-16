@@ -578,6 +578,10 @@ func main() {
 							dt = 1
 						}
 						_rate := float64(pipeInfo.total) / float64(dt)
+						if dt > 60 {
+							_rate = 0
+							dt = 1
+						}
 						rate += _rate
 						log.Println("pipe info", _rate, pipeInfo.total, dt)
 					}
@@ -1284,6 +1288,9 @@ func (sc *Client) getOnePipe() *pipeInfo {
 		dt := now - info.t
 		if dt <= 0 {
 			dt = 1
+		}
+		if dt > 60 {
+			return info //transer data for over 60s
 		}
 		rate := float64(info.total) / float64(dt)
 		if min == -1 {
