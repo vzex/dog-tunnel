@@ -115,23 +115,28 @@ var g_ClientMap map[string]*Client
 var markName = ""
 var bForceQuit = false
 
+var aesIV []byte
+
+func initAesIV() {
+	aesIV = make([]byte, aes.BlockSize)
+	for i := 0; i < aes.BlockSize; i++ {
+		aesIV[i] = byte(i)
+	}
+}
+
 func getEncodeFunc(aesBlock cipher.Block) func([]byte) []byte {
 	return func(s []byte) []byte {
 		if aesBlock == nil {
 			return s
 		} else {
 			padLen := aes.BlockSize - (len(s) % aes.BlockSize)
-			for i := 0; i < padLen; i++ {
-				s = append(s, byte(padLen))
-			}
-			srcLen := len(s)
-			encryptText := make([]byte, srcLen+aes.BlockSize)
-			iv := encryptText[srcLen:]
-			for i := 0; i < len(iv); i++ {
-				iv[i] = byte(i)
-			}
-			mode := cipher.NewCBCEncrypter(aesBlock, iv)
-			mode.CryptBlocks(encryptText[:srcLen], s)
+			l := len(s) + padLen
+			tmp := make([]byte, l)
+			copy(tmp, s)
+			tmp[l-1] = byte(padLen)
+			encryptText := make([]byte, l)
+			mode := cipher.NewCBCEncrypter(aesBlock, aesIV)
+			mode.CryptBlocks(encryptText, tmp)
 			return encryptText
 		}
 	}
@@ -142,16 +147,15 @@ func getDecodeFunc(aesBlock cipher.Block) func([]byte) []byte {
 		if aesBlock == nil {
 			return s
 		} else {
-			if len(s) < aes.BlockSize*2 || len(s)%aes.BlockSize != 0 {
+			srcLen := len(s)
+			if srcLen < aes.BlockSize || srcLen%aes.BlockSize != 0 {
 				return []byte{}
 			}
-			srcLen := len(s) - aes.BlockSize
 			decryptText := make([]byte, srcLen)
-			iv := s[srcLen:]
-			mode := cipher.NewCBCDecrypter(aesBlock, iv)
-			mode.CryptBlocks(decryptText, s[:srcLen])
+			mode := cipher.NewCBCDecrypter(aesBlock, aesIV)
+			mode.CryptBlocks(decryptText, s)
 			paddingLen := int(decryptText[srcLen-1])
-			if paddingLen > 16 {
+			if paddingLen > aes.BlockSize {
 				return []byte{}
 			}
 			return decryptText[:srcLen-paddingLen]
@@ -560,6 +564,7 @@ func main() {
 		println("must have action")
 		return
 	}
+	initAesIV()
 	if *xorData != "" {
 		common.XorSetKey(*xorData)
 	}
