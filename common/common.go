@@ -22,7 +22,7 @@ func init() {
 	initxor()
 }
 
-const Version = 0.81
+const Version = 0.9
 
 type ClientSetting struct {
 	AccessKey string
