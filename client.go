@@ -1104,7 +1104,7 @@ func (sc *Client) Run(index int, specPipe string) {
 	go func() {
 		callback := func(conn net.Conn, sessionId, action, content string) {
 			if sc != nil {
-				go sc.OnTunnelRecv(conn, sessionId, action, content)
+				sc.OnTunnelRecv(conn, sessionId, action, content)
 			}
 		}
 		common.Read(pipe, callback)
