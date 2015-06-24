@@ -131,7 +131,7 @@ func (session *Session) StartSession(n int, ServerName, sessionId string) {
 }
 
 func (session *Session) startUdpSession(ServerName, sessionId, pipeType string) {
-	udpSessionId := GetId("makehole")
+	udpSessionId := strconv.Itoa(GetId("makehole"))
 	log.Println("start session", session.Id, session.Setting.Mode, ServerName, udpSessionId)
 	udpSession := &UDPMakeSession{CreateTime: time.Now().Unix(), Id: udpSessionId, ClientA: session.ClientA, ClientB: session.ClientB, SessionId: sessionId, PipeType: pipeType, ServerName: ServerName, Status: "init", Quit: make(chan bool)}
 	GetClientInfoByName(ServerName, func(server *ClientInfo) {
@@ -151,7 +151,7 @@ func (s *ClientInfo) GetSession(conn net.Conn) *Session {
 }
 
 func (s *ClientInfo) AddClient(conn net.Conn, clientInfo ClientSetting) {
-	id := GetId(s.ServerName)
+	id := strconv.Itoa(GetId(s.ServerName))
 	s.ClientMap[conn] = &Session{ClientA: conn, ClientB: s.Conn, Method: "udp", OverTime: 0, Status: "init", Id: id, Setting: clientInfo, Quit: make(chan bool), MakeHoleResponseN: 0, MakeHoleHasFail: false}
 	s.Id2Session[id] = s.ClientMap[conn]
 	if s.ClientMap[conn].Setting.Mode == 2 {
@@ -194,7 +194,7 @@ func (s *ClientInfo) DelClient(conn net.Conn) string {
 		log.Println("remove client session", id)
 		delete(s.Id2Session, id)
 		delete(s.ClientMap, conn)
-		RmId(s.ServerName, id)
+		//RmId(s.ServerName, id)
 		return id
 	}
 	return ""
@@ -215,7 +215,7 @@ func (udpsession *UDPMakeSession) Remove(bTimeout bool) {
 			Write(session.ClientB, udpsession.Id, "remove_udpsession", "")
 		}
 	}, func() {})
-	RmId("makehole", udpsession.Id)
+	//RmId("makehole", udpsession.Id)
 }
 
 func (udpsession *UDPMakeSession) Loop() {
@@ -254,7 +254,7 @@ func (udpsession *UDPMakeSession) BeginMakeHole(step int, content string) {
 		if session != nil {
 			delay = session.Setting.Delay
 		}
-		Write(ClientA, id+"-"+udpsession.SessionId+"-"+udpsession.PipeType, "query_addrlist_a", ClientA.RemoteAddr().(*net.TCPAddr).IP.String()+":"+strconv.Itoa(delay))
+		Write(ClientA, id+"-"+udpsession.SessionId+"-"+udpsession.PipeType, "query_addrlist_a", ClientA.RemoteAddr().(*net.UDPAddr).IP.String()+":"+strconv.Itoa(delay))
 		if session != nil {
 			session.Status = "tella"
 		}
@@ -266,7 +266,7 @@ func (udpsession *UDPMakeSession) BeginMakeHole(step int, content string) {
 				session.Status = "atellb"
 			}
 			log.Println("===>>tell b to report addlist,give b the a's addrlist", ClientB.RemoteAddr().String(), udpsession.ServerName, udpsession.Id)
-			Write(ClientB, id+"-"+udpsession.SessionId+"-"+udpsession.PipeType, "query_addrlist_b", ClientB.RemoteAddr().(*net.TCPAddr).IP.String()+":"+content)
+			Write(ClientB, id+"-"+udpsession.SessionId+"-"+udpsession.PipeType, "query_addrlist_b", ClientB.RemoteAddr().(*net.UDPAddr).IP.String()+":"+content)
 		} else if udpsession.Status == "atellb" {
 			udpsession.Status = "bust_start_a"
 			if session != nil {
@@ -319,7 +319,7 @@ func GetClientInfoByName(ServerName string, cb_ok func(*ClientInfo), cb_fail fun
 func GetOnlineServiceNumByNameAndIP(userName, ip string) int {
 	size := 0
 	for _, info := range Conn2ClientInfo {
-		if info.IsServer && info.UserName == userName && (ip == info.Conn.RemoteAddr().(*net.TCPAddr).IP.String()) {
+		if info.IsServer && info.UserName == userName && (ip == info.Conn.RemoteAddr().(*net.UDPAddr).IP.String()) {
 			size++
 		}
 	}

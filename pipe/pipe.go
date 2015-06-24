@@ -94,6 +94,7 @@ type UDPMakeSession struct {
 	processBuffer []byte
 	encodeBuffer  []byte
 	timeout       int64
+	disBind       bool
 }
 
 type Listener struct {
@@ -289,6 +290,9 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 	return session, nil
 }
 
+func (session *UDPMakeSession) GetSock() *net.UDPConn {
+	return session.sock
+}
 func (session *UDPMakeSession) doAndWait(f func(), sec int, readf func(status byte, arg int32) int) (code int) {
 	t := time.NewTicker(50 * time.Millisecond)
 	currT := time.Now().Unix()
@@ -673,13 +677,17 @@ func (session *UDPMakeSession) _Close(bFirstCall bool) {
 		if session.listener != nil {
 			session.listener.remove(session.remote.String())
 		} else {
-			if session.sock != nil {
+			if session.sock != nil && !session.disBind {
 				session.sock.Close()
 			}
 		}
 	}()
 }
 
+func (session *UDPMakeSession) DisBind() error {
+	session.disBind = true
+	return session.Close()
+}
 func (session *UDPMakeSession) Close() error {
 	if session.closed {
 		return nil
@@ -779,7 +787,6 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
 	case <-session.quitChan:
 		n = -1
 	}
-	//log.Println("real recv", l, string(b[:l]))
 	if n == -1 {
 		return 0, errors.New("force quit for read error")
 	} else {

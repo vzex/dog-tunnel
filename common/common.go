@@ -10,10 +10,9 @@ import (
 	"io"
 	"log"
 	"net"
-	"strconv"
 )
 
-const Version = 0.60
+const Version = 0.70
 
 type ClientSetting struct {
 	AccessKey string
@@ -125,13 +124,13 @@ func HashPasswd(pass string) string {
 }
 
 type _reuseTbl struct {
-	tbl map[string]bool
+	tbl map[int]bool
 }
 
 var currIdMap map[string]int
 var reuseTbl map[string]*_reuseTbl
 
-func GetId(name string) string {
+func GetId(name string) int {
 	if reuseTbl != nil {
 		tbl, bHave := reuseTbl[name]
 		if bHave {
@@ -150,19 +149,16 @@ func GetId(name string) string {
 	}
 	currIdMap[name]++
 	//	println("gen new id", currIdMap[name])
-	return strconv.Itoa(currIdMap[name])
+	return currIdMap[name]
 }
 
-func RmId(name, id string) {
+func RmId(name string, id int) {
 	return
 	if currIdMap == nil {
 		currIdMap = make(map[string]int)
 		currIdMap[name] = 0
 	}
-	n, err := strconv.Atoi(id)
-	if err != nil {
-		return
-	}
+	n := id
 	if n > currIdMap[name] {
 		return
 	}
@@ -171,26 +167,9 @@ func RmId(name, id string) {
 	}
 	tbl, bHave := reuseTbl[name]
 	if !bHave {
-		reuseTbl[name] = &_reuseTbl{tbl: make(map[string]bool)}
+		reuseTbl[name] = &_reuseTbl{tbl: make(map[int]bool)}
 		tbl = reuseTbl[name]
 	}
 	tbl.tbl[id] = true
 	//	println("can reuse ", name, id)
-}
-
-func Id_test(name string) {
-	id1 := GetId(name)
-	id2 := GetId(name)
-	id3 := GetId(name)
-	id4 := GetId(name)
-
-	RmId(name, id2)
-	RmId(name, id4)
-	println(GetId(name))
-	println(GetId(name))
-	RmId(name, id1)
-	println(GetId(name))
-	RmId(name, id3)
-	println(GetId(name))
-	println(GetId(name))
 }

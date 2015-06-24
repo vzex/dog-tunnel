@@ -3,10 +3,10 @@ package main
 import (
 	"./common"
 	"./nat"
+	"./pipe"
 	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -325,6 +325,7 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 		}
 		client, bHave := g_ClientMap[session.sessionId]
 		if !bHave {
+			remoteConn.(*pipe.UDPMakeSession).DisBind()
 			client = &Client{id: session.sessionId, engine: session.engine, buster: session.buster, ready: true, bUdp: true, sessions: make(map[string]*clientSession), specPipes: make(map[string]net.Conn), pipes: make(map[int]net.Conn)}
 			g_ClientMap[session.sessionId] = client
 		}
@@ -370,7 +371,7 @@ func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
 	}
 	outip += ";" + *addInitAddr
 	_id, _ := strconv.Atoi(id)
-	engine, err := nat.Init(outip, buster, _id)
+	engine, err := nat.InitWithSock(remoteConn.(*pipe.UDPMakeSession).GetSock(), outip, buster, _id)
 	if err != nil {
 		println("init error", err.Error())
 		disconnect()
@@ -482,42 +483,28 @@ func main() {
 		g_ClientMapKey = make(map[string]*cipher.Block)
 		g_Id2UDPSession = make(map[string]*UDPMakeSession)
 		//var err error
-		if *bUseSSL {
-			_remoteConn, err := tls.Dial("tcp", *serverAddr, &tls.Config{InsecureSkipVerify: true})
-			if err != nil {
-				println("connect remote err:" + err.Error())
-				return false
-			}
-			remoteConn = net.Conn(_remoteConn)
-		} else {
-			_remoteConn, err := net.DialTimeout("tcp", *serverAddr, 10*time.Second)
-			if err != nil {
-				println("connect remote err:" + err.Error())
-				return false
-			}
-			remoteConn = _remoteConn
+		_remoteConn, err := pipe.DialTimeout(*serverAddr, 10)
+		if err != nil {
+			println("connect remote err:" + err.Error())
+			return false
 		}
+		remoteConn = _remoteConn
 		println("connect to server succeed")
 		go connect()
 		q := make(chan bool)
 		go func() {
-			c := time.NewTicker(time.Second * 10)
 		out:
 			for {
 				select {
-				case <-c.C:
-					if remoteConn != nil {
-						common.Write(remoteConn, "-1", "ping", "")
-					}
 				case <-q:
 					break out
 				}
 			}
-			c.Stop()
 		}()
 
 		common.Read(remoteConn, handleResponse)
-		q <- true
+		//q <- true
+		<-q
 		for clientId, client := range g_ClientMap {
 			log.Println("client shutdown", clientId)
 			client.Quit()
@@ -917,7 +904,7 @@ func (sc *Client) getSession(sessionId string) *clientSession {
 
 func (sc *Client) removeSession(sessionId string) bool {
 	if clientType == 1 {
-		common.RmId("udp", sessionId)
+		//common.RmId("udp", sessionId)
 	}
 	session, bHave := sc.sessions[sessionId]
 	if bHave {
@@ -1048,7 +1035,7 @@ func (sc *Client) MultiListen() bool {
 				if err != nil {
 					continue
 				}
-				sessionId := common.GetId("udp")
+				sessionId := strconv.Itoa(common.GetId("udp"))
 				pipe := sc.getOnePipe()
 				if pipe == nil {
 					log.Println("cannot get pipe for client")

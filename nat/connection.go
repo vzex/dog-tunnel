@@ -100,7 +100,7 @@ func (c *Conn) Read(b []byte) (int, error) {
 			for {
 				c.conn.SetReadDeadline(time.Now().Add(time.Second * 2))
 				n, addr, err := c.conn.ReadFrom(c.tmp)
-				//debug("want read!", n, addr, err)
+				debug("want read!", n, addr, err)
 				// Generic non-address related errors.
 				if addr == nil && err != nil {
 					if !err.(net.Error).Timeout() {
