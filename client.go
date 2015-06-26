@@ -36,7 +36,7 @@ var serveName = flag.String("reg", "", "reg the name for client link, must assig
 var linkName = flag.String("link", "", "name for link, must assign reg or link")
 var localAddr = flag.String("local", "", "addr for listen or connect(value \"socks5\" means tcp socks5 proxy for reg),depends on link or reg")
 var bVerbose = flag.Bool("v", false, "verbose mode")
-var delayTime = flag.Int("delay", 2, "if bust fail, try to make some delay seconds")
+var delayTime = flag.Int("delay", 0, "if bust fail, try to make some delay seconds")
 var clientMode = flag.Int("mode", 0, "connect mode:0 if p2p fail, use c/s mode;1 just p2p mode;2 just c/s mode")
 var bUseSSL = flag.Bool("ssl", true, "use ssl")
 var bShowVersion = flag.Bool("version", false, "show version")
@@ -110,20 +110,29 @@ func handleResponse(conn net.Conn, clientId string, action string, content strin
 		log.Println("server force remove udpsession", clientId)
 		delete(g_Id2UDPSession, clientId)
 	case "query_addrlist_a":
-		outip := content
 		arr := strings.Split(clientId, "-")
 		id := arr[0]
 		sessionId := arr[1]
 		pipeType := arr[2]
-		g_Id2UDPSession[id] = &UDPMakeSession{id: id, sessionId: sessionId, pipeType: pipeType}
-		go g_Id2UDPSession[id].reportAddrList(true, outip)
+		sock, err := pipe.DialTimeout(*serverAddr, 5)
+		if err == nil {
+			g_Id2UDPSession[id] = &UDPMakeSession{sock: sock, id: id, sessionId: sessionId, pipeType: pipeType}
+			go g_Id2UDPSession[id].reportAddrList(true, content)
+		} else {
+			log.Println("dial server1 timeout", err.Error())
+		}
 	case "query_addrlist_b":
 		arr := strings.Split(clientId, "-")
 		id := arr[0]
 		sessionId := arr[1]
 		pipeType := arr[2]
-		g_Id2UDPSession[id] = &UDPMakeSession{id: id, sessionId: sessionId, pipeType: pipeType}
-		go g_Id2UDPSession[id].reportAddrList(false, content)
+		sock, err := pipe.DialTimeout(*serverAddr, 5)
+		if err == nil {
+			g_Id2UDPSession[id] = &UDPMakeSession{sock: sock, id: id, sessionId: sessionId, pipeType: pipeType}
+			go g_Id2UDPSession[id].reportAddrList(false, content)
+		} else {
+			log.Println("dial server2 timeout", err.Error())
+		}
 	case "tell_bust_a":
 		session, bHave := g_Id2UDPSession[clientId]
 		if bHave {
@@ -231,6 +240,7 @@ func handleResponse(conn net.Conn, clientId string, action string, content strin
 }
 
 type UDPMakeSession struct {
+	sock      *pipe.UDPMakeSession
 	id        string
 	sessionId string
 	buster    bool
@@ -245,6 +255,8 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 		return
 	}
 	addrList := content
+	log.Println("try disbind sock", addrList)
+	session.sock.DisBind()
 	if session.buster {
 		engine.SetOtherAddrList(addrList)
 	}
@@ -325,7 +337,6 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 		}
 		client, bHave := g_ClientMap[session.sessionId]
 		if !bHave {
-			remoteConn.(*pipe.UDPMakeSession).DisBind()
 			client = &Client{id: session.sessionId, engine: session.engine, buster: session.buster, ready: true, bUdp: true, sessions: make(map[string]*clientSession), specPipes: make(map[string]net.Conn), pipes: make(map[int]net.Conn)}
 			g_ClientMap[session.sessionId] = client
 		}
@@ -338,6 +349,9 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 				if len(client.pipes) == *pipeNum {
 					client.MultiListen()
 				}
+			}
+			if len(client.pipes) == *pipeNum {
+				remoteConn.Close()
 			}
 		} else {
 			client.specPipes[session.pipeType] = conn
@@ -354,24 +368,32 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 	}
 }
 
-func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
+func (session *UDPMakeSession) reportAddrList(buster bool, content string) {
+	common.Write(session.sock, "0", "queryaddr", "")
+	myAddr := ""
+	q := false
+	callback := func(conn net.Conn, sessionId, action, content string) {
+		if action == "queryaddrback" {
+			myAddr = content
+			common.Write(session.sock, "0", "queryaddrclose", "")
+			q = true
+		}
+	}
+	common.ReadUDP(session.sock, callback, 100, &q)
 	id := session.id
 	var otherAddrList string
 	if !buster {
-		arr := strings.SplitN(outip, ":", 2)
-		outip, otherAddrList = arr[0], arr[1]
+		otherAddrList = content
 	} else {
-		arr := strings.SplitN(outip, ":", 2)
 		var delayTime string
-		outip, delayTime = arr[0], arr[1]
+		delayTime = content
 		session.delay, _ = strconv.Atoi(delayTime)
 		if session.delay < 0 {
 			session.delay = 0
 		}
 	}
-	outip += ";" + *addInitAddr
 	_id, _ := strconv.Atoi(id)
-	engine, err := nat.InitWithSock(remoteConn.(*pipe.UDPMakeSession).GetSock(), outip, buster, _id)
+	engine, err := nat.InitWithSock(session.sock.GetSock(), myAddr, buster, _id)
 	if err != nil {
 		println("init error", err.Error())
 		disconnect()
@@ -382,8 +404,8 @@ func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
 	if !buster {
 		engine.SetOtherAddrList(otherAddrList)
 	}
-	addrList := engine.GetAddrList()
-	common.Write(remoteConn, id, "report_addrlist", addrList)
+	common.Write(remoteConn, id, "report_addrlist", myAddr)
+	log.Println("report_addrlist", myAddr)
 }
 
 type fileSetting struct {
@@ -459,7 +481,6 @@ func main() {
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-		n := 0
 		for {
 			<-c
 			log.Println("received signal,shutdown")
@@ -467,11 +488,8 @@ func main() {
 			if remoteConn != nil {
 				remoteConn.Close()
 			}
-			n++
-			if n > 5 {
-				log.Println("force shutdown")
-				os.Exit(-1)
-			}
+			log.Println("force shutdown")
+			os.Exit(-1)
 		}
 	}()
 
@@ -482,29 +500,18 @@ func main() {
 		g_ClientMap = make(map[string]*Client)
 		g_ClientMapKey = make(map[string]*cipher.Block)
 		g_Id2UDPSession = make(map[string]*UDPMakeSession)
-		//var err error
-		_remoteConn, err := pipe.DialTimeout(*serverAddr, 10)
+		var err error
+		remoteConn, err = pipe.DialTimeout(*serverAddr, 10)
 		if err != nil {
 			println("connect remote err:" + err.Error())
 			return false
 		}
-		remoteConn = _remoteConn
 		println("connect to server succeed")
 		go connect()
-		q := make(chan bool)
-		go func() {
-		out:
-			for {
-				select {
-				case <-q:
-					break out
-				}
-			}
-		}()
-
-		common.Read(remoteConn, handleResponse)
-		//q <- true
-		<-q
+		b := false
+		common.ReadUDP(remoteConn, handleResponse, pipe.ReadBufferSize, &b)
+		qq := make(chan bool)
+		<-qq
 		for clientId, client := range g_ClientMap {
 			log.Println("client shutdown", clientId)
 			client.Quit()
@@ -919,7 +926,7 @@ func (sc *Client) removeSession(sessionId string) bool {
 }
 
 func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, content string) {
-	//println("recv p2p tunnel", sessionId, action, content)
+	//log.Println("recv p2p tunnel", sessionId, action, content)
 	session := sc.getSession(sessionId)
 	var conn net.Conn
 	if session != nil {
@@ -1079,6 +1086,7 @@ func (sc *Client) getOnePipe() net.Conn {
 ///////////////////////multi pipe support
 
 func (sc *Client) Run(index int, specPipe string) {
+	var size = pipe.ReadBufferSize
 	var pipe net.Conn
 	if index >= 0 {
 		pipe = sc.pipes[index]
@@ -1094,7 +1102,8 @@ func (sc *Client) Run(index int, specPipe string) {
 				sc.OnTunnelRecv(conn, sessionId, action, content)
 			}
 		}
-		common.Read(pipe, callback)
+		b := false
+		common.ReadUDP(pipe, callback, size, &b)
 		log.Println("client end read", index)
 		if index >= 0 {
 			delete(sc.pipes, index)
@@ -1132,7 +1141,7 @@ func handleLocalPortResponse(client *Client, id string) {
 	if conn == nil {
 		return
 	}
-	arr := make([]byte, 1000)
+	arr := make([]byte, 2000)
 	reader := bufio.NewReader(conn)
 	for {
 		size, err := reader.Read(arr)
@@ -1160,7 +1169,7 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 	}
 	conn := session.localConn
 	common.Write(pipe, sessionId, "tunnel_open", "")
-	arr := make([]byte, 1000)
+	arr := make([]byte, 2000)
 	reader := bufio.NewReader(conn)
 	for {
 		size, err := reader.Read(arr)

@@ -128,7 +128,7 @@ func (e *AttemptEngine) xmit() (time.Time, error) {
 			if err != nil {
 				return time.Time{}, err
 			}
-			//debug("===send", i,e.attempts[i].Addr.String())
+			debug("===send", i, e.attempts[i].Addr.String(), len(packet))
 			e.sock.WriteToUDP(packet, e.attempts[i].Addr)
 
 			for j := range e.local_attempts {
@@ -137,7 +137,7 @@ func (e *AttemptEngine) xmit() (time.Time, error) {
 					if err != nil {
 						return time.Time{}, err
 					}
-					//debug("===send local", i,e.local_attempts[j].localaddr.String())
+					debug("===send local", i, e.local_attempts[j].localaddr.String(), len(packet))
 					e.sock.WriteToUDP(packet, e.local_attempts[j].localaddr.(*net.UDPAddr))
 				}
 			}
@@ -155,7 +155,9 @@ func (e *AttemptEngine) read() error {
 	}
 	buf := make([]byte, 512)
 	n, from, err := e.sock.ReadFromUDP(buf)
-	//println("read", n, from, err)
+	if err != nil {
+		return nil
+	}
 	if err != nil {
 		if neterr, ok := err.(net.Error); ok && neterr.Timeout() {
 			return nil
@@ -181,6 +183,7 @@ func (e *AttemptEngine) read() error {
 
 	//debug("========", string(buf[0:n]))
 	packet, err := stun.ParsePacket(buf[:n], nil)
+	debug("parse", packet, err)
 	if err != nil {
 		return nil
 	}
@@ -189,48 +192,44 @@ func (e *AttemptEngine) read() error {
 		return nil
 	}
 
-	validAddr := packet.Addr
+	debug("parse2", packet.Class)
 	for i := range e.local_attempts {
-		my_local_addr := e.local_attempts[i].Addr
-		//debug("check local",i, validAddr.String(), packet.Class, from.String(), my_local_addr.String())
-		if validAddr.String() == my_local_addr.String() {
-			e.local_attempts[i].localaddr = from
-			e.local_attempts[i].success = true
-			//debug("find the addr from request", packet.Class, from.String())
-			if packet.Class == stun.ClassRequest {
+		e.local_attempts[i].localaddr = from
+		e.local_attempts[i].success = true
+		//debug("find the addr from request", packet.Class, from.String())
+		if packet.Class == stun.ClassRequest {
+			for j := range e.attempts {
+				my_remote_addr := e.attempts[j].Addr
+				response, err := stun.BindResponse(packet.Tid[:], my_remote_addr, nil, false)
+				if err != nil {
+					return nil
+				}
+				debug("write to succ", from.String(), j, my_remote_addr.String())
+				e.sock.WriteToUDP(response, from)
+			}
+		} else if packet.Class == stun.ClassSuccess {
+			if e.p2pconn == nil {
+				debug("make conn success", from.String(), e.local_attempts[i].localaddr.String(), len(e.attempts))
+				e.p2pconn = newConn(e.sock, e.local_attempts[i].Addr, e.local_attempts[i].localaddr, e.id)
 				for j := range e.attempts {
 					my_remote_addr := e.attempts[j].Addr
-					response, err := stun.BindResponse(packet.Tid[:], my_remote_addr, nil, false)
+					response, err := stun.InformReady(packet.Tid[:], my_remote_addr, nil)
 					if err != nil {
 						return nil
 					}
-					debug("write to succ", from.String(), j, my_remote_addr.String())
+					debug("write to ready", from.String(), j, my_remote_addr.String(), len(response))
 					e.sock.WriteToUDP(response, from)
 				}
-			} else if packet.Class == stun.ClassSuccess {
-				if e.p2pconn == nil {
-					debug("make conn success", from.String(), e.local_attempts[i].localaddr.String())
-					e.p2pconn = newConn(e.sock, e.local_attempts[i].Addr, e.local_attempts[i].localaddr, e.id)
-					for j := range e.attempts {
-						my_remote_addr := e.attempts[j].Addr
-						response, err := stun.InformReady(packet.Tid[:], my_remote_addr, nil)
-						if err != nil {
-							return nil
-						}
-						debug("write to ready", from.String(), j, my_remote_addr.String())
-						e.sock.WriteToUDP(response, from)
-					}
-				}
-			} else if packet.Class == stun.ClassIndication {
-				debug("recv other ready")
-				e.otherReady = true
-				/*	for j := range e.attempts {
-					debug("write !!!!!!", from.String(),j)
-					e.sock.WriteToUDP([]byte("wocao,okokokook1!!"), from)
-				}*/
-			} else if packet.Class == stun.ClassError {
-				//			debug("!!!!!!!!!!!!!")
 			}
+		} else if packet.Class == stun.ClassIndication {
+			debug("recv other ready")
+			e.otherReady = true
+			/*	for j := range e.attempts {
+			        debug("write !!!!!!", from.String(),j)
+			        e.sock.WriteToUDP([]byte("wocao,okokokook1!!"), from)
+			}*/
+		} else if packet.Class == stun.ClassError {
+			//			debug("!!!!!!!!!!!!!")
 		}
 	}
 
@@ -270,7 +269,9 @@ func (e *AttemptEngine) run(f func(), encode, decode func([]byte) []byte) (net.C
 			}
 		}
 		if e.status == "over" {
+			e.sock.SetReadDeadline(time.Now().Add(time.Second))
 			e.p2pconn.(*Conn).SetCrypt(encode, decode)
+			go e.p2pconn.(*Conn).OnUpdate()
 			return e.p2pconn, nil
 		}
 	}

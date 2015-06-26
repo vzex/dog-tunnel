@@ -38,7 +38,8 @@ func handleClient(conn net.Conn) {
 	common.Conn2ClientInfo[conn] = &common.ClientInfo{Conn: conn, ClientMap: make(map[net.Conn]*common.Session), Id2Session: make(map[string]*common.Session), IsServer: false, Quit: make(chan bool), ResponseTime: time.Now().Unix()}
 	log.Println("client linked success", conn.RemoteAddr().String())
 	common.Conn2ClientInfo[conn].Loop()
-	common.Read(conn, handleResponse)
+	b := false
+	common.ReadUDP(conn, handleResponse, 2000, &b)
 	client, bHave := common.Conn2ClientInfo[conn]
 	if bHave {
 		close(client.Quit)
@@ -75,6 +76,13 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 	}, func() {
 	})
 	switch action {
+	case "queryaddrclose":
+		conn.(*pipe.UDPMakeSession).DisBind()
+		return
+	case "queryaddr":
+		common.Write(conn, id, "queryaddrback", conn.RemoteAddr().String())
+		log.Println("p2p query addr", conn.RemoteAddr().String())
+		return
 	case "init":
 		clientInfoStr := content
 		var clientInfo common.ClientSetting
@@ -257,8 +265,6 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
 			udpsession, bHave := server.Id2MakeSession[id]
 			//log.Println("test", udpsession, id, server.ServerName)
-			log.Println("~~report_addrlist", content)
-			content = conn.RemoteAddr().String()
 			log.Println("report_addrlist", content)
 			if bHave {
 				log.Println("<<===report addr list ok", conn.RemoteAddr().String(), udpsession.ServerName, udpsession.Id)

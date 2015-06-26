@@ -48,7 +48,7 @@ const (
 	FirstSYN  byte = 6
 	FirstACK  byte = 1
 	SndSYN    byte = 2
-	SndACK    byte = 2
+	SndACK    byte = 3
 	Data      byte = 4
 	Ping      byte = 5
 	Close     byte = 7
@@ -300,6 +300,8 @@ func (session *UDPMakeSession) doAndWait(f func(), sec int, readf func(status by
 out:
 	for {
 		select {
+		case <-session.quitChan:
+			break out
 		case <-t.C:
 			if time.Now().Unix()-currT >= int64(sec) {
 				code = -1
@@ -350,6 +352,7 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 			}
 		}()
 		overTime := time.Now().Unix() + session.timeout
+	out:
 		for {
 			select {
 			case s := <-session.handShakeChan:
@@ -390,6 +393,8 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 					session.sock.WriteToUDP(makeEncode(session.encodeBuffer, SndACK, session.id), session.remote)
 					overTime = time.Now().Unix() + session.timeout
 				}
+			case <-session.quitChan:
+				break out
 			case <-c.C:
 				if time.Now().Unix() > overTime {
 					return
@@ -423,6 +428,11 @@ func (session *UDPMakeSession) loop() {
 				if err != nil {
 					e, ok := err.(net.Error)
 					if !ok || !e.Timeout() {
+						break
+					}
+					if session.disBind && ok && e.Timeout() {
+						log.Println("force timeout!!!")
+						session.sock.SetReadDeadline(time.Time{})
 						break
 					}
 				}
@@ -596,6 +606,10 @@ func (session *UDPMakeSession) loop() {
 out:
 	for {
 		select {
+		case <-session.quitChan:
+			if session.disBind {
+				break out
+			}
 		case action := <-session.do:
 			switch action.t {
 			case "quit":
@@ -685,8 +699,23 @@ func (session *UDPMakeSession) _Close(bFirstCall bool) {
 }
 
 func (session *UDPMakeSession) DisBind() error {
+	log.Println("dis bind !!!!")
+	if session.disBind {
+		return nil
+	}
 	session.disBind = true
-	return session.Close()
+	if session.listener == nil {
+		session.sock.SetReadDeadline(time.Now())
+	}
+	if session.closed {
+		return nil
+	}
+	close(session.quitChan)
+	if session.listener != nil {
+		//session.sock.Close()
+		session.listener.remove(session.remote.String())
+	}
+	return nil
 }
 func (session *UDPMakeSession) Close() error {
 	if session.closed {
@@ -788,6 +817,7 @@ func (session *UDPMakeSession) Read(p []byte) (n int, err error) {
 		n = -1
 	}
 	if n == -1 {
+		log.Println("force quit for read error", session.remote.String())
 		return 0, errors.New("force quit for read error")
 	} else {
 		return n, nil
