@@ -257,7 +257,6 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
 			udpsession, bHave := server.Id2MakeSession[id]
 			//log.Println("test", udpsession, id, server.ServerName)
-			log.Println("report_addrlist", content)
 			if bHave {
 				log.Println("<<===report addr list ok", conn.RemoteAddr().String(), udpsession.ServerName, udpsession.Id)
 				udpsession.BeginMakeHole(1, content)
@@ -267,9 +266,7 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 	case "success_bust_a":
 		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
 			udpsession, bHave := server.Id2MakeSession[id]
-			log.Println("~~report_addrlist2", content)
 			content = conn.RemoteAddr().String()
-			log.Println("report_addrlist2", content)
 			if bHave {
 				log.Println("<<=====success_bust_a", conn.RemoteAddr().String(), udpsession.ServerName, udpsession.SessionId, id)
 				udpsession.BeginMakeHole(2, content)

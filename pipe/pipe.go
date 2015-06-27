@@ -148,7 +148,7 @@ func (l *Listener) inner_loop() {
 				status, _ := makeDecode(l.readBuffer[:n])
 				if status != FirstSYN {
 					go sock.WriteToUDP([]byte("0"), from)
-					log.Println("invalid package,reset", from, status)
+					//log.Println("invalid package,reset", from, status)
 					continue
 				}
 				sessionId := common.GetId("udp")
@@ -557,13 +557,13 @@ func (session *UDPMakeSession) loop() {
 					s := args[0].([]byte)
 					n := args[1].(int)
 					if n < 5 {
-						log.Println("recv reset")
+						//log.Println("recv reset")
 						go session._Close(false)
 						break
 					} else if n == 5 {
 						status, _ := makeDecode(s)
 						if status == Reset || status == ResetAck {
-							log.Println("recv reset2", status)
+							//log.Println("recv reset2", status)
 							go session._Close(false)
 						}
 						break
@@ -664,7 +664,7 @@ out:
 						})
 					}
 				case Reset:
-					log.Println("recv reset")
+					//log.Println("recv reset")
 					go session._Close(false)
 				case Ping:
 				default:

@@ -37,7 +37,7 @@ var serveName = flag.String("reg", "", "reg the name for client link, must assig
 var linkName = flag.String("link", "", "name for link, must assign reg or link")
 var localAddr = flag.String("local", "", "addr for listen or connect(value \"socks5\" means tcp socks5 proxy for reg),depends on link or reg")
 var bVerbose = flag.Bool("v", false, "verbose mode")
-var delayTime = flag.Int("delay", 0, "if bust fail, try to make some delay seconds")
+var delayTime = flag.Int("delay", 2, "if bust fail, try to make some delay seconds")
 var clientMode = flag.Int("mode", 0, "connect mode:0 if p2p fail, use c/s mode;1 just p2p mode;2 just c/s mode")
 var bUseSSL = flag.Bool("ssl", false, "use ssl")
 var bShowVersion = flag.Bool("version", false, "show version")
@@ -292,7 +292,7 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 		return
 	}
 	addrList := content
-	log.Println("try disbind sock", addrList)
+	//log.Println("try disbind sock", addrList)
 	if session.udpConn != nil {
 		session.udpConn.DisBind()
 	}
@@ -389,9 +389,10 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 					client.MultiListen()
 				}
 			}
+			/*
 			if len(client.pipes) == *pipeNum {
 				remoteConn.Close()
-			}
+			}*/
 		} else {
 			client.specPipes[session.pipeType] = conn
 			go client.Run(-1, session.pipeType)
@@ -436,7 +437,6 @@ func (session *UDPMakeSession) reportAddrList(buster bool, content, myAddr strin
 	}
 	addrList := engine.GetAddrList()
 	common.Write(remoteConn, id, "report_addrlist", addrList)
-	log.Println("report_addrlist", myAddr)
 }
 
 type fileSetting struct {
@@ -549,8 +549,6 @@ func main() {
 		println("connect to server succeed")
 		go connect()
 		common.Read(remoteConn, handleResponse)
-		qq := make(chan bool)
-		<-qq
 		for clientId, client := range g_ClientMap {
 			log.Println("client shutdown", clientId)
 			client.Quit()
