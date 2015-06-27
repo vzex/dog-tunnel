@@ -699,7 +699,6 @@ func (session *UDPMakeSession) _Close(bFirstCall bool) {
 }
 
 func (session *UDPMakeSession) DisBind() error {
-	log.Println("dis bind !!!!")
 	if session.disBind {
 		return nil
 	}

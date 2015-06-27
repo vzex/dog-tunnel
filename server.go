@@ -38,8 +38,7 @@ func handleClient(conn net.Conn) {
 	common.Conn2ClientInfo[conn] = &common.ClientInfo{Conn: conn, ClientMap: make(map[net.Conn]*common.Session), Id2Session: make(map[string]*common.Session), IsServer: false, Quit: make(chan bool), ResponseTime: time.Now().Unix()}
 	log.Println("client linked success", conn.RemoteAddr().String())
 	common.Conn2ClientInfo[conn].Loop()
-	b := false
-	common.ReadUDP(conn, handleResponse, 2000, &b)
+	common.Read(conn, handleResponse)
 	client, bHave := common.Conn2ClientInfo[conn]
 	if bHave {
 		close(client.Quit)
@@ -76,13 +75,6 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 	}, func() {
 	})
 	switch action {
-	case "queryaddrclose":
-		conn.(*pipe.UDPMakeSession).DisBind()
-		return
-	case "queryaddr":
-		common.Write(conn, id, "queryaddrback", conn.RemoteAddr().String())
-		log.Println("p2p query addr", conn.RemoteAddr().String())
-		return
 	case "init":
 		clientInfoStr := content
 		var clientInfo common.ClientSetting
@@ -120,7 +112,7 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 				common.Write(conn, "0", "showandquit", "online service num cannot overstep "+strconv.Itoa(user.MaxOnlineServerNum))
 				return
 			}
-			if !user.CheckIpLimit(conn.RemoteAddr().(*net.UDPAddr).IP.String()) {
+			if !user.CheckIpLimit(conn.RemoteAddr().(*net.TCPAddr).IP.String()) {
 				common.Write(conn, "0", "showandquit", "ip limit service num cannot overstep "+strconv.Itoa(user.MaxSameIPServers))
 				return
 			}
@@ -372,6 +364,7 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 
 var err error
 var g_Master net.Listener
+var g_MasterUdp net.Listener
 
 func main() {
 	flag.Parse()
@@ -382,11 +375,38 @@ func main() {
 	common.Conn2ClientInfo = make(map[net.Conn]*common.ClientInfo)
 	common.ServerName2Conn = make(map[string]net.Conn)
 	common.Conn2Admin = make(map[net.Conn]*common.AdminInfo)
-	listener, err := pipe.Listen(*listenAddr)
+	listener, err := net.Listen("tcp", *listenAddr)
 	if err != nil {
 		log.Println("cannot listen addr:" + err.Error())
 		return
 	}
+	listenerForAddr, _err := pipe.Listen(*listenAddr)
+	if _err != nil {
+		log.Println("cannot listen udp addr:" + err.Error())
+		return
+	}
+	g_MasterUdp = listenerForAddr
+	go func() {
+		for {
+			conn, err := g_MasterUdp.Accept()
+			if err != nil {
+				continue
+			}
+			go func() {
+				b := false
+				f := func(conn net.Conn, id string, action string, content string) {
+					switch action {
+					case "queryaddrclose":
+						conn.(*pipe.UDPMakeSession).DisBind()
+					case "queryaddr":
+						common.Write(conn, id, "queryaddrback", conn.RemoteAddr().String())
+						log.Println("p2p query addr", conn.RemoteAddr().String())
+					}
+				}
+				common.ReadUDP(conn, f, 2000, &b)
+			}()
+		}
+	}()
 	if *bUseSSL {
 		config := &tls.Config{}
 		config.Certificates = make([]tls.Certificate, 1)

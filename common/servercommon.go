@@ -254,7 +254,8 @@ func (udpsession *UDPMakeSession) BeginMakeHole(step int, content string) {
 		if session != nil {
 			delay = session.Setting.Delay
 		}
-		Write(ClientA, id+"-"+udpsession.SessionId+"-"+udpsession.PipeType, "query_addrlist_a", strconv.Itoa(delay))
+		destIp, _, _ := net.SplitHostPort(ClientA.RemoteAddr().String())
+		Write(ClientA, id+"-"+udpsession.SessionId+"-"+udpsession.PipeType, "query_addrlist_a", destIp+":"+strconv.Itoa(delay))
 		if session != nil {
 			session.Status = "tella"
 		}
@@ -266,7 +267,8 @@ func (udpsession *UDPMakeSession) BeginMakeHole(step int, content string) {
 				session.Status = "atellb"
 			}
 			log.Println("===>>tell b to report addlist,give b the a's addrlist", ClientB.RemoteAddr().String(), udpsession.ServerName, udpsession.Id)
-			Write(ClientB, id+"-"+udpsession.SessionId+"-"+udpsession.PipeType, "query_addrlist_b", content)
+			destIp, _, _ := net.SplitHostPort(ClientA.RemoteAddr().String())
+			Write(ClientB, id+"-"+udpsession.SessionId+"-"+udpsession.PipeType, "query_addrlist_b", destIp+":"+content)
 		} else if udpsession.Status == "atellb" {
 			udpsession.Status = "bust_start_a"
 			if session != nil {
