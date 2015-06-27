@@ -267,7 +267,7 @@ func (udpsession *UDPMakeSession) BeginMakeHole(step int, content string) {
 				session.Status = "atellb"
 			}
 			log.Println("===>>tell b to report addlist,give b the a's addrlist", ClientB.RemoteAddr().String(), udpsession.ServerName, udpsession.Id)
-			destIp, _, _ := net.SplitHostPort(ClientA.RemoteAddr().String())
+			destIp, _, _ := net.SplitHostPort(ClientB.RemoteAddr().String())
 			Write(ClientB, id+"-"+udpsession.SessionId+"-"+udpsession.PipeType, "query_addrlist_b", destIp+":"+content)
 		} else if udpsession.Status == "atellb" {
 			udpsession.Status = "bust_start_a"
