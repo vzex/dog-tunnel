@@ -101,6 +101,7 @@ func genUdpSocketAndGetAddr(tcpIp string) (net.Conn, string, *pipe.UDPMakeSessio
 		log.Println("try use tcp guess ip", myAddr)
 	} else {
 		udpconn = sock
+		udpconn.SetNoClose()
 		common.Write(sock, "0", "queryaddr", "")
 		q := false
 		callback := func(conn net.Conn, sessionId, action, content string) {
@@ -433,7 +434,8 @@ func (session *UDPMakeSession) reportAddrList(buster bool, content, myAddr strin
 	if !buster {
 		engine.SetOtherAddrList(otherAddrList)
 	}
-	common.Write(remoteConn, id, "report_addrlist", myAddr)
+	addrList := engine.GetAddrList()
+	common.Write(remoteConn, id, "report_addrlist", addrList)
 	log.Println("report_addrlist", myAddr)
 }
 

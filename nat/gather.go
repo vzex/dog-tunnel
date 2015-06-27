@@ -117,6 +117,25 @@ func GatherCandidates(sock *net.UDPConn, outIpList string) ([]candidate, error) 
 		}
 	}
 
+	switch {
+	case laddr.IP.IsLoopback():
+		return nil, errors.New("Connecting over loopback not supported")
+	case laddr.IP.IsUnspecified():
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, addr := range addrs {
+			ip, ok := addr.(*net.IPNet)
+			if ok && ip.IP.IsGlobalUnicast() {
+				ret = append(ret, candidate{&net.UDPAddr{IP: ip.IP, Port: laddr.Port}})
+			}
+		}
+	default:
+		ret = append(ret, candidate{laddr})
+	}
+
 	arr := strings.Split(outIpList, ":")
 	if len(arr) > 1 {
 		port, _ := strconv.Atoi(arr[1])
@@ -125,8 +144,5 @@ func GatherCandidates(sock *net.UDPConn, outIpList string) ([]candidate, error) 
 		addip(outIpList, 0)
 	}
 
-	/*	for _, info := range ret {
-			log.Println("init ip:", info.Addr.String())
-	}*/
 	return ret, nil
 }

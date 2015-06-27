@@ -130,7 +130,6 @@ func (e *AttemptEngine) xmit() (time.Time, error) {
 			}
 			debug("===send", i, e.attempts[i].Addr.String(), len(packet))
 			e.sock.WriteToUDP(packet, e.attempts[i].Addr)
-
 			for j := range e.local_attempts {
 				if e.local_attempts[j].success {
 					packet, err := stun.BindRequest(e.attempts[i].tid, e.attempts[i].Addr, nil, false, e.attempts[i].chosen)
@@ -181,7 +180,7 @@ func (e *AttemptEngine) read() error {
 		return nil
 	}
 
-	//debug("========", string(buf[0:n]))
+	debug("========", string(buf[0:n]), from.String())
 	packet, err := stun.ParsePacket(buf[:n], nil)
 	debug("parse", packet, err)
 	if err != nil {

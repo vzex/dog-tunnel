@@ -95,6 +95,7 @@ type UDPMakeSession struct {
 	encodeBuffer  []byte
 	timeout       int64
 	disBind       bool
+	noClose  bool
 }
 
 type Listener struct {
@@ -288,6 +289,10 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 	ikcp.Ikcp_nodelay(session.kcp, 1, 10, 2, 1)
 	go session.loop()
 	return session, nil
+}
+
+func (session *UDPMakeSession) SetNoClose() {
+	session.noClose = true
 }
 
 func (session *UDPMakeSession) GetSock() *net.UDPConn {
@@ -673,7 +678,7 @@ out:
 }
 
 func (session *UDPMakeSession) _Close(bFirstCall bool) {
-	if session.closed {
+	if session.closed || session.noClose {
 		return
 	}
 	session.closed = true
