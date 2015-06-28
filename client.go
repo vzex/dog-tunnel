@@ -390,9 +390,9 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 				}
 			}
 			/*
-			if len(client.pipes) == *pipeNum {
-				remoteConn.Close()
-			}*/
+				if len(client.pipes) == *pipeNum {
+					remoteConn.Close()
+				}*/
 		} else {
 			client.specPipes[session.pipeType] = conn
 			go client.Run(-1, session.pipeType)
@@ -548,7 +548,24 @@ func main() {
 		}
 		println("connect to server succeed")
 		go connect()
+		q := make(chan bool)
+		go func() {
+			c := time.NewTicker(time.Second * 10)
+		out:
+			for {
+				select {
+				case <-c.C:
+					if remoteConn != nil {
+						common.Write(remoteConn, "-1", "ping", "")
+					}
+				case <-q:
+					break out
+				}
+			}
+			c.Stop()
+		}()
 		common.Read(remoteConn, handleResponse)
+		q <- true
 		for clientId, client := range g_ClientMap {
 			log.Println("client shutdown", clientId)
 			client.Quit()
