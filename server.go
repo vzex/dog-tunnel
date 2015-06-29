@@ -27,9 +27,11 @@ var keyFile = flag.String("key", "", "key file")
 var adminAddr = flag.String("admin", "", "admin addr")
 var bShowVersion = flag.Bool("version", false, "show version")
 
-var db_user = flag.String("dbuser", "root", "db user")
+var db_user = flag.String("dbuser", "", "db user")
 var db_pass = flag.String("dbpass", "", "db password")
-var db_host = flag.String("dbhost", "127.0.0.1:3306", "db host")
+var db_host = flag.String("dbhost", "", "db host")
+
+var bUseDB = false
 
 func handleClient(conn net.Conn) {
 	common.Conn2ClientInfo[conn] = &common.ClientInfo{Conn: conn, ClientMap: make(map[net.Conn]*common.Session), Id2Session: make(map[string]*common.Session), IsServer: false, Quit: make(chan bool), ResponseTime: time.Now().Unix()}
@@ -46,9 +48,11 @@ func handleClient(conn net.Conn) {
 			}
 			delete(common.ServerName2Conn, client.ServerName)
 			log.Println("unregister service Name", client.ServerName)
-			user, _ := auth.GetUser(client.UserName)
-			if user != nil {
-				user.OnLogout()
+			if bUseDB {
+				user, _ := auth.GetUser(client.UserName)
+				if user != nil {
+					user.OnLogout()
+				}
 			}
 		} else {
 			common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
@@ -88,11 +92,16 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 		}
 		ServerName := clientInfo.Name
 		if clientInfo.ClientType == "reg" {
+			log.Println("nima")
 			var user *auth.User
-			if clientInfo.AccessKey == "" {
-				user, _ = auth.GetUser("test")
+			if bUseDB {
+				if clientInfo.AccessKey == "" {
+					user, _ = auth.GetUser("test")
+				} else {
+					user, _ = auth.GetUserByKey(clientInfo.AccessKey)
+				}
 			} else {
-				user, _ = auth.GetUserByKey(clientInfo.AccessKey)
+				user = &auth.User{UserType: auth.UserType_Admin}
 			}
 			//fmt.Printf("%+v\n", user)
 			if user == nil {
@@ -129,7 +138,12 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 			ServerName := clientInfo.Name
 			bAuth := true
 			common.GetClientInfoByName(ServerName, func(info *common.ClientInfo) {
-				user, _ := auth.GetUser(info.UserName)
+				var user *auth.User
+				if bUseDB {
+					user, _ = auth.GetUser(info.UserName)
+				} else {
+					user = &auth.User{UserType: auth.UserType_Admin}
+				}
 				//fmt.Printf("%+v\n", user)
 				if user == nil {
 					common.Write(conn, "0", "showandquit", "invalid user:"+info.UserName+"!!!")
@@ -281,7 +295,12 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 		})
 	case "tunnel_msg_c":
 		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
-			user, _ := auth.GetUser(server.UserName)
+			var user *auth.User
+			if bUseDB {
+				user, _ = auth.GetUser(server.UserName)
+			} else {
+				user = &auth.User{UserType: auth.UserType_Admin}
+			}
 			if user == nil {
 				common.Write(conn, "0", "showandquit", "cannot get userinfo of this service "+server.UserName)
 				return
@@ -300,7 +319,12 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 		})
 	case "tunnel_msg_s":
 		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
-			user, _ := auth.GetUser(server.UserName)
+			var user *auth.User
+			if bUseDB {
+				user, _ = auth.GetUser(server.UserName)
+			} else {
+				user = &auth.User{UserType: auth.UserType_Admin}
+			}
 			if user == nil {
 				common.Write(conn, "0", "showandquit", "cannot get userinfo of this service"+server.UserName)
 				return
@@ -372,12 +396,15 @@ func main() {
 			go handleClient(conn)
 		}
 	}()
-	err = auth.Init(*db_user, *db_pass, *db_host)
-	if err != nil {
-		log.Println("mysql client fail", err.Error())
-		return
+	if *db_host != "" {
+		err = auth.Init(*db_user, *db_pass, *db_host)
+		if err != nil {
+			log.Println("mysql client fail", err.Error())
+			return
+		}
+		defer auth.DeInit()
+		bUseDB = true
 	}
-	defer auth.DeInit()
 	log.Println("master start success")
 	if *adminAddr != "" {
 		cert, key := "", ""
@@ -405,9 +432,11 @@ func shutdown() {
 			common.Write(conn, "0", "showandquit", "server shutdown")
 		} else {
 			log.Println("unregister service Name", client.ServerName)
-			user, _ := auth.GetUser(client.UserName)
-			if user != nil {
-				user.OnLogout()
+			if bUseDB {
+				user, _ := auth.GetUser(client.UserName)
+				if user != nil {
+					user.OnLogout()
+				}
 			}
 			//donnot showandquit,because client_server need to reconnect
 		}
