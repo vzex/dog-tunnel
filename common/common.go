@@ -10,9 +10,10 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 )
 
-const Version = 0.70
+const Version = 0.60
 
 type ClientSetting struct {
 	AccessKey string
@@ -64,7 +65,7 @@ func Write(conn net.Conn, id string, action string, content string) error {
 	binary.Write(&buf, binary.LittleEndian, []byte(action))
 	binary.Write(&buf, binary.LittleEndian, []byte(content))
 	_, err := conn.Write(buf.Bytes())
-	//println("write!!!", action, l1, l2, l3)
+	//println("write!!!", old, l1, l2, l3)
 	if err != nil {
 		println("write err", err.Error())
 	}
@@ -72,10 +73,11 @@ func Write(conn net.Conn, id string, action string, content string) error {
 }
 
 type ReadCallBack func(conn net.Conn, id string, action string, arg string)
+type ReadUDPCallBack func(conn *net.UDPConn, addr *net.UDPAddr, id string, action string, arg string)
 
 func Read(conn net.Conn, callback ReadCallBack) {
 	scanner := bufio.NewScanner(conn)
-	_split := func(data []byte, atEOF bool) (adv int, token []byte, err error) {
+	split := func(data []byte, atEOF bool) (adv int, token []byte, err error) {
 		l := len(data)
 		if l < headerLen*3 {
 			return 0, nil, nil
@@ -101,63 +103,17 @@ func Read(conn net.Conn, callback ReadCallBack) {
 		binary.Read(buf, binary.LittleEndian, &action)
 		binary.Read(buf, binary.LittleEndian, &content)
 		callback(conn, string(id), Xor(string(action)), string(content))
-		//println("read11!!", l1,l2, l3,string(id), Xor(string(action)), tail - int(l1+l2+l3))
+		//println("read11!!", l1,l2, l3,string(id), Xor(string(action)), string(content))
 		return headerLen*3 + int(l1+l2+l3), []byte{}, nil
 	}
-	scanner.Split(_split)
+	scanner.Split(split)
 	for scanner.Scan() {
 	}
 	if scanner.Err() != nil {
 		println(scanner.Err().Error())
 	}
 }
-func ReadUDP(conn net.Conn, callback ReadCallBack, bufsize int, quit *bool) {
-	//bufio.Scanner not work for large data, because the udppipe.Read(b []byte) func can't read a non-complete data to b
-	buffer := make([]byte, bufsize)
-	for {
-		n, err := conn.Read(buffer)
-		if err != nil {
-			log.Println(err.Error())
-			break
-		}
-		if n > 0 {
-			split(buffer[:n], false, conn, callback)
-			if *quit {
-				break
-			}
-		}
-	}
-}
 
-func split(data []byte, atEOF bool, conn net.Conn, callback ReadCallBack) (adv int, token []byte, err error) {
-	l := len(data)
-	if l < headerLen*3 {
-		return 0, nil, nil
-	}
-	if l > 1024*1024 {
-		conn.Close()
-		log.Println("invalid query!")
-		return 0, nil, errors.New("to large data!")
-	}
-	var l1, l2, l3 uint32
-	buf := bytes.NewReader(data)
-	binary.Read(buf, binary.LittleEndian, &l1)
-	binary.Read(buf, binary.LittleEndian, &l2)
-	binary.Read(buf, binary.LittleEndian, &l3)
-	tail := l - headerLen*3
-	if tail < int(l1+l2+l3) {
-		return 0, nil, nil
-	}
-	id := make([]byte, l1)
-	action := make([]byte, l2)
-	content := make([]byte, l3)
-	binary.Read(buf, binary.LittleEndian, &id)
-	binary.Read(buf, binary.LittleEndian, &action)
-	binary.Read(buf, binary.LittleEndian, &content)
-	callback(conn, string(id), Xor(string(action)), string(content))
-	//println("read11!!", l1,l2, l3,string(id), Xor(string(action)), string(content))
-	return headerLen*3 + int(l1+l2+l3), nil, nil
-}
 func Md5(msg string) string {
 	h := md5.New()
 	io.WriteString(h, msg)
@@ -169,13 +125,13 @@ func HashPasswd(pass string) string {
 }
 
 type _reuseTbl struct {
-	tbl map[int]bool
+	tbl map[string]bool
 }
 
 var currIdMap map[string]int
 var reuseTbl map[string]*_reuseTbl
 
-func GetId(name string) int {
+func GetId(name string) string {
 	if reuseTbl != nil {
 		tbl, bHave := reuseTbl[name]
 		if bHave {
@@ -194,16 +150,19 @@ func GetId(name string) int {
 	}
 	currIdMap[name]++
 	//	println("gen new id", currIdMap[name])
-	return currIdMap[name]
+	return strconv.Itoa(currIdMap[name])
 }
 
-func RmId(name string, id int) {
+func RmId(name, id string) {
 	return
 	if currIdMap == nil {
 		currIdMap = make(map[string]int)
 		currIdMap[name] = 0
 	}
-	n := id
+	n, err := strconv.Atoi(id)
+	if err != nil {
+		return
+	}
 	if n > currIdMap[name] {
 		return
 	}
@@ -212,9 +171,26 @@ func RmId(name string, id int) {
 	}
 	tbl, bHave := reuseTbl[name]
 	if !bHave {
-		reuseTbl[name] = &_reuseTbl{tbl: make(map[int]bool)}
+		reuseTbl[name] = &_reuseTbl{tbl: make(map[string]bool)}
 		tbl = reuseTbl[name]
 	}
 	tbl.tbl[id] = true
 	//	println("can reuse ", name, id)
+}
+
+func Id_test(name string) {
+	id1 := GetId(name)
+	id2 := GetId(name)
+	id3 := GetId(name)
+	id4 := GetId(name)
+
+	RmId(name, id2)
+	RmId(name, id4)
+	println(GetId(name))
+	println(GetId(name))
+	RmId(name, id1)
+	println(GetId(name))
+	RmId(name, id3)
+	println(GetId(name))
+	println(GetId(name))
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"./common"
 	"./nat"
-	"./pipe"
 	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
@@ -37,9 +36,9 @@ var serveName = flag.String("reg", "", "reg the name for client link, must assig
 var linkName = flag.String("link", "", "name for link, must assign reg or link")
 var localAddr = flag.String("local", "", "addr for listen or connect(value \"socks5\" means tcp socks5 proxy for reg),depends on link or reg")
 var bVerbose = flag.Bool("v", false, "verbose mode")
-var delayTime = flag.Int("delay", 0, "if bust fail, try to make some delay seconds")
+var delayTime = flag.Int("delay", 2, "if bust fail, try to make some delay seconds")
 var clientMode = flag.Int("mode", 0, "connect mode:0 if p2p fail, use c/s mode;1 just p2p mode;2 just c/s mode")
-var bUseSSL = flag.Bool("ssl", false, "use ssl")
+var bUseSSL = flag.Bool("ssl", true, "use ssl")
 var bShowVersion = flag.Bool("version", false, "show version")
 var bLoadSettingFromFile = flag.Bool("f", false, "load setting from file(~/.dtunnel)")
 var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
@@ -85,37 +84,6 @@ func isCommonSessionId(id string) bool {
 	return id == "common"
 }
 
-func genUdpSocketAndGetAddr(tcpIp string) (net.Conn, string, *pipe.UDPMakeSession) {
-	var udpsock net.Conn
-	sock, err := pipe.DialTimeout(*serverAddr, 5)
-	var udpconn *pipe.UDPMakeSession
-	myAddr := ""
-	if err != nil {
-		log.Println("dial server timeout", err.Error())
-		udpsock, err = net.ListenUDP("udp", &net.UDPAddr{})
-		if err != nil {
-			log.Println("udp pipe create fail", err.Error())
-			return nil, "", nil
-		}
-		myAddr = tcpIp + ":" + strconv.Itoa(udpsock.LocalAddr().(*net.UDPAddr).Port)
-		log.Println("try use tcp guess ip", myAddr)
-	} else {
-		udpconn = sock
-		udpconn.SetNoClose()
-		common.Write(sock, "0", "queryaddr", "")
-		q := false
-		callback := func(conn net.Conn, sessionId, action, content string) {
-			if action == "queryaddrback" {
-				myAddr = content
-				udpsock = udpconn.GetSock()
-				common.Write(sock, "0", "queryaddrclose", "")
-				q = true
-			}
-		}
-		common.ReadUDP(sock, callback, 100, &q)
-	}
-	return udpsock, myAddr, udpconn
-}
 func handleResponse(conn net.Conn, clientId string, action string, content string) {
 	//log.Println("got", clientId, action)
 	switch action {
@@ -142,33 +110,20 @@ func handleResponse(conn net.Conn, clientId string, action string, content strin
 		log.Println("server force remove udpsession", clientId)
 		delete(g_Id2UDPSession, clientId)
 	case "query_addrlist_a":
+		outip := content
 		arr := strings.Split(clientId, "-")
 		id := arr[0]
 		sessionId := arr[1]
 		pipeType := arr[2]
-		arr = strings.SplitN(content, ":", 2)
-		var tcpIp string
-		if len(arr) > 1 {
-			tcpIp = arr[0]
-			content = arr[1]
-		}
-		udpSock, realIpAndPort, udpConn := genUdpSocketAndGetAddr(tcpIp)
-		g_Id2UDPSession[id] = &UDPMakeSession{sock: udpSock, id: id, sessionId: sessionId, pipeType: pipeType}
-		go g_Id2UDPSession[id].reportAddrList(true, content, realIpAndPort, udpConn)
+		g_Id2UDPSession[id] = &UDPMakeSession{id: id, sessionId: sessionId, pipeType: pipeType}
+		go g_Id2UDPSession[id].reportAddrList(true, outip)
 	case "query_addrlist_b":
 		arr := strings.Split(clientId, "-")
 		id := arr[0]
 		sessionId := arr[1]
 		pipeType := arr[2]
-		arr = strings.SplitN(content, ":", 2)
-		var tcpIp string
-		if len(arr) > 1 {
-			tcpIp = arr[0]
-			content = arr[1]
-		}
-		udpSock, realIpAndPort, udpConn := genUdpSocketAndGetAddr(tcpIp)
-		g_Id2UDPSession[id] = &UDPMakeSession{sock: udpSock, id: id, sessionId: sessionId, pipeType: pipeType}
-		go g_Id2UDPSession[id].reportAddrList(false, content, realIpAndPort, udpConn)
+		g_Id2UDPSession[id] = &UDPMakeSession{id: id, sessionId: sessionId, pipeType: pipeType}
+		go g_Id2UDPSession[id].reportAddrList(false, content)
 	case "tell_bust_a":
 		session, bHave := g_Id2UDPSession[clientId]
 		if bHave {
@@ -276,8 +231,6 @@ func handleResponse(conn net.Conn, clientId string, action string, content strin
 }
 
 type UDPMakeSession struct {
-	sock      net.Conn
-	udpConn   *pipe.UDPMakeSession
 	id        string
 	sessionId string
 	buster    bool
@@ -292,10 +245,6 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 		return
 	}
 	addrList := content
-	//log.Println("try disbind sock", addrList)
-	if session.udpConn != nil {
-		session.udpConn.DisBind()
-	}
 	if session.buster {
 		engine.SetOtherAddrList(addrList)
 	}
@@ -389,10 +338,6 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 					client.MultiListen()
 				}
 			}
-			/*
-				if len(client.pipes) == *pipeNum {
-					remoteConn.Close()
-				}*/
 		} else {
 			client.specPipes[session.pipeType] = conn
 			go client.Run(-1, session.pipeType)
@@ -408,23 +353,24 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 	}
 }
 
-func (session *UDPMakeSession) reportAddrList(buster bool, content, myAddr string, udpConn *pipe.UDPMakeSession) {
-	log.Println("get my addr", myAddr)
-	session.udpConn = udpConn
+func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
 	id := session.id
 	var otherAddrList string
 	if !buster {
-		otherAddrList = content
+		arr := strings.SplitN(outip, ":", 2)
+		outip, otherAddrList = arr[0], arr[1]
 	} else {
+		arr := strings.SplitN(outip, ":", 2)
 		var delayTime string
-		delayTime = content
+		outip, delayTime = arr[0], arr[1]
 		session.delay, _ = strconv.Atoi(delayTime)
 		if session.delay < 0 {
 			session.delay = 0
 		}
 	}
+	outip += ";" + *addInitAddr
 	_id, _ := strconv.Atoi(id)
-	engine, err := nat.InitWithSock(session.sock.(*net.UDPConn), myAddr, buster, _id)
+	engine, err := nat.Init(outip, buster, _id)
 	if err != nil {
 		println("init error", err.Error())
 		disconnect()
@@ -512,6 +458,7 @@ func main() {
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		n := 0
 		for {
 			<-c
 			log.Println("received signal,shutdown")
@@ -519,8 +466,11 @@ func main() {
 			if remoteConn != nil {
 				remoteConn.Close()
 			}
-			log.Println("force shutdown")
-			os.Exit(-1)
+			n++
+			if n > 5 {
+				log.Println("force shutdown")
+				os.Exit(-1)
+			}
 		}
 	}()
 
@@ -531,6 +481,7 @@ func main() {
 		g_ClientMap = make(map[string]*Client)
 		g_ClientMapKey = make(map[string]*cipher.Block)
 		g_Id2UDPSession = make(map[string]*UDPMakeSession)
+		//var err error
 		if *bUseSSL {
 			_remoteConn, err := tls.Dial("tcp", *serverAddr, &tls.Config{InsecureSkipVerify: true})
 			if err != nil {
@@ -564,6 +515,7 @@ func main() {
 			}
 			c.Stop()
 		}()
+
 		common.Read(remoteConn, handleResponse)
 		q <- true
 		for clientId, client := range g_ClientMap {
@@ -965,7 +917,7 @@ func (sc *Client) getSession(sessionId string) *clientSession {
 
 func (sc *Client) removeSession(sessionId string) bool {
 	if clientType == 1 {
-		//common.RmId("udp", sessionId)
+		common.RmId("udp", sessionId)
 	}
 	session, bHave := sc.sessions[sessionId]
 	if bHave {
@@ -980,7 +932,7 @@ func (sc *Client) removeSession(sessionId string) bool {
 }
 
 func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, content string) {
-	//log.Println("recv p2p tunnel", sessionId, action, content)
+	//println("recv p2p tunnel", sessionId, action, content)
 	session := sc.getSession(sessionId)
 	var conn net.Conn
 	if session != nil {
@@ -996,6 +948,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 		//case "serve_begin":
 	case "tunnel_msg_s":
 		if conn != nil {
+			//println("tunnel msg", sessionId, len(content))
 			conn.Write([]byte(content))
 		} else {
 			//log.Println("cannot tunnel msg", sessionId)
@@ -1095,7 +1048,7 @@ func (sc *Client) MultiListen() bool {
 				if err != nil {
 					continue
 				}
-				sessionId := strconv.Itoa(common.GetId("udp"))
+				sessionId := common.GetId("udp")
 				pipe := sc.getOnePipe()
 				if pipe == nil {
 					log.Println("cannot get pipe for client")
@@ -1139,7 +1092,6 @@ func (sc *Client) getOnePipe() net.Conn {
 ///////////////////////multi pipe support
 
 func (sc *Client) Run(index int, specPipe string) {
-	var size = pipe.ReadBufferSize
 	var pipe net.Conn
 	if index >= 0 {
 		pipe = sc.pipes[index]
@@ -1155,8 +1107,7 @@ func (sc *Client) Run(index int, specPipe string) {
 				sc.OnTunnelRecv(conn, sessionId, action, content)
 			}
 		}
-		b := false
-		common.ReadUDP(pipe, callback, size, &b)
+		common.Read(pipe, callback)
 		log.Println("client end read", index)
 		if index >= 0 {
 			delete(sc.pipes, index)
@@ -1194,7 +1145,7 @@ func handleLocalPortResponse(client *Client, id string) {
 	if conn == nil {
 		return
 	}
-	arr := make([]byte, 2000)
+	arr := make([]byte, 1000)
 	reader := bufio.NewReader(conn)
 	for {
 		size, err := reader.Read(arr)
@@ -1222,7 +1173,7 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 	}
 	conn := session.localConn
 	common.Write(pipe, sessionId, "tunnel_open", "")
-	arr := make([]byte, 2000)
+	arr := make([]byte, 1000)
 	reader := bufio.NewReader(conn)
 	for {
 		size, err := reader.Read(arr)

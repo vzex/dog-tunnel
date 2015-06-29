@@ -4,7 +4,6 @@ import (
 	"./admin"
 	"./auth"
 	"./common"
-	"./pipe"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -28,11 +27,9 @@ var keyFile = flag.String("key", "", "key file")
 var adminAddr = flag.String("admin", "", "admin addr")
 var bShowVersion = flag.Bool("version", false, "show version")
 
-var db_user = flag.String("dbuser", "", "db user")
+var db_user = flag.String("dbuser", "root", "db user")
 var db_pass = flag.String("dbpass", "", "db password")
-var db_host = flag.String("dbhost", "", "db host")
-
-var bUseDB bool = false
+var db_host = flag.String("dbhost", "127.0.0.1:3306", "db host")
 
 func handleClient(conn net.Conn) {
 	common.Conn2ClientInfo[conn] = &common.ClientInfo{Conn: conn, ClientMap: make(map[net.Conn]*common.Session), Id2Session: make(map[string]*common.Session), IsServer: false, Quit: make(chan bool), ResponseTime: time.Now().Unix()}
@@ -43,17 +40,15 @@ func handleClient(conn net.Conn) {
 	if bHave {
 		close(client.Quit)
 		if client.IsServer {
-			for conn, _ := range client.ClientMap {
+			for conn, session := range client.ClientMap {
 				conn.Close()
-				//common.RmId(client.ServerName, session.Id)
+				common.RmId(client.ServerName, session.Id)
 			}
 			delete(common.ServerName2Conn, client.ServerName)
 			log.Println("unregister service Name", client.ServerName)
-			if bUseDB {
-				user, _ := auth.GetUser(client.UserName)
-				if user != nil {
-					user.OnLogout()
-				}
+			user, _ := auth.GetUser(client.UserName)
+			if user != nil {
+				user.OnLogout()
 			}
 		} else {
 			common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
@@ -94,14 +89,10 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 		ServerName := clientInfo.Name
 		if clientInfo.ClientType == "reg" {
 			var user *auth.User
-			if bUseDB {
-				if clientInfo.AccessKey == "" {
-					user, _ = auth.GetUser("test")
-				} else {
-					user, _ = auth.GetUserByKey(clientInfo.AccessKey)
-				}
+			if clientInfo.AccessKey == "" {
+				user, _ = auth.GetUser("test")
 			} else {
-				user = &auth.User{UserType: auth.UserType_Admin}
+				user, _ = auth.GetUserByKey(clientInfo.AccessKey)
 			}
 			//fmt.Printf("%+v\n", user)
 			if user == nil {
@@ -138,12 +129,7 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 			ServerName := clientInfo.Name
 			bAuth := true
 			common.GetClientInfoByName(ServerName, func(info *common.ClientInfo) {
-				var user *auth.User
-				if bUseDB {
-					user, _ = auth.GetUser(info.UserName)
-				} else {
-					user = &auth.User{UserType: auth.UserType_Admin}
-				}
+				user, _ := auth.GetUser(info.UserName)
 				//fmt.Printf("%+v\n", user)
 				if user == nil {
 					common.Write(conn, "0", "showandquit", "invalid user:"+info.UserName+"!!!")
@@ -266,7 +252,6 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 	case "success_bust_a":
 		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
 			udpsession, bHave := server.Id2MakeSession[id]
-			content = conn.RemoteAddr().String()
 			if bHave {
 				log.Println("<<=====success_bust_a", conn.RemoteAddr().String(), udpsession.ServerName, udpsession.SessionId, id)
 				udpsession.BeginMakeHole(2, content)
@@ -296,12 +281,7 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 		})
 	case "tunnel_msg_c":
 		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
-			var user *auth.User
-			if bUseDB {
-				user, _ = auth.GetUser(server.UserName)
-			} else {
-				user = &auth.User{UserType: auth.UserType_Admin}
-			}
+			user, _ := auth.GetUser(server.UserName)
 			if user == nil {
 				common.Write(conn, "0", "showandquit", "cannot get userinfo of this service "+server.UserName)
 				return
@@ -320,12 +300,7 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 		})
 	case "tunnel_msg_s":
 		common.GetServerInfoByConn(conn, func(server *common.ClientInfo) {
-			var user *auth.User
-			if bUseDB {
-				user, _ = auth.GetUser(server.UserName)
-			} else {
-				user = &auth.User{UserType: auth.UserType_Admin}
-			}
+			user, _ := auth.GetUser(server.UserName)
 			if user == nil {
 				common.Write(conn, "0", "showandquit", "cannot get userinfo of this service"+server.UserName)
 				return
@@ -361,7 +336,6 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 
 var err error
 var g_Master net.Listener
-var g_MasterUdp net.Listener
 
 func main() {
 	flag.Parse()
@@ -377,33 +351,6 @@ func main() {
 		log.Println("cannot listen addr:" + err.Error())
 		return
 	}
-	listenerForAddr, _err := pipe.Listen(*listenAddr)
-	if _err != nil {
-		log.Println("cannot listen udp addr:" + err.Error())
-		return
-	}
-	g_MasterUdp = listenerForAddr
-	go func() {
-		for {
-			conn, err := g_MasterUdp.Accept()
-			if err != nil {
-				continue
-			}
-			go func() {
-				b := false
-				f := func(conn net.Conn, id string, action string, content string) {
-					switch action {
-					case "queryaddrclose":
-						conn.(*pipe.UDPMakeSession).DisBind()
-					case "queryaddr":
-						common.Write(conn, id, "queryaddrback", conn.RemoteAddr().String())
-						log.Println("p2p query addr", conn.RemoteAddr().String())
-					}
-				}
-				common.ReadUDP(conn, f, 2000, &b)
-			}()
-		}
-	}()
 	if *bUseSSL {
 		config := &tls.Config{}
 		config.Certificates = make([]tls.Certificate, 1)
@@ -425,15 +372,12 @@ func main() {
 			go handleClient(conn)
 		}
 	}()
-	if *db_host != "" {
-		err = auth.Init(*db_user, *db_pass, *db_host)
-		if err != nil {
-			log.Println("mysql client fail", err.Error())
-			return
-		}
-		defer auth.DeInit()
-		bUseDB = true
+	err = auth.Init(*db_user, *db_pass, *db_host)
+	if err != nil {
+		log.Println("mysql client fail", err.Error())
+		return
 	}
+	defer auth.DeInit()
 	log.Println("master start success")
 	if *adminAddr != "" {
 		cert, key := "", ""
@@ -461,11 +405,9 @@ func shutdown() {
 			common.Write(conn, "0", "showandquit", "server shutdown")
 		} else {
 			log.Println("unregister service Name", client.ServerName)
-			if bUseDB {
-				user, _ := auth.GetUser(client.UserName)
-				if user != nil {
-					user.OnLogout()
-				}
+			user, _ := auth.GetUser(client.UserName)
+			if user != nil {
+				user.OnLogout()
 			}
 			//donnot showandquit,because client_server need to reconnect
 		}

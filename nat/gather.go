@@ -7,9 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net"
-	"strconv"
 	"strings"
 )
 
@@ -99,24 +97,6 @@ func pruneDups(cs []candidate) []candidate {
 func GatherCandidates(sock *net.UDPConn, outIpList string) ([]candidate, error) {
 	laddr := sock.LocalAddr().(*net.UDPAddr)
 	ret := []candidate{}
-	addip := func(ipStr string, port int) {
-		log.Println("try addip", ipStr, port, outIpList)
-		ip := net.ParseIP(ipStr)
-		if port == 0 {
-			port = laddr.Port
-		}
-		bHave := false
-		for _, info := range ret {
-			if info.Addr.IP.Equal(ip) && info.Addr.Port == port {
-				bHave = true
-				break
-			}
-		}
-		if !bHave {
-			ret = append(ret, candidate{&net.UDPAddr{IP: ip, Port: port}})
-		}
-	}
-
 	switch {
 	case laddr.IP.IsLoopback():
 		return nil, errors.New("Connecting over loopback not supported")
@@ -136,13 +116,37 @@ func GatherCandidates(sock *net.UDPConn, outIpList string) ([]candidate, error) 
 		ret = append(ret, candidate{laddr})
 	}
 
-	arr := strings.Split(outIpList, ":")
-	if len(arr) > 1 {
-		port, _ := strconv.Atoi(arr[1])
-		addip(arr[0], port)
-	} else {
-		addip(outIpList, 0)
+	addip := func(ipStr string, port int) {
+		ip := net.ParseIP(ipStr)
+		if port == 0 {
+			port = laddr.Port
+		}
+		bHave := false
+		for _, info := range ret {
+			if info.Addr.IP.Equal(ip) && info.Addr.Port == port {
+				bHave = true
+				break
+			}
+		}
+		if !bHave {
+			ret = append(ret, candidate{&net.UDPAddr{IP: ip, Port: port}})
+		}
+	}
+	// Get the reflexive address
+	if *stunserver != "" {
+		ip, port, err := getReflexive(sock)
+		if err == nil {
+			addip(ip, port)
+		}
 	}
 
+	arr := strings.Split(outIpList, ";")
+	for _, ip := range arr {
+		addip(ip, 0)
+	}
+
+	/*	for _, info := range ret {
+			log.Println("init ip:", info.Addr.String())
+	}*/
 	return ret, nil
 }
