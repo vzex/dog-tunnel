@@ -15,7 +15,7 @@ Requires=network.target
 
 [Service]
 TimeoutStartSec=0
-ExecStart=/usr/bin/docker run --rm --name dt -p 123:123/udp netroby/alpine-dog-tunnel /usr/bin/dtunnel_lite -service 0.0.0.0:123 -auth verystrongpassword2
+ExecStart=/usr/bin/docker run --rm -p 123:123/udp netroby/alpine-dog-tunnel /usr/bin/dtunnel_lite -service 0.0.0.0:123 -auth verystrongpassword2
 Restart=always
 
 [Install]
@@ -35,7 +35,7 @@ Requires=network.target
 
 [Service]
 TimeoutStartSec=0
-ExecStart=/usr/bin/docker run --rm --name dt -p 8070:8070 netroby/alpine-dog-tunnel /usr/bin/dtunnel_lite -service your.remote.server:123 -local :8070 -auth verystrongpassword2
+ExecStart=/usr/bin/docker run --rm -p 8070:8070 netroby/alpine-dog-tunnel /usr/bin/dtunnel_lite -service your.remote.server:123 -local :8070 -auth verystrongpassword2
 Restart=always
 
 [Install]
