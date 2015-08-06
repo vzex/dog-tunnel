@@ -520,7 +520,10 @@ func (session *UDPMakeSession) loop() {
 						status := tmp[0]
 						if status == Data {
 							copy(ca.b, tmp[1:hr])
-							ca.c <- int(hr - 1)
+							select {
+							case ca.c <- int(hr - 1):
+							case <-session.quitChan:
+							}
 							break
 						} else {
 							session.DoAction("recv", status)
@@ -560,7 +563,10 @@ func (session *UDPMakeSession) loop() {
 								if status == Data {
 									waitRecvCache = nil
 									copy(ca.b, tmp[1:hr])
-									ca.c <- int(hr - 1)
+									select {
+									case ca.c <- int(hr - 1):
+									case <-session.quitChan:
+									}
 									break
 								} else {
 									session.DoAction("recv", status)
