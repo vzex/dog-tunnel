@@ -266,7 +266,7 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 	if clientType == 1 {
 		aesBlock = aesKey
 	} else {
-		aesBlock, _ = g_ClientMapKey[session.id]
+		aesBlock, _ = g_ClientMapKey[session.sessionId]
 	}
 	var conn net.Conn
 	var err error

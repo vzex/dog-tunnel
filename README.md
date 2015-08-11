@@ -8,6 +8,9 @@ It's written with pure golang by vzex.
 
 ## Installation
 
+### [Run dog tunnel with docker container](doc/docker.md)
+
+
 
 ### Install dtunnel on Fedora 20/21 or CentOS 6/7
 
