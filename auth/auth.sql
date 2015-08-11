@@ -13,6 +13,7 @@ CREATE TABLE users(
 	MaxPipeNum int NOT NULL DEFAULT 2,
 	MaxSameIPServers int NOT NULL DEFAULT 2,
 	TodayCSModeData int NOT NULL DEFAULT 0,
+	LimitDataSize int NOT NULL DEFAULT 0,
 	PRIMARY KEY (UserName),
 	UNIQUE KEY (AuthKey)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;

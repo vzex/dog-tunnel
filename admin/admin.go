@@ -256,6 +256,26 @@ func _adminUserSetting(w http.ResponseWriter, r *http.Request) (result string, b
 		return
 	}
 	switch action {
+	case "limit":
+		n := r.FormValue("size")
+		size, _ := strconv.Atoi(n)
+
+		user, err := auth.GetUser(key)
+		if err != nil {
+			result = err.Error()
+			bSuccess = false
+			return
+		} else {
+			user.LimitDataSize = size
+			err := auth.UpdateUser(key, user)
+			if err == nil {
+				bSuccess = true
+			} else {
+				result = err.Error()
+				bSuccess = false
+			}
+			return
+		}
 	case "add":
 		passwd := r.FormValue("passwd")
 		if passwd == "" {
@@ -282,7 +302,7 @@ func _adminUserSetting(w http.ResponseWriter, r *http.Request) (result string, b
 			_usertype = auth.UserType_Admin
 		}
 
-		user := &auth.User{UserName: key, Passwd: common.HashPasswd(common.Md5(passwd)), UserType: _usertype, LastLoginTime: 0, LastLogoutTime: 0, MaxOnlineServerNum: maxOnlineServerNum, MaxSessionNum: maxSessionNum, MaxPipeNum: maxPipeNum, MaxSameIPServers: maxSameIPServers, TodayCSModeData: 0}
+		user := &auth.User{UserName: key, Passwd: common.HashPasswd(common.Md5(passwd)), UserType: _usertype, LastLoginTime: 0, LastLogoutTime: 0, MaxOnlineServerNum: maxOnlineServerNum, MaxSessionNum: maxSessionNum, MaxPipeNum: maxPipeNum, MaxSameIPServers: maxSameIPServers, TodayCSModeData: 0, LimitDataSize: 0}
 		key, err := auth.AddUser(key, user)
 		if err != nil {
 			result = err.Error()

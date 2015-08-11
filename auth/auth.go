@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
+	//"log"
 	"reflect"
 	"time"
-	//	"log"
 )
 
 const (
@@ -40,7 +40,8 @@ type User struct {
 	MaxSessionNum      int
 	MaxPipeNum         int
 	MaxSameIPServers   int
-	TodayCSModeData    int `stop:"true"`
+	TodayCSModeData    int
+	LimitDataSize      int `stop:"true"`
 	//donnot save
 	lastProcessTime int64
 	//for cache
@@ -134,7 +135,11 @@ func (u *User) UpdateCSMode(size int) bool {
 		u.TodayCSModeData = size
 	}
 	u.lastProcessTime = now.Unix()
-	if u.TodayCSModeData > DefaultMaxCSModeData {
+	n := DefaultMaxCSModeData
+	if u.LimitDataSize > 0 {
+		n = u.LimitDataSize
+	}
+	if u.TodayCSModeData > n {
 		return false
 	}
 	return true
