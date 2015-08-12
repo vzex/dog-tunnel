@@ -1,13 +1,12 @@
 package auth
 
 import (
-	"database/sql"
-	//	"fmt"
 	"../common"
+	"database/sql"
 	"errors"
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
-	//"log"
+	"log"
 	"reflect"
 	"time"
 )
@@ -57,9 +56,9 @@ func (u *User) CheckType() bool {
 }
 
 func (u *User) OnLogin() {
-	u.UpdateCSMode(0)
 	u.LastLoginTime = time.Now().Unix()
 	u.lastProcessTime = u.LastLoginTime
+	log.Println("OnLogin", u.lastProcessTime)
 }
 
 func (u *User) OnLogout() {
@@ -178,7 +177,7 @@ func Init(user, passwd, host string) error {
 	if err != nil {
 		return err
 	}
-	g_QueryUserStmt, err = g_Database.Prepare("SELECT UserName, Passwd, UserType, AuthKey, LastLoginTime, LastLogoutTime, MaxOnlineServerNum, MaxSessionNum, MaxPipeNum, MaxSameIPServers, TodayCSModeData FROM users WHERE UserName = ?")
+	g_QueryUserStmt, err = g_Database.Prepare("SELECT UserName, Passwd, UserType, AuthKey, LastLoginTime, LastLogoutTime, MaxOnlineServerNum, MaxSessionNum, MaxPipeNum, MaxSameIPServers, TodayCSModeData, LimitDataSize FROM users WHERE UserName = ?")
 	if err != nil {
 		return err
 	}
@@ -190,11 +189,11 @@ func Init(user, passwd, host string) error {
 	if err != nil {
 		return err
 	}
-	g_AddUserStmt, err = g_Database.Prepare("INSERT INTO users (UserName, Passwd, UserType, AuthKey, LastLoginTime, LastLogoutTime, MaxOnlineServerNum, MaxSessionNum, MaxPipeNum, MaxSameIPServers, TodayCSModeData) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	g_AddUserStmt, err = g_Database.Prepare("INSERT INTO users (UserName, Passwd, UserType, AuthKey, LastLoginTime, LastLogoutTime, MaxOnlineServerNum, MaxSessionNum, MaxPipeNum, MaxSameIPServers, TodayCSModeData, LimitDataSize) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
-	g_UpdateUserStmt, err = g_Database.Prepare("UPDATE users SET Passwd = ?, UserType = ?, AuthKey = ?, LastLoginTime = ? , LastLogoutTime = ?, MaxOnlineServerNum = ?, MaxSessionNum = ?, MaxPipeNum = ?, MaxSameIPServers = ?, TodayCSModeData = ? WHERE UserName = ?")
+	g_UpdateUserStmt, err = g_Database.Prepare("UPDATE users SET Passwd = ?, UserType = ?, AuthKey = ?, LastLoginTime = ? , LastLogoutTime = ?, MaxOnlineServerNum = ?, MaxSessionNum = ?, MaxPipeNum = ?, MaxSameIPServers = ?, TodayCSModeData = ?, LimitDataSize = ? WHERE UserName = ?")
 	if err != nil {
 		return err
 	}
@@ -262,10 +261,11 @@ func GetUser(name string) (*User, error) {
 		_user := &User{}
 		row := preScan(_user)
 		err = g_QueryUserStmt.QueryRow(name).Scan(row...)
-		//fmt.Printf("load from db %+v\n", _user)
+		//fmt.Printf("load from db %+v,%d,%v\n", _user, _user.TodayCSModeData, err)
 		if err == nil {
 			user = _user
 			cache.AddCache(name, _user, CacheTime)
+			user.OnLogin()
 		}
 		if err == sql.ErrNoRows {
 			err = nil
