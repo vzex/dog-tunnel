@@ -108,7 +108,13 @@ func handleResponse(conn net.Conn, clientId string, action string, content strin
 		}
 	case "remove_udpsession":
 		log.Println("server force remove udpsession", clientId)
-		delete(g_Id2UDPSession, clientId)
+                session, have := g_Id2UDPSession[clientId]
+                if have {
+                        if session.engine != nil {
+                                session.engine.Fail()
+                        }
+                        delete(g_Id2UDPSession, clientId)
+                }
 	case "query_addrlist_a":
 		outip := content
 		arr := strings.Split(clientId, "-")
@@ -523,6 +529,11 @@ func main() {
 			client.Quit()
 		}
 
+                for _, session := range g_Id2UDPSession {
+                        if session.engine != nil {
+                                session.engine.Fail()
+                        }
+                }
 		if remoteConn != nil {
 			remoteConn.Close()
 		}
