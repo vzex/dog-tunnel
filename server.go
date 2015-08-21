@@ -155,7 +155,7 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 					return
 				}
 				if !user.CheckSessionNum(len(info.ClientMap)) {
-					common.Write(conn, "0", "showandquit", "pipenum cannot overstep "+strconv.Itoa(user.MaxPipeNum))
+					common.Write(conn, "0", "showandquit", "session numcannot overstep "+strconv.Itoa(len(info.ClientMap)))
 					bAuth = false
 					return
 				}
