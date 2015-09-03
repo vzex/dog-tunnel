@@ -723,7 +723,7 @@ func Ikcp_input(kcp *Ikcpcb, data []byte, size int) int {
 					kcp.incr = mss
 				}
 				kcp.incr += (mss*mss)/kcp.incr + (mss / 16)
-				if (kcp.cwnd+1)*mss >= kcp.incr {
+				if (kcp.cwnd+1)*mss <= kcp.incr {
 					kcp.cwnd++
 				}
 			}
