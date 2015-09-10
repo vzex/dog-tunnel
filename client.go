@@ -108,7 +108,7 @@ func handleResponse(conn net.Conn, clientId string, action string, content strin
 		}
 	case "remove_udpsession":
 		log.Println("server force remove udpsession", clientId)
-                delete(g_Id2UDPSession, clientId)
+		delete(g_Id2UDPSession, clientId)
 	case "query_addrlist_a":
 		outip := content
 		arr := strings.Split(clientId, "-")
@@ -523,11 +523,11 @@ func main() {
 			client.Quit()
 		}
 
-                for _, session := range g_Id2UDPSession {
-                        if session.engine != nil {
-                                session.engine.Fail()
-                        }
-                }
+		for _, session := range g_Id2UDPSession {
+			if session.engine != nil {
+				session.engine.Fail()
+			}
+		}
 		if remoteConn != nil {
 			remoteConn.Close()
 		}
@@ -890,9 +890,12 @@ func (msg *reqMsg) read(bytes []byte) (bool, []byte) {
 		msg.url = fmt.Sprintf("%d.%d.%d.%d:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3], msg.dst_port2)
 	case 3: //DOMANNAME
 		msg.url = string(msg.dst_addr[1 : 1+msg.dst_addr[0]])
+		if len(msg.url) > 0 && []byte(msg.url)[0] != '[' {
+			msg.url = "[" + msg.url + "]"
+		}
 		msg.url += fmt.Sprintf(":%d", msg.dst_port2)
 	case 4: //ipv6
-		msg.url = fmt.Sprintf("%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3],
+		msg.url = fmt.Sprintf("[%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x]:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3],
 			msg.dst_addr[4], msg.dst_addr[5], msg.dst_addr[6], msg.dst_addr[7],
 			msg.dst_addr[8], msg.dst_addr[9], msg.dst_addr[10], msg.dst_addr[11],
 			msg.dst_addr[12], msg.dst_addr[13], msg.dst_addr[14], msg.dst_addr[15],
