@@ -851,9 +851,12 @@ func (msg *reqMsg) read(bytes []byte) (bool, []byte) {
 		msg.url = fmt.Sprintf("%d.%d.%d.%d:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3], msg.dst_port2)
 	case 3: //DOMANNAME
 		msg.url = string(msg.dst_addr[1 : 1+msg.dst_addr[0]])
+		if len(msg.url) > 0 && []byte(msg.url)[0] != '[' {
+			msg.url = "[" + msg.url + "]"
+		}
 		msg.url += fmt.Sprintf(":%d", msg.dst_port2)
 	case 4: //ipv6
-		msg.url = fmt.Sprintf("%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3],
+		msg.url = fmt.Sprintf("[%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x]:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3],
 			msg.dst_addr[4], msg.dst_addr[5], msg.dst_addr[6], msg.dst_addr[7],
 			msg.dst_addr[8], msg.dst_addr[9], msg.dst_addr[10], msg.dst_addr[11],
 			msg.dst_addr[12], msg.dst_addr[13], msg.dst_addr[14], msg.dst_addr[15],
@@ -1115,7 +1118,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 						//log.Println("try dial", url, "ok")
 					}
 					if err != nil {
-						log.Println("connect to local server fail:", err.Error())
+						log.Println("connect to local server fail:", err.Error(), url)
 						ansmsg.gen(&hello, 4)
 						go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
 						pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
