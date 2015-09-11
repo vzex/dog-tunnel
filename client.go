@@ -669,13 +669,13 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 				}
 				if err != nil {
 					log.Println("connect to local server fail:", err.Error())
-					ansmsg.gen(&hello, 4)
+					ansmsg.gen(&hello, 4, hello.atyp)
 					go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
 					return
 				} else {
 					session.localConn = s_conn
 					go handleLocalPortResponse(sc, sessionId)
-					ansmsg.gen(&hello, 0)
+					ansmsg.gen(&hello, 0, hello.atyp)
 					go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
 					session.status = "ok"
 					session.recvMsg = string(tail)
@@ -800,11 +800,11 @@ type ansMsg struct {
 	mlen uint16
 }
 
-func (msg *ansMsg) gen(req *reqMsg, rep uint8) {
+func (msg *ansMsg) gen(req *reqMsg, rep, atyp uint8) {
 	msg.ver = 5
 	msg.rep = rep //rfc1928
 	msg.rsv = 0
-	msg.atyp = 1 //req.atyp
+	msg.atyp = atyp //req.atyp
 
 	msg.buf[0], msg.buf[1], msg.buf[2], msg.buf[3] = msg.ver, msg.rep, msg.rsv, msg.atyp
 	for i := 5; i < 11; i++ {
