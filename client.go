@@ -67,6 +67,7 @@ var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 var timeOut = flag.Int("timeout", 100, "udp pipe set timeout(seconds)")
 
+var bListenUdp = flag.Bool("listenudp", false, "listen udp mode")
 var bDebug = flag.Int("debug", 0, "more output log")
 var bReverse = flag.Bool("r", false, "reverse mode, if true, client 's \"-local\" address will be listened on server side")
 var sessionTimeout = flag.Int("session_timeout", 0, "if > 0, session will check itself if it's alive, if no msg tranfer for some seconds, socket will be closed, use this to avoid of zombie tcp sockets")
@@ -761,11 +762,11 @@ type ansMsg struct {
 	mlen uint16
 }
 
-func (msg *ansMsg) gen(req *reqMsg, rep uint8) {
+func (msg *ansMsg) gen(req *reqMsg, rep, atyp uint8) {
 	msg.ver = 5
 	msg.rep = rep //rfc1928
 	msg.rsv = 0
-	msg.atyp = 1 //req.atyp
+	msg.atyp = atyp //req.atyp
 
 	msg.buf[0], msg.buf[1], msg.buf[2], msg.buf[3] = msg.ver, msg.rep, msg.rsv, msg.atyp
 	for i := 5; i < 11; i++ {
@@ -1119,13 +1120,13 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					}
 					if err != nil {
 						log.Println("connect to local server fail:", err.Error(), url)
-						ansmsg.gen(&hello, 4)
+						ansmsg.gen(&hello, 4, hello.atyp)
 						go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
 						pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
 					} else {
 						session.localConn = s_conn
 						go session.handleLocalPortResponse(sc, sessionId, hello.url)
-						ansmsg.gen(&hello, 0)
+						ansmsg.gen(&hello, 0, hello.atyp)
 						go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
 						pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
 					}
