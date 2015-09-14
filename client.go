@@ -661,7 +661,7 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 					s_conn = res.conn
 					err = res.err
 					if res.ip != "" {
-						url = res.ip + fmt.Sprintf(":%d", hello.dst_port2)
+						url = net.JoinHostPort(res.ip, fmt.Sprintf("%d", hello.dst_port2))
 					}
 				}
 				if s_conn == nil && err == nil {
@@ -772,7 +772,7 @@ func dnsLoop() {
 					cache.DelCache(info.host)
 				case "queryok":
 					log.Println("add host", info.host, "to dns cache")
-					_cacheInfo.Ip = strings.Split(info.conn.RemoteAddr().String(), ":")[0]
+					_cacheInfo.Ip, _, _ = net.SplitHostPort(info.conn.RemoteAddr().String())
 					_cacheInfo.SetCacheTime(-1)
 					//log.Println("process the queue of host", info.host, len(_cacheInfo.Queue))
 					conn := info.conn
@@ -889,11 +889,7 @@ func (msg *reqMsg) read(bytes []byte) (bool, []byte) {
 	case 1: // ipv4
 		msg.url = fmt.Sprintf("%d.%d.%d.%d:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3], msg.dst_port2)
 	case 3: //DOMANNAME
-		msg.url = string(msg.dst_addr[1 : 1+msg.dst_addr[0]])
-		if len(msg.url) > 0 && []byte(msg.url)[0] != '[' {
-			msg.url = "[" + msg.url + "]"
-		}
-		msg.url += fmt.Sprintf(":%d", msg.dst_port2)
+		msg.url = net.JoinHostPort(string(msg.dst_addr[1:1+msg.dst_addr[0]]), fmt.Sprintf("%d", msg.dst_port2))
 	case 4: //ipv6
 		msg.url = fmt.Sprintf("[%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x]:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3],
 			msg.dst_addr[4], msg.dst_addr[5], msg.dst_addr[6], msg.dst_addr[7],
