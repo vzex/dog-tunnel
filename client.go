@@ -761,11 +761,11 @@ type ansMsg struct {
 	mlen uint16
 }
 
-func (msg *ansMsg) gen(req *reqMsg, rep, atyp uint8) {
+func (msg *ansMsg) gen(req *reqMsg, rep uint8) {
 	msg.ver = 5
 	msg.rep = rep //rfc1928
 	msg.rsv = 0
-	msg.atyp = atyp //req.atyp
+	msg.atyp = 1 //req.atyp
 
 	msg.buf[0], msg.buf[1], msg.buf[2], msg.buf[3] = msg.ver, msg.rep, msg.rsv, msg.atyp
 	for i := 5; i < 11; i++ {
@@ -850,7 +850,7 @@ func (msg *reqMsg) read(bytes []byte) (bool, []byte) {
 	case 1: // ipv4
 		msg.url = fmt.Sprintf("%d.%d.%d.%d:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3], msg.dst_port2)
 	case 3: //DOMANNAME
-		msg.url = net.JoinHostPort(string(msg.dst_addr[1 : 1+msg.dst_addr[0]]), fmt.Sprintf("%d", msg.dst_port2))
+		msg.url = net.JoinHostPort(string(msg.dst_addr[1:1+msg.dst_addr[0]]), fmt.Sprintf("%d", msg.dst_port2))
 	case 4: //ipv6
 		msg.url = fmt.Sprintf("[%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x]:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3],
 			msg.dst_addr[4], msg.dst_addr[5], msg.dst_addr[6], msg.dst_addr[7],
@@ -1115,13 +1115,13 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					}
 					if err != nil {
 						log.Println("connect to local server fail:", err.Error(), url)
-						ansmsg.gen(&hello, 4, hello.atyp)
+						ansmsg.gen(&hello, 4)
 						go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
 						pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
 					} else {
 						session.localConn = s_conn
 						go session.handleLocalPortResponse(sc, sessionId, hello.url)
-						ansmsg.gen(&hello, 0, hello.atyp)
+						ansmsg.gen(&hello, 0)
 						go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
 						pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
 					}
