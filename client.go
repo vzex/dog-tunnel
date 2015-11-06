@@ -15,13 +15,16 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"os/user"
 	"path"
 	"runtime"
+	"strings"
 	//de "runtime/debug"
 	//"runtime/pprof"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -70,9 +73,18 @@ var bListenUdp = flag.Bool("listenudp", false, "listen udp mode")
 var bDebug = flag.Int("debug", 0, "more output log")
 var bReverse = flag.Bool("r", false, "reverse mode, if true, client 's \"-local\" address will be listened on server side")
 var sessionTimeout = flag.Int("session_timeout", 0, "if > 0, session will check itself if it's alive, if no msg tranfer for some seconds, socket will be closed, use this to avoid of zombie tcp sockets")
+var bCache = flag.Bool("cache", false, "(valid in socks5 mode)if cache is true,save files requested with GET method into cache/ dir,cache request not pass through server side,no support for https")
 
 var clientType = 1
 var currReadyId = 0
+
+type reqArg struct {
+	url   string
+	host  string
+	times int
+}
+
+var cacheChan chan reqArg
 
 const maxPipes = 10
 
@@ -529,6 +541,10 @@ func main() {
 			timeNow = time.Now()
 		}
 	}()
+	if *bCache {
+		cacheChan = make(chan reqArg)
+		go handleUrl()
+	}
 	timeNow = time.Now()
 	rand.Seed(timeNow.Unix())
 	checkDns = make(chan *dnsQueryReq)
@@ -712,7 +728,7 @@ type clientSession struct {
 	dieT      time.Time
 }
 
-func (session *clientSession) processSockProxy(sessionId int, content string, callback func([]byte)) {
+func (session *clientSession) processSockProxy(sessionId int, content string, callback func([]byte, string)) {
 	session.recvMsg += content
 	bytes := []byte(session.recvMsg)
 	size := len(bytes)
@@ -743,7 +759,7 @@ func (session *clientSession) processSockProxy(sessionId int, content string, ca
 		if bOk {
 			session.status = "ok"
 			session.recvMsg = string(tail)
-			callback(bytes)
+			callback(bytes, hello.url)
 		}
 		return
 	case "ok":
@@ -1376,6 +1392,9 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 	reader := bufio.NewReader(conn)
 	bParsed := false
 	bNeedBreak := false
+	var recv string
+	var host string
+
 	for {
 		size, err := reader.Read(arr)
 		if err != nil {
@@ -1385,12 +1404,16 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 			session.dieT = timeNow.Add(time.Duration(client.stimeout) * time.Second)
 		}
 		if client.action == "socks5" && !bParsed {
-			session.processSockProxy(sessionId, string(arr[0:size]), func(head []byte) {
+			session.processSockProxy(sessionId, string(arr[0:size]), func(head []byte, _host string) {
+				host = _host
 				common.WriteCrypt(pipe, sessionId, eTunnel_open, head, client.encode)
 				if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, []byte(session.recvMsg), client.encode) != nil {
 					bNeedBreak = true
 				} else {
 					session.pipe.Add(int64(len(session.recvMsg)), timeNow.Unix())
+					if *bCache {
+						recv += session.recvMsg
+					}
 				}
 				bParsed = true
 			})
@@ -1399,6 +1422,9 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 				bNeedBreak = true
 			} else {
 				session.pipe.Add(int64(size), timeNow.Unix())
+				if *bCache && client.action == "socks5" {
+					recv += string(arr[:size])
+				}
 			}
 		}
 		if bNeedBreak {
@@ -1407,4 +1433,58 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 	}
 	common.WriteCrypt(pipe, sessionId, eTunnel_close, []byte{}, client.encode)
 	client.removeSession(sessionId)
+	if *bCache && client.action == "socks5" {
+		go func() { cacheChan <- reqArg{recv, host, 0} }()
+	}
+}
+
+func handleUrl() {
+	for {
+		select {
+		case arg := <-cacheChan:
+			url, host := arg.url, arg.host
+			reader := bufio.NewReader(strings.NewReader(url))
+			req, er := http.ReadRequest(reader)
+			if er == nil {
+				if req.Method == "GET" {
+					go func() {
+						req.URL.Scheme = "http"
+						req.URL.Host = host
+						req.RequestURI = ""
+						client := &http.Client{}
+						res, _er := client.Do(req)
+						if _er == nil {
+							defer res.Body.Close()
+							b, _ := ioutil.ReadAll(res.Body)
+							if len(b) == 0 && arg.times < 10 {
+								log.Println("retry", url, arg.times)
+								go func() {
+									arg.times += 1
+									cacheChan <- arg
+								}()
+								return
+							}
+							_host, _, _ := net.SplitHostPort(host)
+							file := filepath.Join("./cache/", _host, req.URL.Path)
+							log.Println("url", filepath.Dir(file), file)
+							os.MkdirAll(filepath.Dir(file), 0777)
+							ioutil.WriteFile(file, b, 0777)
+						} else {
+							log.Println("get error", _er.Error(), arg.times)
+							if arg.times < 3 {
+								go func() {
+									arg.times += 1
+									cacheChan <- arg
+								}()
+								return
+							}
+						}
+
+					}()
+				}
+			} else {
+				//println("wrong", er.Error(), url)
+			}
+		}
+	}
 }
