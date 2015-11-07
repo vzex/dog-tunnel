@@ -1434,7 +1434,13 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 	common.WriteCrypt(pipe, sessionId, eTunnel_close, []byte{}, client.encode)
 	client.removeSession(sessionId)
 	if *bCache && client.action == "socks5" {
-		go func() { cacheChan <- reqArg{recv, host, 0} }()
+		arr := strings.Split(recv, "\r\n\r\n")
+		for _, s := range arr {
+			if s != "" {
+				_url := s + "\r\n\r\n"
+				go func() { cacheChan <- reqArg{_url, host, 0} }()
+			}
+		}
 	}
 }
 
@@ -1447,43 +1453,46 @@ func handleUrl() {
 			req, er := http.ReadRequest(reader)
 			if er == nil {
 				if req.Method == "GET" {
-					go func() {
-						req.URL.Scheme = "http"
-						req.URL.Host = host
-						req.RequestURI = ""
-						client := &http.Client{}
-						res, _er := client.Do(req)
-						if _er == nil {
-							defer res.Body.Close()
-							b, _ := ioutil.ReadAll(res.Body)
-							if len(b) == 0 && arg.times < 10 {
-								log.Println("retry", url, arg.times)
-								go func() {
-									arg.times += 1
-									cacheChan <- arg
-								}()
-								return
-							}
-							_host, _, _ := net.SplitHostPort(host)
-							file := filepath.Join("./cache/", _host, req.URL.Path)
-							log.Println("url", filepath.Dir(file), file)
-							os.MkdirAll(filepath.Dir(file), 0777)
-							ioutil.WriteFile(file, b, 0777)
-						} else {
-							log.Println("get error", _er.Error(), arg.times)
-							if arg.times < 3 {
-								go func() {
-									arg.times += 1
-									cacheChan <- arg
-								}()
-								return
-							}
+					req.URL.Scheme = "http"
+					req.URL.Host = host
+					req.RequestURI = ""
+					req.Header.Del("If-Modified-Since")
+					req.Header.Del("If-None-Match")
+					client := &http.Client{}
+					res, _er := client.Do(req)
+					if _er == nil {
+						defer res.Body.Close()
+						b, _ := ioutil.ReadAll(res.Body)
+						if len(b) == 0 && arg.times < 3 {
+							//log.Println("retry", arg.times, res.Status)
+							go func() {
+								arg.times += 1
+								cacheChan <- arg
+							}()
+							break
 						}
+						_host, _, _ := net.SplitHostPort(host)
+						file := filepath.Join("./cache/", _host, req.URL.Path)
+						if filepath.Ext(file) == "" || filepath.Dir(file) == filepath.Dir("./cache/") {
+							file = filepath.Join("./cache/", _host, req.URL.Path, "index.html")
+						}
+						log.Println("url", filepath.Dir(file), file)
+						os.MkdirAll(filepath.Dir(file), 0777)
+						ioutil.WriteFile(file, b, 0777)
+					} else {
+						log.Println("get error", _er.Error(), arg.times)
+						if arg.times < 3 {
+							go func() {
+								arg.times += 1
+								cacheChan <- arg
+							}()
+							break
+						}
+					}
 
-					}()
 				}
 			} else {
-				//println("wrong", er.Error(), url)
+				println("wrong", er.Error(), url)
 			}
 		}
 	}
