@@ -1458,6 +1458,7 @@ func handleUrl() {
 					req.RequestURI = ""
 					req.Header.Del("If-Modified-Since")
 					req.Header.Del("If-None-Match")
+					req.Header.Set("Accept-Encoding", "")
 					client := &http.Client{}
 					res, _er := client.Do(req)
 					if _er == nil {
@@ -1492,7 +1493,6 @@ func handleUrl() {
 
 				}
 			} else {
-				println("wrong", er.Error(), url)
 			}
 		}
 	}
