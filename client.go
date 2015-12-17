@@ -228,8 +228,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	id := *serviceAddr
 	client, bHave := g_ClientMap[id]
 	if !bHave {
-		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
-		go client.sessionLoop()
+		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit:make(chan bool)}
 		g_ClientMap[id] = client
 		if *sessionTimeout > 0 {
 			go client.sessionCheckDie()
@@ -314,8 +313,7 @@ func Listen(bIsTcp bool, addr string) bool {
 		}
 		client, have := g_ClientMap[id]
 		if !have {
-			client = &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool), createSessionChan: make(chan createSessionInfo), removeSessionChan: make(chan removeSessionInfo), getSessionChan: make(chan getSessionInfo)}
-			go client.sessionLoop()
+			client = &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit:make(chan bool)}
 			g_ClientMap[id] = client
 			if *authKey == "" {
 				client.authed = true
@@ -445,22 +443,6 @@ type dnsQueryRes struct {
 	conn net.Conn
 	err  error
 	ip   string
-}
-
-type createSessionInfo struct {
-	sessionId int
-	session   *clientSession
-	c         chan int
-}
-
-type removeSessionInfo struct {
-	sessionId int
-	c         chan bool
-}
-
-type getSessionInfo struct {
-	sessionId int
-	c         chan *clientSession
 }
 
 type queryRealAddrInfo struct {
@@ -894,7 +876,6 @@ type Client struct {
 	ready             bool
 	bUdp              bool
 	action            string
-	quit              chan bool
 	closed            bool
 	encode, decode    func([]byte) []byte
 	authed            bool
@@ -904,10 +885,9 @@ type Client struct {
 	readyId           string
 	newindex          int
 	encryptstr        string
-	createSessionChan chan createSessionInfo
-	removeSessionChan chan removeSessionInfo
-	getSessionChan    chan getSessionInfo
+	sessionLock	  sync.RWMutex
 	stimeout          int
+	quit              chan bool
 }
 
 // pipe : client to client
@@ -916,26 +896,45 @@ func (sc *Client) getSession(sessionId int) *clientSession {
 	if sessionId < 0 {
 		return nil
 	}
-	c := make(chan *clientSession)
-	request := getSessionInfo{sessionId, c}
-	select {
-	case sc.getSessionChan <- request:
-	case <-sc.quit:
+	sc.sessionLock.RLock()
+	defer sc.sessionLock.RUnlock()
+	session, bHave := sc.sessions[sessionId]
+	if bHave {
+		return session
+	} else {
 		return nil
 	}
-	session := <-c
-	return session
 }
 
 func (sc *Client) removeSession(sessionId int) bool {
-	c := make(chan bool)
-	request := removeSessionInfo{sessionId, c}
-	select {
-	case sc.removeSessionChan <- request:
-	case <-sc.quit:
-		return false
+	sc.sessionLock.Lock()
+	defer sc.sessionLock.Unlock()
+	common.RmId("session", sessionId)
+	session, bHave := sc.sessions[sessionId]
+	if bHave {
+		delete(sc.sessions, sessionId)
+		if session.localConn != nil {
+			session.localConn.Close()
+		}
 	}
-	return <-c
+	return bHave
+}
+
+func (sc *Client) createSession(sessionId int, session *clientSession) int {
+	if sessionId == -1 {
+		sessionId = common.GetId("session")
+	}
+	sc.sessionLock.Lock()
+	defer sc.sessionLock.Unlock()
+	old, bHave := sc.sessions[sessionId]
+	if bHave {
+		if old.localConn != nil {
+			old.localConn.Close()
+		}
+	} else {
+		sc.sessions[sessionId] = session
+	}
+	return sessionId
 }
 
 func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, content string, pinfo *pipeInfo) {
@@ -1073,68 +1072,56 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				return
 			} else {
 				session := &clientSession{pipe: pinfo, localConn: s_conn, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
-				c := make(chan int)
-				request := createSessionInfo{sessionId: sessionId, session: session, c: c}
-				select {
-				case sc.createSessionChan <- request:
-					<-c
-					go session.handleLocalPortResponse(sc, sessionId, "")
-				case <-sc.quit:
-				}
+				sc.createSession(sessionId, session)
+				go session.handleLocalPortResponse(sc, sessionId, "")
 			}
 		} else {
 			session = &clientSession{pipe: pinfo, localConn: nil, status: "init", recvMsg: "", dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
-			c := make(chan int)
-			request := createSessionInfo{sessionId: sessionId, session: session, c: c}
-			select {
-			case sc.createSessionChan <- request:
-				<-c
-				go func() {
-					var hello reqMsg
-					bOk, _ := hello.read([]byte(content))
-					if !bOk {
-						msg := "hello read err"
-						go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
-						return
+			sc.createSession(sessionId, session)
+			go func() {
+				var hello reqMsg
+				bOk, _ := hello.read([]byte(content))
+				if !bOk {
+					msg := "hello read err"
+					go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
+					return
+				}
+				var ansmsg ansMsg
+				url := hello.url
+				var s_conn net.Conn
+				var err error
+				if *dnsCacheNum > 0 && hello.atyp == 3 {
+					host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
+					resChan := make(chan *dnsQueryRes)
+					debug("try cache", resChan)
+					checkDns <- &dnsQueryReq{c: resChan, host: host, port: int(hello.dst_port2), reqtype: hello.reqtype, url: url}
+					debug("try cache2")
+					res := <-resChan
+					debug("try cache3")
+					s_conn = res.conn
+					err = res.err
+					if res.ip != "" {
+						url = net.JoinHostPort(res.ip, fmt.Sprintf("%d", hello.dst_port2))
 					}
-					var ansmsg ansMsg
-					url := hello.url
-					var s_conn net.Conn
-					var err error
-					if *dnsCacheNum > 0 && hello.atyp == 3 {
-						host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
-						resChan := make(chan *dnsQueryRes)
-						debug("try cache", resChan)
-						checkDns <- &dnsQueryReq{c: resChan, host: host, port: int(hello.dst_port2), reqtype: hello.reqtype, url: url}
-						debug("try cache2")
-						res := <-resChan
-						debug("try cache3")
-						s_conn = res.conn
-						err = res.err
-						if res.ip != "" {
-							url = net.JoinHostPort(res.ip, fmt.Sprintf("%d", hello.dst_port2))
-						}
-					}
-					if s_conn == nil && err == nil {
-						//log.Println("try dial", url)
-						s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
-						//log.Println("try dial", url, "ok")
-					}
-					if err != nil {
-						log.Println("connect to local server fail:", err.Error(), url)
-						ansmsg.gen(&hello, 4)
-						go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
-						pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
-					} else {
-						session.localConn = s_conn
-						go session.handleLocalPortResponse(sc, sessionId, hello.url)
-						ansmsg.gen(&hello, 0)
-						go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
-						pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
-					}
-				}()
-			case <-sc.quit:
-			}
+				}
+				if s_conn == nil && err == nil {
+					//log.Println("try dial", url)
+					s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
+					//log.Println("try dial", url, "ok")
+				}
+				if err != nil {
+					log.Println("connect to local server fail:", err.Error(), url)
+					ansmsg.gen(&hello, 4)
+					go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
+					pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
+				} else {
+					session.localConn = s_conn
+					go session.handleLocalPortResponse(sc, sessionId, hello.url)
+					ansmsg.gen(&hello, 0)
+					go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
+					pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
+				}
+			}()
 		}
 	}
 }
@@ -1166,54 +1153,9 @@ out:
 	t.Stop()
 }
 
-func (sc *Client) sessionLoop() {
-out:
-	for {
-		select {
-		case sessionInfo := <-sc.createSessionChan:
-			if sessionInfo.sessionId == -1 {
-				sessionInfo.sessionId = common.GetId("session")
-			}
-			old, bHave := sc.sessions[sessionInfo.sessionId]
-			if bHave {
-				if old.localConn != nil {
-					old.localConn.Close()
-				}
-			} else {
-				sc.sessions[sessionInfo.sessionId] = sessionInfo.session
-			}
-			sessionInfo.c <- sessionInfo.sessionId
-		case sessionInfo := <-sc.removeSessionChan:
-			common.RmId("session", sessionInfo.sessionId)
-			session, bHave := sc.sessions[sessionInfo.sessionId]
-			if bHave {
-				delete(sc.sessions, sessionInfo.sessionId)
-				if session.localConn != nil {
-					session.localConn.Close()
-				}
-			}
-			sessionInfo.c <- bHave
-		case sessionInfo := <-sc.getSessionChan:
-			session, bHave := sc.sessions[sessionInfo.sessionId]
-			if bHave {
-				sessionInfo.c <- session
-			} else {
-				sessionInfo.c <- nil
-			}
-		case <-sc.quit:
-			for _, session := range sc.sessions {
-				if session.localConn != nil {
-					session.localConn.Close()
-				}
-			}
-			break out
-
-		}
-	}
-}
-
 func (sc *Client) Quit() {
 	sc._Quit()
+	close(sc.quit)
 	for id, pipeInfo := range sc.pipes {
 		pipeInfo.conn.Close()
 		delete(sc.pipes, id)
@@ -1230,7 +1172,11 @@ func (sc *Client) _Quit() {
 	} else {
 		return
 	}
-	close(sc.quit)
+	for _, session := range sc.sessions {
+		if session.localConn != nil {
+			session.localConn.Close()
+		}
+	}
 	log.Println("client quit", sc.id)
 	delete(g_ClientMap, sc.id)
 	//de.FreeOSMemory()
@@ -1264,15 +1210,8 @@ func (sc *Client) MultiListen() bool {
 					continue
 				}
 				session := &clientSession{pipe: pipe, localConn: conn, status: "init", dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
-				c := make(chan int)
-				request := createSessionInfo{sessionId: -1, session: session, c: c}
-				select {
-				case sc.createSessionChan <- request:
-					sessionId := <-c
-					//log.Println("client", sc.id, "create session", sessionId)
-					go session.handleLocalServerResponse(sc, sessionId)
-				case <-sc.quit:
-				}
+				sessionId := sc.createSession(-1, session)
+			   	go session.handleLocalServerResponse(sc, sessionId)
 			}
 			sc.listener = nil
 			for _, pipeInfo := range sc.pipes {
