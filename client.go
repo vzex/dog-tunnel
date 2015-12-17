@@ -21,6 +21,7 @@ import (
 	"os/user"
 	"path"
 	"runtime"
+        "sync/atomic"
 	"strings"
 	//de "runtime/debug"
 	//"runtime/pprof"
@@ -88,7 +89,35 @@ var cacheChan chan reqArg
 
 const maxPipes = 10
 
-var clientReportSessionChan chan int
+var pipen int32 = 0
+func clientReport(r int) {
+        if r >= 0 {
+                atomic.AddInt32(&pipen, 1)
+                if pipen == int32(*pipeN) {
+                        client, bHave := g_ClientMap[*serviceAddr]
+                        if bHave {
+                                pipeInfo, bH := client.pipes[r]
+                                if !bH {
+                                        log.Println("error!,no pipe", r)
+                                        client.Quit()
+                                } else {
+                                        readyIndex = r
+                                        common.WriteCrypt(pipeInfo.conn, -1, eReady, []byte{}, client.encode)
+                                }
+                        }
+                }
+        } else {
+                atomic.AddInt32(&pipen, -1)
+                if pipen <= 0 {
+                        pipen = 0
+                        atomic.StoreInt32(&pipen, 0)
+                        client, bHave := g_ClientMap[*serviceAddr]
+                        if bHave {
+                                client.Quit()
+                        }
+                }
+        }
+}
 var timeNow time.Time
 
 type dnsInfo struct {
@@ -232,7 +261,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 
 	pinfo := &pipeInfo{s_conn, 0, timeNow.Unix(), nil, 0}
 	client.pipes[idindex] = pinfo
-	clientReportSessionChan <- idindex
+	clientReport(idindex)
 	callback := func(conn net.Conn, sessionId int, action byte, content []byte) {
 		var msg string
 		if client.decode != nil {
@@ -248,7 +277,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		common.ReadUDP(s_conn, callback, pipe.ReadBufferSize)
 	}
 	log.Println("remove pipe", idindex)
-	clientReportSessionChan <- -1
+	clientReport(-1)
 	delete(client.pipes, idindex)
 	s_conn.Close()
 	if len(client.pipes) == 0 {
@@ -617,7 +646,6 @@ func main() {
 	}
 	var w sync.WaitGroup
 	w.Add(2)
-	pipen := 0
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -648,7 +676,7 @@ func main() {
 			bForceQuit = true
 			for _, client := range g_ClientMap {
 				client.Quit()
-				pipen = 0
+                                atomic.StoreInt32(&pipen, 0)
 			}
 			if g_LocalConn != nil {
 				g_LocalConn.Close()
@@ -671,43 +699,6 @@ func main() {
 			}
 			w.Done()
 		} else {
-			clientReportSessionChan = make(chan int)
-			bDropFromZero := true
-			go func() {
-				for {
-					select {
-					case r := <-clientReportSessionChan:
-						if r >= 0 {
-							pipen++
-							if pipen == *pipeN {
-								client, bHave := g_ClientMap[*serviceAddr]
-								if bHave {
-									pipeInfo, bH := client.pipes[r]
-									if !bH {
-										log.Println("error!,no pipe", r)
-										client.Quit()
-									} else {
-										readyIndex = r
-										common.WriteCrypt(pipeInfo.conn, -1, eReady, []byte{}, client.encode)
-									}
-								}
-							}
-						} else {
-							pipen--
-							if pipen <= 0 {
-								bDropFromZero = true
-								pipen = 0
-								client, bHave := g_ClientMap[*serviceAddr]
-								if bHave {
-									client.Quit()
-								}
-							} else {
-								bDropFromZero = false
-							}
-						}
-					}
-				}
-			}()
 			for i := 0; i < *pipeN; i++ {
 				go CreateSessionAndLoop(*bTcp, i)
 			}
