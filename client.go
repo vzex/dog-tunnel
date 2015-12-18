@@ -21,8 +21,8 @@ import (
 	"os/user"
 	"path"
 	"runtime"
-        "sync/atomic"
 	"strings"
+	"sync/atomic"
 	//de "runtime/debug"
 	//"runtime/pprof"
 	"path/filepath"
@@ -87,38 +87,50 @@ type reqArg struct {
 
 var cacheChan chan reqArg
 
-const maxPipes = 10
+const maxPipes = 100
 
 var pipen int32 = 0
+
 func clientReport(r int) {
-        if r >= 0 {
-                atomic.AddInt32(&pipen, 1)
-                if pipen == int32(*pipeN) {
-                        client, bHave := g_ClientMap[*serviceAddr]
-                        if bHave {
-                                pipeInfo, bH := client.pipes[r]
-                                if !bH {
-                                        log.Println("error!,no pipe", r)
-                                        client.Quit()
-                                } else {
-                                        readyIndex = r
-                                        common.WriteCrypt(pipeInfo.conn, -1, eReady, []byte{}, client.encode)
-                                }
-                        }
-                }
-        } else {
-                atomic.AddInt32(&pipen, -1)
-                if pipen <= 0 {
-                        pipen = 0
-                        atomic.StoreInt32(&pipen, 0)
-                        client, bHave := g_ClientMap[*serviceAddr]
-                        if bHave {
-                                client.Quit()
-                        }
-                }
-        }
+	if r >= 0 {
+		_pipen := atomic.AddInt32(&pipen, 1)
+		if _pipen == int32(*pipeN) {
+			g_ClientMapLock.RLock()
+			client, bHave := g_ClientMap[*serviceAddr]
+			g_ClientMapLock.RUnlock()
+			if bHave {
+				client.pipesLock.RLock()
+				pipeInfo, bH := client.pipes[r]
+				client.pipesLock.RUnlock()
+				if !bH {
+					log.Println("error!,no pipe", r)
+					client.Quit()
+				} else {
+					readyIndex = r
+					common.WriteCrypt(pipeInfo.conn, -1, eReady, []byte{}, client.encode)
+				}
+			}
+		}
+	} else {
+		_pipen := atomic.AddInt32(&pipen, -1)
+		if _pipen <= 0 {
+			atomic.StoreInt32(&pipen, 0)
+			g_ClientMapLock.RLock()
+			client, bHave := g_ClientMap[*serviceAddr]
+			g_ClientMapLock.RUnlock()
+			if bHave {
+				client.Quit()
+			}
+		}
+	}
 }
-var timeNow time.Time
+
+type _time struct {
+	time.Time
+	sync.RWMutex
+}
+
+var timeNow _time
 
 type dnsInfo struct {
 	Ip                  string
@@ -134,6 +146,8 @@ func debug(args ...interface{}) {
 }
 
 func (u *dnsInfo) IsAlive() bool {
+	timeNow.RLock()
+	defer timeNow.RUnlock()
 	return timeNow.Unix() < u.overTime
 }
 
@@ -143,6 +157,8 @@ func (u *dnsInfo) SetCacheTime(t int64) {
 	} else {
 		t = u.cacheTime
 	}
+	timeNow.RLock()
+	defer timeNow.RUnlock()
 	u.overTime = t + timeNow.Unix()
 }
 
@@ -153,6 +169,7 @@ func (u *dnsInfo) GetCacheTime() int64 {
 func (u *dnsInfo) DeInit() {}
 
 var g_ClientMap map[string]*Client
+var g_ClientMapLock sync.RWMutex
 var markName = ""
 var bForceQuit = false
 
@@ -226,10 +243,14 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	}
 	log.Println("try dial", *serviceAddr, "ok", idindex, s_conn.LocalAddr().String())
 	id := *serviceAddr
+	g_ClientMapLock.RLock()
 	client, bHave := g_ClientMap[id]
+	g_ClientMapLock.RUnlock()
 	if !bHave {
-		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit:make(chan bool)}
+		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool)}
+		g_ClientMapLock.Lock()
 		g_ClientMap[id] = client
+		g_ClientMapLock.Unlock()
 		if *sessionTimeout > 0 {
 			go client.sessionCheckDie()
 		}
@@ -242,7 +263,9 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		log.Println("request encrypt")
 		encrypt_tail := client.encryptstr
 		if encrypt_tail == "" {
+			timeNow.RLock()
 			encrypt_tail = string([]byte(fmt.Sprintf("%d%d", int32(timeNow.Unix()), (rand.Intn(100000) + 100)))[:12])
+			timeNow.RUnlock()
 			client.encryptstr = encrypt_tail
 		}
 		aesKey := "asd4" + encrypt_tail
@@ -258,8 +281,12 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	common.WriteCrypt(s_conn, -1, eInit_action, []byte(*remoteAction), client.encode)
 	client.stimeout = *sessionTimeout
 
-	pinfo := &pipeInfo{s_conn, 0, timeNow.Unix(), nil, 0}
+	timeNow.RLock()
+	pinfo := &pipeInfo{conn: s_conn, total: 0, t: timeNow.Unix(), owner: nil, newindex: 0}
+	timeNow.RUnlock()
+	client.pipesLock.Lock()
 	client.pipes[idindex] = pinfo
+	client.pipesLock.Unlock()
 	clientReport(idindex)
 	callback := func(conn net.Conn, sessionId int, action byte, content []byte) {
 		var msg string
@@ -277,9 +304,15 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	}
 	log.Println("remove pipe", idindex)
 	clientReport(-1)
+	client.pipesLock.Lock()
 	delete(client.pipes, idindex)
+	client.pipesLock.Unlock()
 	s_conn.Close()
-	if len(client.pipes) == 0 {
+
+	client.pipesLock.RLock()
+	l := len(client.pipes)
+	client.pipesLock.RUnlock()
+	if l == 0 {
 		client.Quit()
 	}
 	return true
@@ -287,12 +320,18 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 func Listen(bIsTcp bool, addr string) bool {
 	var err error
 	if bIsTcp {
+		g_LocalConnLock.Lock()
 		g_LocalConn, err = net.Listen("tcp", addr)
+		g_LocalConnLock.Unlock()
 	} else {
+		g_LocalConnLock.Lock()
 		g_LocalConn, err = pipe.Listen(addr)
+		g_LocalConnLock.Unlock()
 	}
 	if err != nil {
+		g_LocalConnLock.Lock()
 		g_LocalConn = nil
+		g_LocalConnLock.Unlock()
 		log.Println("cannot listen addr:" + err.Error())
 		return false
 	}
@@ -311,10 +350,14 @@ func Listen(bIsTcp bool, addr string) bool {
 		} else {
 			log.Println("add udp session", id)
 		}
+		g_ClientMapLock.RLock()
 		client, have := g_ClientMap[id]
+		g_ClientMapLock.RUnlock()
 		if !have {
-			client = &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit:make(chan bool)}
+			client = &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool)}
+			g_ClientMapLock.Lock()
 			g_ClientMap[id] = client
+			g_ClientMapLock.Unlock()
 			if *authKey == "" {
 				client.authed = true
 			}
@@ -322,10 +365,17 @@ func Listen(bIsTcp bool, addr string) bool {
 
 		idindex := -1
 		for i := 0; i < maxPipes; i++ {
+			client.pipesLock.RLock()
 			_, bHave := client.pipes[i]
+			client.pipesLock.RUnlock()
 			if !bHave {
 				idindex = i
-				client.pipes[i] = &pipeInfo{conn, 0, timeNow.Unix(), nil, 0}
+				timeNow.RLock()
+				now := timeNow.Unix()
+				timeNow.RUnlock()
+				client.pipesLock.Lock()
+				client.pipes[i] = &pipeInfo{conn: conn, total: 0, t: now, owner: nil, newindex: 0}
+				client.pipesLock.Unlock()
 				break
 			}
 		}
@@ -336,24 +386,33 @@ func Listen(bIsTcp bool, addr string) bool {
 		}
 		go client.ServerProcess(bIsTcp, idindex)
 	}
+	g_LocalConnLock.Lock()
 	g_LocalConn = nil
+	g_LocalConnLock.Unlock()
 	return true
 }
 
 func (client *Client) ServerProcess(bIsTcp bool, idindex int) {
+	client.pipesLock.RLock()
 	pipeInfo, _ := client.pipes[idindex]
+	client.pipesLock.RUnlock()
 	f := func() {
 		if pipeInfo.owner != nil {
 			old := client.id
+			client.pipesLock.Lock()
 			delete(client.pipes, idindex)
-			if len(client.pipes) == 0 {
+			l := len(client.pipes)
+			client.pipesLock.Unlock()
+			if l == 0 {
 				client._Quit()
 			}
 			idindex = pipeInfo.newindex
 			client = pipeInfo.owner
 			pipeInfo.owner = nil
 			log.Println(old, "pipe >>", client.id, idindex)
+			client.pipesLock.RLock()
 			pipeInfo, _ = client.pipes[idindex]
+			client.pipesLock.RUnlock()
 		}
 	}
 	callback := func(conn net.Conn, sessionId int, action byte, content []byte) {
@@ -373,14 +432,17 @@ func (client *Client) ServerProcess(bIsTcp bool, idindex int) {
 		common.ReadUDP(conn, callback, pipe.ReadBufferSize)
 	}
 	f()
+	client.pipesLock.Lock()
 	delete(client.pipes, idindex)
+	l := len(client.pipes)
+	client.pipesLock.Unlock()
 	conn.Close()
 	if bIsTcp {
 		log.Println("remove tcp pipe", idindex, "for", client.id)
 	} else {
 		log.Println("remove udp pipe", idindex, "for", client.id)
 	}
-	if len(client.pipes) == 0 {
+	if l == 0 {
 		client.Quit()
 	}
 }
@@ -549,15 +611,19 @@ func main() {
 	}*/
 	go func() {
 		for _ = range time.Tick(time.Second) {
-			timeNow = time.Now()
+			timeNow.Lock()
+			timeNow.Time = time.Now()
+			timeNow.Unlock()
 		}
 	}()
 	if *bCache {
 		cacheChan = make(chan reqArg)
 		go handleUrl()
 	}
-	timeNow = time.Now()
-	rand.Seed(timeNow.Unix())
+	timeNow.Lock()
+	timeNow.Time = time.Now()
+	timeNow.Unlock()
+	rand.Seed(time.Now().Unix())
 	checkDns = make(chan *dnsQueryReq)
 	checkDnsRes = make(chan *dnsQueryBack)
 	checkRealAddrChan = make(chan *queryRealAddrInfo)
@@ -595,16 +661,23 @@ func main() {
 	if *xorData != "" {
 		common.XorSetKey(*xorData)
 	}
+	g_ClientMapLock.Lock()
 	g_ClientMap = make(map[string]*Client)
+	g_ClientMapLock.Unlock()
 	if *bDebug > 0 {
 		go func() {
 			c := time.NewTicker(time.Second * 15)
 			for _ = range c.C {
 				log.Println("begin =====")
+				timeNow.RLock()
 				now := timeNow.Unix()
+				timeNow.RUnlock()
+				g_ClientMapLock.RLock()
 				for addr, client := range g_ClientMap {
 					var rate float64 = 0
+					client.pipesLock.RLock()
 					for _, pipeInfo := range client.pipes {
+						pipeInfo.RLock()
 						dt := now - pipeInfo.t
 						if dt <= 0 {
 							dt = 1
@@ -616,14 +689,19 @@ func main() {
 						}
 						rate += _rate
 						log.Println("pipe info", _rate, pipeInfo.total, dt)
+						pipeInfo.RUnlock()
 					}
 					log.Println("----", addr, len(client.pipes), "pipes;", len(client.sessions), "sessions;", int64(rate), "bytes/second;")
+					client.pipesLock.RUnlock()
 				}
+				g_ClientMapLock.RUnlock()
 				log.Println("end =====")
 			}
+			g_LocalConnLock.RLock()
 			if g_LocalConn != nil && *bTcp {
 				g_LocalConn.(*pipe.Listener).Dump()
 			}
+			g_LocalConnLock.RUnlock()
 		}()
 	}
 	var w sync.WaitGroup
@@ -656,13 +734,18 @@ func main() {
 			}
 			log.Println("received signal,shutdown")
 			bForceQuit = true
-			for _, client := range g_ClientMap {
+			g_ClientMapLock.RLock()
+			_map := g_ClientMap
+			g_ClientMapLock.RUnlock()
+			for _, client := range _map {
 				client.Quit()
-                                atomic.StoreInt32(&pipen, 0)
+				atomic.StoreInt32(&pipen, 0)
 			}
+			g_LocalConnLock.RLock()
 			if g_LocalConn != nil {
 				g_LocalConn.Close()
 			}
+			g_LocalConnLock.RUnlock()
 		}
 		f()
 		go func() {
@@ -695,6 +778,7 @@ func main() {
 type clientSession struct {
 	pipe      *pipeInfo
 	localConn net.Conn
+	connLock  sync.RWMutex
 	status    string
 	recvMsg   string
 	extra     uint8
@@ -722,7 +806,11 @@ func (session *clientSession) processSockProxy(sessionId int, content string, ca
 			return
 		}
 		var send = []uint8{5, 0}
-		go session.localConn.Write(send)
+		go func() {
+			session.connLock.RLock()
+			session.localConn.Write(send)
+			session.connLock.RUnlock()
+		}()
 		session.status = "hello"
 		session.recvMsg = string(bytes[session.extra:])
 		session.extra = 0
@@ -857,9 +945,12 @@ type pipeInfo struct {
 	t        int64
 	owner    *Client
 	newindex int
+	sync.RWMutex
 }
 
 func (pinfo *pipeInfo) Add(size, now int64) {
+	pinfo.Lock()
+	defer pinfo.Unlock()
 	if now-pinfo.t > 60 {
 		pinfo.total = size
 		pinfo.t = now
@@ -869,25 +960,26 @@ func (pinfo *pipeInfo) Add(size, now int64) {
 }
 
 type Client struct {
-	id                string
-	buster            bool
-	pipes             map[int]*pipeInfo      // client for pipes
-	sessions          map[int]*clientSession // session to pipeid
-	ready             bool
-	bUdp              bool
-	action            string
-	closed            bool
-	encode, decode    func([]byte) []byte
-	authed            bool
-	localconn         net.Conn
-	listener          net.Listener
-	reverseAddr       string
-	readyId           string
-	newindex          int
-	encryptstr        string
-	sessionLock	  sync.RWMutex
-	stimeout          int
-	quit              chan bool
+	id             string
+	buster         bool
+	pipes          map[int]*pipeInfo // client for pipes
+	pipesLock      sync.RWMutex
+	sessions       map[int]*clientSession // session to pipeid
+	sessionLock    sync.RWMutex
+	ready          bool
+	bUdp           bool
+	action         string
+	closed         bool
+	encode, decode func([]byte) []byte
+	authed         bool
+	localconn      net.Conn
+	listener       net.Listener
+	reverseAddr    string
+	readyId        string
+	newindex       int
+	encryptstr     string
+	stimeout       int
+	quit           chan bool
 }
 
 // pipe : client to client
@@ -913,9 +1005,11 @@ func (sc *Client) removeSession(sessionId int) bool {
 	session, bHave := sc.sessions[sessionId]
 	if bHave {
 		delete(sc.sessions, sessionId)
+		session.connLock.RLock()
 		if session.localConn != nil {
 			session.localConn.Close()
 		}
+		session.connLock.RUnlock()
 	}
 	return bHave
 }
@@ -928,9 +1022,11 @@ func (sc *Client) createSession(sessionId int, session *clientSession) int {
 	defer sc.sessionLock.Unlock()
 	old, bHave := sc.sessions[sessionId]
 	if bHave {
+		old.connLock.RLock()
 		if old.localConn != nil {
 			old.localConn.Close()
 		}
+		old.connLock.RUnlock()
 	} else {
 		sc.sessions[sessionId] = session
 	}
@@ -942,7 +1038,9 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 	session := sc.getSession(sessionId)
 	var conn net.Conn
 	if session != nil {
+		session.connLock.RLock()
 		conn = session.localConn
+		session.connLock.RUnlock()
 	}
 	if clientType == 0 && !sc.authed && action != eCollect {
 		if action != eAuth || common.Xor(content) != *authKey {
@@ -969,10 +1067,14 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 	case eTunnel_msg_s:
 		if conn != nil {
 			if sc.stimeout > 0 {
+				timeNow.RLock()
 				session.dieT = timeNow.Add(time.Duration(sc.stimeout) * time.Second)
+				timeNow.RUnlock()
 			}
 			conn.Write([]byte(content))
+			timeNow.RLock()
 			pinfo.Add(int64(len(content)), timeNow.Unix())
+			timeNow.RUnlock()
 		} else {
 			//log.Println("cannot tunnel msg", sessionId)
 		}
@@ -1004,7 +1106,9 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		common.WriteCrypt(pipe, -1, eReadyback, []byte(sc.readyId), sc.encode)
 	case eReadyback:
 		go func() {
-			for i, pipeInfo := range sc.pipes {
+			sc.pipesLock.RLock()
+			pipes := sc.pipes
+			for i, pipeInfo := range pipes {
 				if i != readyIndex {
 					common.WriteCrypt(pipeInfo.conn, -1, eCollect, []byte(content), sc.encode)
 				} else {
@@ -1015,25 +1119,38 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					}
 				}
 			}
+			sc.pipesLock.RUnlock()
 		}()
 	case eCollect:
 		readyId := content
+		g_ClientMapLock.RLock()
 		for _, c := range g_ClientMap {
 			if c.readyId == readyId {
 				log.Println("collect", sc.id, "=>", c.id, readyId)
 				for i := 1; i < maxPipes; i++ {
+					c.pipesLock.RLock()
 					_, b := c.pipes[i]
+					c.pipesLock.RUnlock()
 					if !b {
-						c.pipes[i] = &pipeInfo{pipe, 0, timeNow.Unix(), nil, 0}
+						timeNow.RLock()
+						now := timeNow.Unix()
+						timeNow.RUnlock()
+						c.pipesLock.Lock()
+						c.pipes[i] = &pipeInfo{conn: pipe, total: 0, t: now, owner: nil, newindex: 0}
+						c.pipesLock.Unlock()
 						newindex := 0
+						sc.pipesLock.RLock()
 						for _i, _info := range sc.pipes {
 							if _info.conn == pipe {
+								_info.Lock()
 								_info.newindex = i
 								_info.owner = c
+								_info.Unlock()
 								newindex = _i
 								break
 							}
 						}
+						sc.pipesLock.RUnlock()
 						log.Println("collect", sc.id, "pipe", newindex, "=>", c.id, "pipe", i)
 						break
 					}
@@ -1041,6 +1158,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				break
 			}
 		}
+		g_ClientMapLock.RUnlock()
 	case eInit_enc:
 		tail := common.Xor(content)
 		log.Println("got encrpyt key", tail)
@@ -1050,11 +1168,13 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 	case eTunnel_msg_c:
 		if conn != nil {
 			//log.Println("tunnel", (content), sessionId)
+			timeNow.RLock()
 			if sc.stimeout > 0 {
 				session.dieT = timeNow.Add(time.Duration(sc.stimeout) * time.Second)
 			}
-			conn.Write([]byte(content))
 			pinfo.Add(int64(len(content)), timeNow.Unix())
+			timeNow.RUnlock()
+			conn.Write([]byte(content))
 		}
 	case eTunnel_close:
 		go sc.removeSession(sessionId)
@@ -1071,12 +1191,16 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
 				return
 			} else {
+				timeNow.RLock()
 				session := &clientSession{pipe: pinfo, localConn: s_conn, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
+				timeNow.RUnlock()
 				sc.createSession(sessionId, session)
 				go session.handleLocalPortResponse(sc, sessionId, "")
 			}
 		} else {
+			timeNow.RLock()
 			session = &clientSession{pipe: pinfo, localConn: nil, status: "init", recvMsg: "", dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
+			timeNow.RUnlock()
 			sc.createSession(sessionId, session)
 			go func() {
 				var hello reqMsg
@@ -1113,13 +1237,19 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					log.Println("connect to local server fail:", err.Error(), url)
 					ansmsg.gen(&hello, 4)
 					go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
+					timeNow.RLock()
 					pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
+					timeNow.RUnlock()
 				} else {
+					session.connLock.Lock()
 					session.localConn = s_conn
+					session.connLock.Unlock()
 					go session.handleLocalPortResponse(sc, sessionId, hello.url)
 					ansmsg.gen(&hello, 0)
 					go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s, ansmsg.buf[:ansmsg.mlen], sc.encode)
+					timeNow.RLock()
 					pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
+					timeNow.RUnlock()
 				}
 			}()
 		}
@@ -1137,13 +1267,17 @@ out:
 	for {
 		select {
 		case <-t.C:
+			timeNow.RLock()
 			now := timeNow
+			timeNow.RUnlock()
 			for id, session := range sc.sessions {
 				if now.After(session.dieT) {
+					session.connLock.RLock()
 					if session.localConn != nil {
 						log.Println("try close timeout session connection", session.localConn.RemoteAddr(), id)
 						session.localConn.Close()
 					}
+					session.connLock.RUnlock()
 				}
 			}
 		case <-sc.quit:
@@ -1155,7 +1289,8 @@ out:
 
 func (sc *Client) Quit() {
 	sc._Quit()
-	close(sc.quit)
+	sc.pipesLock.Lock()
+	defer sc.pipesLock.Unlock()
 	for id, pipeInfo := range sc.pipes {
 		pipeInfo.conn.Close()
 		delete(sc.pipes, id)
@@ -1172,18 +1307,24 @@ func (sc *Client) _Quit() {
 	} else {
 		return
 	}
+	close(sc.quit)
 	for _, session := range sc.sessions {
+		session.connLock.RLock()
 		if session.localConn != nil {
 			session.localConn.Close()
 		}
+		session.connLock.RUnlock()
 	}
 	log.Println("client quit", sc.id)
+	g_ClientMapLock.Lock()
 	delete(g_ClientMap, sc.id)
+	g_ClientMapLock.Unlock()
 	//de.FreeOSMemory()
 }
 
 ///////////////////////multi pipe support
 var g_LocalConn net.Listener
+var g_LocalConnLock sync.RWMutex
 
 func (sc *Client) MultiListen() bool {
 	if sc.listener == nil {
@@ -1191,9 +1332,11 @@ func (sc *Client) MultiListen() bool {
 		sc.listener, err = net.Listen("tcp", sc.reverseAddr)
 		if err != nil {
 			log.Println("cannot listen addr:" + err.Error())
+			sc.pipesLock.RLock()
 			for _, pipeInfo := range sc.pipes {
 				common.WriteCrypt(pipeInfo.conn, -1, eShowandquit, []byte("cannot listen addr:"+err.Error()), sc.encode)
 			}
+			sc.pipesLock.RUnlock()
 			return false
 		}
 		println("client service start success,please connect", sc.reverseAddr)
@@ -1209,20 +1352,26 @@ func (sc *Client) MultiListen() bool {
 					time.Sleep(time.Second)
 					continue
 				}
+				timeNow.RLock()
 				session := &clientSession{pipe: pipe, localConn: conn, status: "init", dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
+				timeNow.RUnlock()
 				sessionId := sc.createSession(-1, session)
-			   	go session.handleLocalServerResponse(sc, sessionId)
+				go session.handleLocalServerResponse(sc, sessionId)
 			}
 			sc.listener = nil
+			sc.pipesLock.RLock()
 			for _, pipeInfo := range sc.pipes {
 				common.WriteCrypt(pipeInfo.conn, -1, eShowandquit, []byte("server listener quit"), sc.encode)
 			}
+			sc.pipesLock.RUnlock()
 		}()
 	}
 	return true
 }
 
 func (sc *Client) getOnePipe() *pipeInfo {
+	sc.pipesLock.RLock()
+	defer sc.pipesLock.RUnlock()
 	size := len(sc.pipes)
 	if size == 1 {
 		pipeInfo, b := sc.pipes[0]
@@ -1233,13 +1382,17 @@ func (sc *Client) getOnePipe() *pipeInfo {
 	//tmp := []int{}
 	var choose *pipeInfo
 	var min float64 = -1
+	timeNow.RLock()
 	now := timeNow.Unix()
+	timeNow.RUnlock()
 	for _, info := range sc.pipes {
+		info.RLock()
 		dt := now - info.t
 		if dt <= 0 {
 			dt = 1
 		}
 		if dt > 60 {
+			info.RUnlock()
 			return info //transer data for over 60s
 		}
 		rate := float64(info.total) / float64(dt)
@@ -1250,6 +1403,7 @@ func (sc *Client) getOnePipe() *pipeInfo {
 			min = rate
 			choose = info
 		}
+		info.RUnlock()
 	}
 	//log.Println("choose pipe for ", choose, "of", size, min)
 	return choose
@@ -1258,7 +1412,9 @@ func (sc *Client) getOnePipe() *pipeInfo {
 ///////////////////////multi pipe support
 func (session *clientSession) handleLocalPortResponse(client *Client, id int, url string) {
 	sessionId := id
+	session.connLock.RLock()
 	conn := session.localConn
+	session.connLock.RUnlock()
 	if conn == nil {
 		return
 	}
@@ -1279,13 +1435,17 @@ func (session *clientSession) handleLocalPortResponse(client *Client, id int, ur
 			break
 		}
 		if client.stimeout > 0 {
+			timeNow.RLock()
 			session.dieT = timeNow.Add(time.Duration(client.stimeout) * time.Second)
+			timeNow.RUnlock()
 		}
 		debug("====debug read", size, url)
 		if common.WriteCrypt(pipe, id, eTunnel_msg_s, arr[0:size], client.encode) != nil {
 			break
 		} else {
+			timeNow.RLock()
 			session.pipe.Add(int64(size), timeNow.Unix())
+			timeNow.RUnlock()
 		}
 		debug("!!!!debug write", size, url)
 	}
@@ -1304,7 +1464,9 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 		client.removeSession(sessionId)
 		return
 	}
+	session.connLock.RLock()
 	conn := session.localConn
+	session.connLock.RUnlock()
 	remote := ""
 	if client.action == "route" {
 		c := make(chan string)
@@ -1331,7 +1493,9 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 			break
 		}
 		if client.stimeout > 0 {
+			timeNow.RLock()
 			session.dieT = timeNow.Add(time.Duration(client.stimeout) * time.Second)
+			timeNow.RUnlock()
 		}
 		if client.action == "socks5" && !bParsed {
 			session.processSockProxy(sessionId, string(arr[0:size]), func(head []byte, _host string) {
@@ -1340,7 +1504,9 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 				if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, []byte(session.recvMsg), client.encode) != nil {
 					bNeedBreak = true
 				} else {
+					timeNow.RLock()
 					session.pipe.Add(int64(len(session.recvMsg)), timeNow.Unix())
+					timeNow.RUnlock()
 					if *bCache {
 						recv += session.recvMsg
 					}
@@ -1351,7 +1517,9 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 			if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, arr[0:size], client.encode) != nil {
 				bNeedBreak = true
 			} else {
+				timeNow.RLock()
 				session.pipe.Add(int64(size), timeNow.Unix())
+				timeNow.RUnlock()
 				if *bCache && client.action == "socks5" {
 					recv += string(arr[:size])
 				}

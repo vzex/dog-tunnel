@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -97,11 +98,12 @@ type UDPMakeSession struct {
 }
 
 type Listener struct {
-	connChan   chan *UDPMakeSession
-	quitChan   chan bool
-	sock       *net.UDPConn
-	readBuffer []byte
-	sessions   map[string]*UDPMakeSession
+	connChan     chan *UDPMakeSession
+	quitChan     chan bool
+	sock         *net.UDPConn
+	readBuffer   []byte
+	sessions     map[string]*UDPMakeSession
+	sessionsLock sync.RWMutex
 }
 
 func (l *Listener) Accept() (net.Conn, error) {
@@ -118,6 +120,8 @@ func (l *Listener) Accept() (net.Conn, error) {
 }
 
 func (l *Listener) Dump() {
+	l.sessionsLock.RLock()
+	defer l.sessionsLock.RUnlock()
 	for addr, session := range l.sessions {
 		log.Println("listener", addr, session.status)
 	}
@@ -130,7 +134,9 @@ func (l *Listener) inner_loop() {
 		if err == nil {
 			//log.Println("recv", n, from)
 			addr := from.String()
+			l.sessionsLock.RLock()
 			session, bHave := l.sessions[addr]
+			l.sessionsLock.RUnlock()
 			if bHave {
 				if session.status == "ok" {
 					if session.remote.String() == from.String() && n >= int(ikcp.IKCP_OVERHEAD) {
@@ -151,7 +157,9 @@ func (l *Listener) inner_loop() {
 				}
 				sessionId := common.GetId("udp")
 				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan cache), quitChan: make(chan bool), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), handShakeChanQuit: make(chan bool), listener: l, closeChan: make(chan bool), encodeBuffer: make([]byte, 5), checkCanWrite: make(chan (chan bool))}
+				l.sessionsLock.Lock()
 				l.sessions[addr] = session
+				l.sessionsLock.Unlock()
 				session.serverInit(l)
 				session.serverDo(string(l.readBuffer[:n]))
 			}
@@ -170,6 +178,8 @@ func (l *Listener) inner_loop() {
 
 func (l *Listener) remove(addr string) {
 	log.Println("listener remove", addr)
+	l.sessionsLock.Lock()
+	defer l.sessionsLock.Unlock()
 	session, bHave := l.sessions[addr]
 	if bHave {
 		common.RmId("udp", session.id)
