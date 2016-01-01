@@ -49,11 +49,13 @@ const (
 	eTunnel_msg_s
 	eTunnel_close_s
 	eTunnel_msg_c
+	eTunnel_msg_c_udp
 	eTunnel_close
 	eTunnel_open
 )
 
 //var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
+const WriteBufferSize = pipe.WriteBufferSize
 
 var authKey = flag.String("auth", "", "key for auth")
 var pipeN = flag.Int("pipe", 1, "pipe num(todo...)")
@@ -182,6 +184,16 @@ func initAesIV() {
 	}
 }
 
+func checkUdp(s string) (string, bool) {
+	action := s
+	bUdp := false
+	if strings.HasPrefix(s, "udp:") {
+		action = strings.TrimPrefix(action, "udp:")
+		bUdp = true
+	}
+	return action, bUdp
+}
+
 func getEncodeFunc(aesBlock cipher.Block) func([]byte) []byte {
 	return func(s []byte) []byte {
 		if aesBlock == nil {
@@ -247,7 +259,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	client, bHave := g_ClientMap[id]
 	g_ClientMapLock.RUnlock()
 	if !bHave {
-		client = &Client{id: id, ready: true, bUdp: !bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool)}
+		client = &Client{id: id, ready: true, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool)}
 		g_ClientMapLock.Lock()
 		g_ClientMap[id] = client
 		g_ClientMapLock.Unlock()
@@ -277,7 +289,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		}
 	}
 	client.reverseAddr = *localAddr
-	client.action = *remoteAction
+	client.action, client.bUdp = checkUdp(*remoteAction)
 	common.WriteCrypt(s_conn, -1, eInit_action, []byte(*remoteAction), client.encode)
 	client.stimeout = *sessionTimeout
 
@@ -354,7 +366,7 @@ func Listen(bIsTcp bool, addr string) bool {
 		client, have := g_ClientMap[id]
 		g_ClientMapLock.RUnlock()
 		if !have {
-			client = &Client{id: id, ready: true, bUdp: bIsTcp, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool)}
+			client = &Client{id: id, ready: true, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool)}
 			g_ClientMapLock.Lock()
 			g_ClientMap[id] = client
 			g_ClientMapLock.Unlock()
@@ -776,13 +788,15 @@ func main() {
 }
 
 type clientSession struct {
-	pipe      *pipeInfo
-	localConn net.Conn
-	connLock  sync.RWMutex
-	status    string
-	recvMsg   string
-	extra     uint8
-	dieT      time.Time
+	pipe         *pipeInfo
+	localConn    net.Conn
+	localUdpConn *net.UDPConn
+	localUdpAddr *net.UDPAddr
+	connLock     sync.RWMutex
+	status       string
+	recvMsg      string
+	extra        uint8
+	dieT         time.Time
 }
 
 func (session *clientSession) processSockProxy(sessionId int, content string, callback func([]byte, string)) {
@@ -974,6 +988,7 @@ type Client struct {
 	authed         bool
 	localconn      net.Conn
 	listener       net.Listener
+	listenerUdp    *net.UDPConn
 	reverseAddr    string
 	readyId        string
 	newindex       int
@@ -1010,6 +1025,12 @@ func (sc *Client) removeSession(sessionId int) bool {
 			session.localConn.Close()
 		}
 		session.connLock.RUnlock()
+		if session.localConn != nil {
+			session.localConn.Close()
+		}
+		if session.localUdpConn != nil {
+			session.localUdpConn.Close()
+		}
 	}
 	return bHave
 }
@@ -1065,6 +1086,12 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		println(content)
 		sc.Quit()
 	case eTunnel_msg_s:
+		if sc.bUdp {
+			if sc.listenerUdp != nil && session != nil {
+				sc.listenerUdp.WriteToUDP([]byte(content), session.localUdpAddr)
+			}
+			return
+		}
 		if conn != nil {
 			if sc.stimeout > 0 {
 				timeNow.RLock()
@@ -1082,7 +1109,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		go sc.removeSession(sessionId)
 	case eInit_action_back:
 		log.Println("server force do action", content)
-		sc.action = content
+		sc.action, sc.bUdp = checkUdp(content)
 	case eS_timeout:
 		sc.stimeout, _ = strconv.Atoi(content)
 		if sc.stimeout > 0 {
@@ -1092,8 +1119,9 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 	case eInit_action:
 		sc.action = content
 		log.Println("init action", content)
+		sc.action, sc.bUdp = checkUdp(content)
 		if *remoteAction != "" && *remoteAction != sc.action {
-			sc.action = *remoteAction
+			sc.action, sc.bUdp = checkUdp(*remoteAction)
 			go common.WriteCrypt(pipe, sessionId, eInit_action_back, []byte(*remoteAction), sc.encode)
 		}
 	case eReverse:
@@ -1165,6 +1193,17 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		aesKey := "asd4" + tail
 		aesBlock, _ := aes.NewCipher([]byte(aesKey))
 		sc.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
+	case eTunnel_msg_c_udp:
+		if session.localUdpConn != nil {
+			//log.Println("tunnel", (content), sessionId)
+			timeNow.RLock()
+			if sc.stimeout > 0 {
+				session.dieT = timeNow.Add(time.Duration(sc.stimeout) * time.Second)
+			}
+			pinfo.Add(int64(len(content)), timeNow.Unix())
+			timeNow.RUnlock()
+			session.localUdpConn.WriteToUDP([]byte(content), session.localUdpAddr)
+		}
 	case eTunnel_msg_c:
 		if conn != nil {
 			//log.Println("tunnel", (content), sessionId)
@@ -1181,6 +1220,48 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 	case eTunnel_open:
 		if sc.action != "socks5" {
 			remote := sc.action
+			if sc.bUdp {
+				sock, _err := net.ListenUDP("udp", &net.UDPAddr{})
+				if _err != nil {
+					log.Println("dial addr fail", _err.Error())
+					msg := _err.Error()
+					go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
+					return
+				}
+				timeNow.RLock()
+				udpAddr, err := net.ResolveUDPAddr("udp", sc.action)
+				if err != nil {
+					log.Println("resolve addr fail", err.Error())
+					msg := err.Error()
+					go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
+					return
+				}
+
+				session := &clientSession{pipe: pinfo, localUdpConn: sock, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second), localUdpAddr: udpAddr}
+				timeNow.RUnlock()
+				sc.createSession(sessionId, session)
+				go func() {
+					arr := make([]byte, WriteBufferSize)
+					for {
+						n, _, err := sock.ReadFromUDP(arr)
+						if err != nil {
+							log.Println("read error " + err.Error())
+							break
+						} else {
+							if common.WriteCrypt(pinfo.conn, sessionId, eTunnel_msg_s, arr[:n], sc.encode) != nil {
+								break
+							} else {
+								timeNow.RLock()
+								session.pipe.Add(int64(n), timeNow.Unix())
+								timeNow.RUnlock()
+							}
+						}
+					}
+					sc.removeSession(sessionId)
+					common.WriteCrypt(pinfo.conn, sessionId, eTunnel_close_s, []byte{}, sc.encode)
+				}()
+				return
+			}
 			if sc.action == "route" {
 				remote = content
 			}
@@ -1277,6 +1358,11 @@ out:
 						log.Println("try close timeout session connection", session.localConn.RemoteAddr(), id)
 						session.localConn.Close()
 					}
+					if session.localUdpAddr != nil {
+						log.Println("try close timeout udp session connection", session.localUdpAddr.String(), id)
+						//delete(sc.sessions, id)
+						sc.removeSession(id)
+					}
 					session.connLock.RUnlock()
 				}
 			}
@@ -1298,6 +1384,9 @@ func (sc *Client) Quit() {
 	if sc.listener != nil {
 		sc.listener.Close()
 	}
+	if sc.listenerUdp != nil {
+		sc.listenerUdp.Close()
+	}
 	//de.FreeOSMemory()
 }
 
@@ -1313,6 +1402,9 @@ func (sc *Client) _Quit() {
 		if session.localConn != nil {
 			session.localConn.Close()
 		}
+		if session.localUdpConn != nil {
+			session.localUdpConn.Close()
+		}
 		session.connLock.RUnlock()
 	}
 	log.Println("client quit", sc.id)
@@ -1327,6 +1419,65 @@ var g_LocalConn net.Listener
 var g_LocalConnLock sync.RWMutex
 
 func (sc *Client) MultiListen() bool {
+	if sc.bUdp {
+		if sc.listenerUdp == nil {
+			udpAddr, err := net.ResolveUDPAddr("udp", sc.reverseAddr)
+			if err != nil {
+				log.Println("cannot listenerUdp addr", err.Error())
+				return false
+			}
+			sock, _err := net.ListenUDP("udp", udpAddr)
+			if _err != nil {
+				log.Println("cannot listenerUdp2 addr", _err.Error())
+				return false
+			}
+
+			genId := func(addr []byte) int {
+				n := 0
+				for i, v := range addr {
+					n += int(v) * i
+				}
+				return n
+			}
+			sc.listenerUdp = sock
+			println("udp client service start success,please connect", sc.reverseAddr)
+			var tmp = make([]byte, 2000)
+			for {
+				n, from, err := sock.ReadFromUDP(tmp)
+				if err != nil {
+					e, ok := err.(net.Error)
+					if !ok || !e.Timeout() {
+						log.Println("udp client over", e.Error())
+						break
+					}
+				}
+				pipe := sc.getOnePipe()
+				if pipe == nil {
+					log.Println("cannot get pipe for client, wait for recover...")
+					time.Sleep(time.Second)
+					continue
+				}
+				sessionId := genId([]byte(from.String()))
+				log.Println(sessionId, from.String())
+				session := sc.getSession(sessionId)
+				if session == nil {
+					timeNow.RLock()
+					session := &clientSession{pipe: pipe, localUdpAddr: from, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
+					timeNow.RUnlock()
+					sc.createSession(sessionId, session)
+					log.Println("create udp session", sessionId)
+					common.WriteCrypt(pipe.conn, sessionId, eTunnel_open, tmp[:n], sc.encode)
+				}
+				if common.WriteCrypt(pipe.conn, sessionId, eTunnel_msg_c_udp, tmp[:n], sc.encode) != nil {
+					log.Println("udp client over2")
+					break
+				}
+				log.Println("send udp session", sessionId)
+			}
+			sc.listenerUdp.Close()
+		}
+		return true
+	}
 	if sc.listener == nil {
 		var err error
 		sc.listener, err = net.Listen("tcp", sc.reverseAddr)
@@ -1418,7 +1569,7 @@ func (session *clientSession) handleLocalPortResponse(client *Client, id int, ur
 	if conn == nil {
 		return
 	}
-	arr := make([]byte, pipe.WriteBufferSize)
+	arr := make([]byte, WriteBufferSize)
 	debug("@@@@@@@ debug begin", url)
 	reader := bufio.NewReader(conn)
 	var pipe net.Conn
@@ -1455,7 +1606,7 @@ func (session *clientSession) handleLocalPortResponse(client *Client, id int, ur
 }
 
 func (session *clientSession) handleLocalServerResponse(client *Client, sessionId int) {
-	buffSize := pipe.WriteBufferSize
+	buffSize := WriteBufferSize
 	var pipe net.Conn
 	if session.pipe != nil {
 		pipe = session.pipe.conn
