@@ -1458,7 +1458,6 @@ func (sc *Client) MultiListen() bool {
 					continue
 				}
 				sessionId := genId([]byte(from.String()))
-				log.Println(sessionId, from.String())
 				session := sc.getSession(sessionId)
 				if session == nil {
 					timeNow.RLock()
@@ -1472,9 +1471,8 @@ func (sc *Client) MultiListen() bool {
 					log.Println("udp client over2")
 					break
 				}
-				log.Println("send udp session", sessionId)
 			}
-			sc.listenerUdp.Close()
+			sc.listenerUdp = nil
 		}
 		return true
 	}
