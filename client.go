@@ -39,7 +39,6 @@ const (
 	eAuth
 	eInit_action
 	eInit_action_back
-	eS_timeout
 	eShowandquit
 	eReady
 	eReadyback
@@ -655,6 +654,11 @@ func main() {
 	if *localAddr == "" {
 		clientType = 0
 	}
+	_, bUdp := checkUdp(*remoteAction)
+	if bUdp && *sessionTimeout == 0 {
+		println("you must assign session_timeout arg")
+		return
+	}
 	if clientType == 1 && *pipeN > maxPipes {
 		println("pipe need <=", maxPipes)
 		return
@@ -1110,12 +1114,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 	case eInit_action_back:
 		log.Println("server force do action", content)
 		sc.action, sc.bUdp = checkUdp(content)
-	case eS_timeout:
-		sc.stimeout, _ = strconv.Atoi(content)
-		if sc.stimeout > 0 {
-			log.Println("init session timeout", sc.stimeout)
-			go sc.sessionCheckDie()
-		}
 	case eInit_action:
 		sc.action = content
 		log.Println("init action", content)
@@ -1245,7 +1243,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					for {
 						n, _, err := sock.ReadFromUDP(arr)
 						if err != nil {
-							log.Println("read error " + err.Error())
 							break
 						} else {
 							if common.WriteCrypt(pinfo.conn, sessionId, eTunnel_msg_s, arr[:n], sc.encode) != nil {
@@ -1361,6 +1358,7 @@ out:
 					if session.localUdpAddr != nil {
 						log.Println("try close timeout udp session connection", session.localUdpAddr.String(), id)
 						//delete(sc.sessions, id)
+						common.WriteCrypt(session.pipe.conn, id, eTunnel_close, []byte{}, sc.encode)
 						sc.removeSession(id)
 					}
 					session.connLock.RUnlock()
@@ -1441,7 +1439,7 @@ func (sc *Client) MultiListen() bool {
 			}
 			sc.listenerUdp = sock
 			println("udp client service start success,please connect", sc.reverseAddr)
-			var tmp = make([]byte, 2000)
+			var tmp = make([]byte, WriteBufferSize)
 			for {
 				n, from, err := sock.ReadFromUDP(tmp)
 				if err != nil {
@@ -1461,15 +1459,20 @@ func (sc *Client) MultiListen() bool {
 				session := sc.getSession(sessionId)
 				if session == nil {
 					timeNow.RLock()
-					session := &clientSession{pipe: pipe, localUdpAddr: from, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
+					session = &clientSession{pipe: pipe, localUdpAddr: from, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
 					timeNow.RUnlock()
 					sc.createSession(sessionId, session)
 					log.Println("create udp session", sessionId)
 					common.WriteCrypt(pipe.conn, sessionId, eTunnel_open, tmp[:n], sc.encode)
 				}
 				if common.WriteCrypt(pipe.conn, sessionId, eTunnel_msg_c_udp, tmp[:n], sc.encode) != nil {
-					log.Println("udp client over2")
 					break
+				} else {
+					timeNow.RLock()
+					if sc.stimeout > 0 {
+						session.dieT = timeNow.Add(time.Duration(sc.stimeout) * time.Second)
+					}
+					timeNow.RUnlock()
 				}
 			}
 			sc.listenerUdp = nil

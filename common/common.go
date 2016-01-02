@@ -179,46 +179,22 @@ var currIdMap map[string]int
 var reuseTbl map[string]*_reuseTbl
 
 func GetId(name string) int {
-	if reuseTbl != nil {
-		tbl, bHave := reuseTbl[name]
-		if bHave {
-			if len(tbl.tbl) > 0 {
-				for key := range tbl.tbl {
-					delete(tbl.tbl, key)
-					//					println("got old id", key)
-					return key
-				}
-			}
-		}
-	}
 	if currIdMap == nil {
 		currIdMap = make(map[string]int)
 		currIdMap[name] = 0
 	}
-	currIdMap[name]++
+	i, _ := currIdMap[name]
+	i++
+	if i >= 2147483648 {
+		i = 0
+	}
+	currIdMap[name] = i
 	//	println("gen new id", currIdMap[name])
-	return currIdMap[name]
+	return i
 }
 
 func RmId(name string, id int) {
 	return
-	if currIdMap == nil {
-		currIdMap = make(map[string]int)
-		currIdMap[name] = 0
-	}
-	if id > currIdMap[name] {
-		return
-	}
-	if reuseTbl == nil {
-		reuseTbl = make(map[string]*_reuseTbl)
-	}
-	tbl, bHave := reuseTbl[name]
-	if !bHave {
-		reuseTbl[name] = &_reuseTbl{tbl: make(map[int]bool)}
-		tbl = reuseTbl[name]
-	}
-	tbl.tbl[id] = true
-	//	println("can reuse ", name, id)
 }
 
 func Id_test(name string) {
