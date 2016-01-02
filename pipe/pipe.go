@@ -507,6 +507,7 @@ func (session *UDPMakeSession) loop() {
 							if n <= dataLimit/2 {
 								select {
 								case <-session.quitChan:
+									log.Println("recover writing data quit")
 								case recoverChan <- true:
 								}
 							} else {
