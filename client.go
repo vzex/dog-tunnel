@@ -1194,7 +1194,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		aesBlock, _ := aes.NewCipher([]byte(aesKey))
 		sc.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
 	case eTunnel_msg_c_udp:
-		if session.localUdpConn != nil {
+		if session !=nil && session.localUdpConn != nil {
 			//log.Println("tunnel", (content), sessionId)
 			timeNow.RLock()
 			if sc.stimeout > 0 {
