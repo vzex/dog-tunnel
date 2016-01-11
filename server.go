@@ -127,7 +127,6 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 					info.UserName = user.UserName
 					info.ClientKey = clientInfo.ClientKey
 				}, func() {})
-				user.OnLogin()
 				log.Println("client reg service success", conn.RemoteAddr().String(), user.UserName, ServerName)
 				common.Write(conn, "0", "show", "register service ok, user:"+user.UserName)
 			})
@@ -156,7 +155,7 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 					return
 				}
 				if !user.CheckSessionNum(len(info.ClientMap)) {
-					common.Write(conn, "0", "showandquit", "pipenum cannot overstep "+strconv.Itoa(user.MaxPipeNum))
+					common.Write(conn, "0", "showandquit", "session numcannot overstep "+strconv.Itoa(len(info.ClientMap)))
 					bAuth = false
 					return
 				}

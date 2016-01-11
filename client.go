@@ -523,6 +523,11 @@ func main() {
 			client.Quit()
 		}
 
+		for _, session := range g_Id2UDPSession {
+			if session.engine != nil {
+				session.engine.Fail()
+			}
+		}
 		if remoteConn != nil {
 			remoteConn.Close()
 		}
@@ -656,7 +661,7 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 					s_conn = res.conn
 					err = res.err
 					if res.ip != "" {
-						url = res.ip + fmt.Sprintf(":%d", hello.dst_port2)
+						url = net.JoinHostPort(res.ip, fmt.Sprintf("%d", hello.dst_port2))
 					}
 				}
 				if s_conn == nil && err == nil {
@@ -664,13 +669,13 @@ func (session *clientSession) processSockProxy(sc *Client, sessionId, content st
 				}
 				if err != nil {
 					log.Println("connect to local server fail:", err.Error())
-					ansmsg.gen(&hello, 4)
+					ansmsg.gen(&hello, 4, hello.atyp)
 					go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
 					return
 				} else {
 					session.localConn = s_conn
 					go handleLocalPortResponse(sc, sessionId)
-					ansmsg.gen(&hello, 0)
+					ansmsg.gen(&hello, 0, hello.atyp)
 					go common.Write(pipe, sessionId, "tunnel_msg_s", string(ansmsg.buf[:ansmsg.mlen]))
 					session.status = "ok"
 					session.recvMsg = string(tail)
@@ -767,7 +772,7 @@ func dnsLoop() {
 					cache.DelCache(info.host)
 				case "queryok":
 					log.Println("add host", info.host, "to dns cache")
-					_cacheInfo.Ip = strings.Split(info.conn.RemoteAddr().String(), ":")[0]
+					_cacheInfo.Ip, _, _ = net.SplitHostPort(info.conn.RemoteAddr().String())
 					_cacheInfo.SetCacheTime(-1)
 					//log.Println("process the queue of host", info.host, len(_cacheInfo.Queue))
 					conn := info.conn
@@ -795,11 +800,11 @@ type ansMsg struct {
 	mlen uint16
 }
 
-func (msg *ansMsg) gen(req *reqMsg, rep uint8) {
+func (msg *ansMsg) gen(req *reqMsg, rep, atyp uint8) {
 	msg.ver = 5
 	msg.rep = rep //rfc1928
 	msg.rsv = 0
-	msg.atyp = 1 //req.atyp
+	msg.atyp = atyp //req.atyp
 
 	msg.buf[0], msg.buf[1], msg.buf[2], msg.buf[3] = msg.ver, msg.rep, msg.rsv, msg.atyp
 	for i := 5; i < 11; i++ {
@@ -884,10 +889,9 @@ func (msg *reqMsg) read(bytes []byte) (bool, []byte) {
 	case 1: // ipv4
 		msg.url = fmt.Sprintf("%d.%d.%d.%d:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3], msg.dst_port2)
 	case 3: //DOMANNAME
-		msg.url = string(msg.dst_addr[1 : 1+msg.dst_addr[0]])
-		msg.url += fmt.Sprintf(":%d", msg.dst_port2)
+		msg.url = net.JoinHostPort(string(msg.dst_addr[1:1+msg.dst_addr[0]]), fmt.Sprintf("%d", msg.dst_port2))
 	case 4: //ipv6
-		msg.url = fmt.Sprintf("%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3],
+		msg.url = fmt.Sprintf("[%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x]:%d", msg.dst_addr[0], msg.dst_addr[1], msg.dst_addr[2], msg.dst_addr[3],
 			msg.dst_addr[4], msg.dst_addr[5], msg.dst_addr[6], msg.dst_addr[7],
 			msg.dst_addr[8], msg.dst_addr[9], msg.dst_addr[10], msg.dst_addr[11],
 			msg.dst_addr[12], msg.dst_addr[13], msg.dst_addr[14], msg.dst_addr[15],
