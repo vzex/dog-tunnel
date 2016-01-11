@@ -641,7 +641,7 @@ func main() {
 	go dnsLoop()
 	go checkRealAddr()
 	if *bShowVersion {
-		fmt.Printf("%.2f\n", common.Version)
+		fmt.Printf("%.2f alpha\n", common.Version)
 		return
 	}
 	if !*bVerbose {
