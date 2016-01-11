@@ -1029,9 +1029,6 @@ func (sc *Client) removeSession(sessionId int) bool {
 			session.localConn.Close()
 		}
 		session.connLock.RUnlock()
-		if session.localConn != nil {
-			session.localConn.Close()
-		}
 		if session.localUdpConn != nil {
 			session.localUdpConn.Close()
 		}
