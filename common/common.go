@@ -185,7 +185,7 @@ func GetId(name string) int {
 	}
 	i, _ := currIdMap[name]
 	i++
-	if i >= 2147483648 {
+	if i >= 2147483647 {
 		i = 0
 	}
 	currIdMap[name] = i
