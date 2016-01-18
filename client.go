@@ -71,7 +71,6 @@ var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 var timeOut = flag.Int("timeout", 100, "udp pipe set timeout(seconds)")
 
-var bListenUdp = flag.Bool("listenudp", false, "listen udp mode")
 var bDebug = flag.Int("debug", 0, "more output log")
 var bReverse = flag.Bool("r", false, "reverse mode, if true, client 's \"-local\" address will be listened on server side")
 var sessionTimeout = flag.Int("session_timeout", 0, "if > 0, session will check itself if it's alive, if no msg tranfer for some seconds, socket will be closed, use this to avoid of zombie tcp sockets")
