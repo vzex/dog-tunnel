@@ -496,7 +496,7 @@ func (session *UDPMakeSession) loop() {
 				waitList = [](chan bool){}
 			case c := <-session.checkCanWrite:
 				if ikcp.Ikcp_waitsnd(session.kcp) > dataLimit {
-					log.Println("wait for data limit")
+					//log.Println("wait for data limit")
 					waitList = append(waitList, c)
 					if !fastCheck {
 						fastCheck = true
