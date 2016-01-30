@@ -37,3 +37,6 @@ dtunnel_lite -service 127.0.0.1:1234 -v -action 127.0.0.1:22 -encrypt -xor 12133
 4. 反向映射
 dtunnel_lite -service 127.0.0.1:1234 -v -action 127.0.0.1:80 -encrypt -xor 1213343 -local :8080 -pipe 5 -r
 执行后，本地80端口，被映射到远端8080端口
+5. udp端口映射
+dtunnel_lite -service 127.0.0.1:1234 -v -action 127.0.0.1:80 -encrypt -xor 1213343 -local udp:127.0.0.1:8080 -pipe 5 -r
+执行后，本地udp的80端口，被映射到远端udp:127.0.0.1:8080端口
