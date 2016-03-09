@@ -454,11 +454,11 @@ func Ikcp_update_ack(kcp *Ikcpcb, rtt int32) {
 		kcp.rx_srtt = uint32(rtt)
 		kcp.rx_rttval = uint32(rtt) / 2
 	} else {
-		delta := uint32(rtt) - kcp.rx_srtt
+		delta := rtt - int32(kcp.rx_srtt)
 		if delta < 0 {
 			delta = -delta
 		}
-		kcp.rx_rttval = (3*kcp.rx_rttval + delta) / 4
+		kcp.rx_rttval = (3*kcp.rx_rttval + uint32(delta)) / 4
 		kcp.rx_srtt = (7*kcp.rx_srtt + uint32(rtt)) / 8
 		if kcp.rx_srtt < 1 {
 			kcp.rx_srtt = 1
