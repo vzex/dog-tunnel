@@ -1,63 +1,24 @@
 # Run dog tunnel with docker container
 
 First things, you need make sure you have installed docker on your linux environment.
-Following instruction was testing under ubuntu 15.04 or above.
+Following instruction was testing under ubuntu 14.04 or above.
 
-On server side, your systemd boot file like this , named with dt.service location at 
-/etc/systemd/system/dt.service
+You need install docker on both your server side and client side
+
+## server side
 
 
 ```
-[Unit]
-Description=dt
-After=network.target
-Requires=network.target
-
-[Service]
-TimeoutStartSec=0
-ExecStart=/usr/bin/docker run --rm -p 123:123/udp netroby/alpine-dog-tunnel /usr/bin/dtunnel_lite -service 0.0.0.0:123 -auth verystrongpassword2
+docker run -d --restart=always --name=dog-tunnel-server -p 0.0.0.0:8443:8443/udp netroby/alpine-dog-tunnel /usr/bin/dtunnel_lite -service 0.0.0.0:8443 -auth verystrongpassword2
 Restart=always
 
-[Install]
-WantedBy=multi-user.target
-
-```
-Just make it works by typing : systemctl enable dt.service && systectl start dt.service
-
-On client side, your systemd boot file like this, named with named with dt.service location at 
-/etc/systemd/system/dt.service
-
-```
-[Unit]
-Description=dt
-After=network.target
-Requires=network.target
-
-[Service]
-TimeoutStartSec=0
-ExecStart=/usr/bin/docker run --rm -p 8070:8070 netroby/alpine-dog-tunnel /usr/bin/dtunnel_lite -service your.remote.server:123 -local :8070 -auth verystrongpassword2
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-
 ```
 
+## client side
 
-Just make client works by typing : systemctl enable dt.service && systectl start dt.service
+Replace your service ip with your.remote.server, and run this command.
 
+```
+docker run -d --restart=always --name=dog-tunnel-client -p 0.0.0.0:8070:8070 netroby/alpine-dog-tunnel /usr/bin/dtunnel_lite -service your.remote.server:8443 -local :8070 -auth verystrongpassword2
+```
 If every thing ok, you will have socks5 proxy service listen on your local 0.0.0.0:8070
-
-Configure your proxy or application with it .
-
-You can also using polipo to provided http proxy forward
-
-A small polipo configure file  /etc/polipo/config
-
-```
-proxyAddress = "0.0.0.0"    # IPv4 only
-allowedClients = 127.0.0.1, 192.168.0.0/16, 10.0.0.0/8
-socksParentProxy = "127.0.0.1:8070"
-socksProxyType = socks5
-
-```
