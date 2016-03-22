@@ -19,6 +19,7 @@ import (
 )
 
 var listenAddr = flag.String("addr", "0.0.0.0:8000", "server addr")
+var listenAddrUDP = flag.String("addrudp", "0.0.0.0:8018", "udp server addr")
 var bUseSSL = flag.Bool("ssl", false, "use ssl")
 var bUseHttps = flag.Bool("https", false, "use https")
 var certFile = flag.String("cert", "", "cert file")
@@ -65,6 +66,27 @@ func handleClient(conn net.Conn) {
 	}
 	conn.Close()
 	log.Println("client disconnected", conn.RemoteAddr().String())
+}
+
+func udphandleClient(conn *net.UDPConn) {
+
+	for {
+
+		data := make([]byte, 1024)
+
+		log.Println("begin read ")
+		n, remoteAddr, err := conn.ReadFromUDP(data)
+		log.Println("end read ")
+		if err != nil {
+			log.Println("failed to read UDP msg because of ", err.Error())
+			break
+		}
+
+		log.Println("Read", n, remoteAddr, string(data[0:n]))
+
+		log.Println("write", remoteAddr.String())
+		conn.WriteToUDP([]byte(remoteAddr.String()), remoteAddr)
+	}
 }
 
 func handleResponse(conn net.Conn, id string, action string, content string) {
@@ -395,6 +417,27 @@ func main() {
 			go handleClient(conn)
 		}
 	}()
+
+
+	udpaddr, err := net.ResolveUDPAddr("udp", *listenAddrUDP)
+	if err != nil {
+		log.Println("Can't resolve address: ", err)
+		return
+	}
+
+
+	udpconn, err := net.ListenUDP("udp", udpaddr)
+	if err != nil {
+		log.Println("Error UDP listening:", err)
+		return
+	}
+
+	log.Println("listenAdd: ", *listenAddrUDP)
+
+
+	defer udpconn.Close()
+
+	go udphandleClient(udpconn)
 	if *db_host != "" {
 		err = auth.Init(*db_user, *db_pass, *db_host)
 		if err != nil {

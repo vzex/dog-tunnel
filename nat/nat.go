@@ -8,14 +8,14 @@ import (
 	"time"
 )
 
-func Init(outIpList string, buster bool, id int) (*AttemptEngine, error) {
+func Init(outIpList string, buster bool, id int, udpAddr string) (*AttemptEngine, error) {
 	sock, err := net.ListenUDP("udp", &net.UDPAddr{})
 	if err != nil {
 		return nil, err
 	}
 
         engine := &AttemptEngine{sock: sock, buster: buster, id : id}
-	if err := engine.init(outIpList); err != nil {
+	if err := engine.init(outIpList, udpAddr); err != nil {
 		return nil, err
 	}
 	return engine, nil
@@ -85,8 +85,8 @@ func (e *AttemptEngine) GetConn(f func(), encode, decode func([]byte)[]byte) (ne
 	return conn, nil
 }
 
-func (e *AttemptEngine) init(outIpList string) error {
-	candidates, err := GatherCandidates(e.sock, outIpList)
+func (e *AttemptEngine) init(outIpList string, udpAddr string) error {
+	candidates, err := GatherCandidates(e.sock, outIpList, udpAddr)
 	if err != nil {
 		return err
 	}
