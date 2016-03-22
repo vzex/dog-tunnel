@@ -1,8 +1,6 @@
 package main
 
 import (
-	"./common"
-	"./nat"
 	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
@@ -22,12 +20,17 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"./common"
+	"./nat"
 )
 
 var accessKey = flag.String("key", "", "please login into dog-tunnel.tk to get accesskey")
 var clientKey = flag.String("clientkey", "", "when other client linkt to the reg client, need clientkey, or empty")
 
-var serverAddr = flag.String("remote", "dog-tunnel.tk:8018", "connect remote server")
+var serverAddr = flag.String("remote", "xx.xx.xx.xx:8000", "connect remote server")
+var serverBustAddr = flag.String("bustser", "xx.xx.xx.xx:8018", "MakeHole server")
+
 var addInitAddr = flag.String("addip", "127.0.0.1", "addip for bust,xx.xx.xx.xx;xx.xx.xx.xx;")
 var pipeNum = flag.Int("pipen", 1, "pipe num for transmission")
 
@@ -370,7 +373,7 @@ func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
 	}
 	outip += ";" + *addInitAddr
 	_id, _ := strconv.Atoi(id)
-	engine, err := nat.Init(outip, buster, _id)
+	engine, err := nat.Init(outip, buster, _id, *serverBustAddr)
 	if err != nil {
 		println("init error", err.Error())
 		disconnect()
@@ -382,6 +385,7 @@ func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
 		engine.SetOtherAddrList(otherAddrList)
 	}
 	addrList := engine.GetAddrList()
+	println("addrList", addrList)
 	common.Write(remoteConn, id, "report_addrlist", addrList)
 }
 
