@@ -1,20 +1,13 @@
 package nat
 
 import (
-	"./stun"
-	"bytes"
-	"crypto/rand"
 	"errors"
-	"flag"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
 	"time"
 )
-
-var stunserver = flag.String("stun", "",
-	"STUN server to query for reflexive address,ex:stun.l.google.com:19302")
 
 var lanNets = []*net.IPNet{
 	{net.IPv4(10, 0, 0, 0), net.CIDRMask(8, 32)},
@@ -33,50 +26,6 @@ func (c candidate) String() string {
 
 func (c candidate) Equal(c2 candidate) bool {
 	return c.Addr.IP.Equal(c2.Addr.IP) && c.Addr.Port == c2.Addr.Port
-}
-
-func getReflexive(sock *net.UDPConn) (string, int, error) {
-	serverAddr, err := net.ResolveUDPAddr("udp", *stunserver)
-	if err != nil {
-
-		return "", 0, errors.New("Couldn't resolve STUN server")
-	}
-	//println("connect stun server", *stunserver)
-
-	var tid [12]byte
-	if _, err = rand.Read(tid[:]); err != nil {
-		return "", 0, err
-	}
-
-	request, err := stun.BindRequest(tid[:], nil, nil, true, false)
-	if err != nil {
-		return "", 0, err
-	}
-
-	n, err := sock.WriteTo(request, serverAddr)
-	if err != nil {
-		return "", 0, err
-	}
-	if n < len(request) {
-		return "", 0, err
-	}
-
-	var buf [1024]byte
-	n, _, err = sock.ReadFromUDP(buf[:])
-	if err != nil {
-		return "", 0, err
-	}
-
-	packet, err := stun.ParsePacket(buf[:n], nil)
-	if err != nil {
-		return "", 0, err
-	}
-
-	if packet.Class != stun.ClassSuccess || packet.Method != stun.MethodBinding || packet.Addr == nil || !bytes.Equal(tid[:], packet.Tid[:]) {
-		return "", 0, errors.New("No address provided by STUN server")
-	}
-
-	return packet.Addr.IP.String(), packet.Addr.Port, nil
 }
 
 func pruneDups(cs []candidate) []candidate {
@@ -134,13 +83,6 @@ func GatherCandidates(sock *net.UDPConn, outIpList string, udpAddr string) ([]ca
 			ret = append(ret, candidate{&net.UDPAddr{IP: ip, Port: port}})
 		}
 	}
-	// Get the reflexive address
-	if *stunserver != "" {
-		ip, port, err := getReflexive(sock)
-		if err == nil {
-			addip(ip, port)
-		}
-	}
 
 	addr, err := net.ResolveUDPAddr("udp", udpAddr)
 	if err != nil {
@@ -179,16 +121,13 @@ func GatherCandidates(sock *net.UDPConn, outIpList string, udpAddr string) ([]ca
 
 		ip := net.ParseIP(strip)
 		port, _ := strconv.Atoi(strport)
-
 		ret = append(ret, candidate{&net.UDPAddr{IP: ip, Port: port}})
-	} else {
-		return nil, err
 	}
-	/*arr := strings.Split(outIpList, ";")
+	arr := strings.Split(outIpList, ";")
 
 	for _, ip := range arr {
 		addip(ip, 0)
-	}*/
+	}
 
 	/*	for _, info := range ret {
 			log.Println("init ip:", info.Addr.String())

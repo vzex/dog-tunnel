@@ -114,7 +114,6 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 		}
 		ServerName := clientInfo.Name
 		if clientInfo.ClientType == "reg" {
-			log.Println("nima")
 			var user *auth.User
 			if bUseDB {
 				if clientInfo.AccessKey == "" {
