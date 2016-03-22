@@ -92,10 +92,7 @@ func GatherCandidates(sock *net.UDPConn, outIpList string, udpAddr string) ([]ca
 	p2pAddr := ""
 
 	for i := 0; i < 5; i++ {
-
-		fmt.Println("begin write to server ")
 		sock.WriteToUDP([]byte("makehole"), addr)
-		fmt.Println("end write to server ")
 		buf := make([]byte, 100)
 		sock.SetReadDeadline(time.Now().Add(time.Duration(1) * time.Second))
 		n, _, err := sock.ReadFromUDP(buf)
@@ -116,9 +113,6 @@ func GatherCandidates(sock *net.UDPConn, outIpList string, udpAddr string) ([]ca
 		var strip string
 		var strport string
 		strip, strport = tmparr[0], tmparr[1]
-
-		fmt.Println("showipport: ", strip, strport)
-
 		ip := net.ParseIP(strip)
 		port, _ := strconv.Atoi(strport)
 		ret = append(ret, candidate{&net.UDPAddr{IP: ip, Port: port}})

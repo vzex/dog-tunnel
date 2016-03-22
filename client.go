@@ -18,6 +18,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -179,11 +180,15 @@ func handleResponse(conn net.Conn, clientId string, action string, content strin
 				//remoteConn.Close()
 				return
 			} else {
+				client.sessionLock.Lock()
 				client.sessions[sessionId] = &clientSession{pipe: remoteConn, localConn: s_conn}
+				client.sessionLock.Unlock()
 				go handleLocalPortResponse(client, oriId)
 			}
 		} else {
+			client.sessionLock.Lock()
 			client.sessions[sessionId] = &clientSession{pipe: remoteConn, localConn: nil, status: "init", recvMsg: ""}
+			client.sessionLock.Unlock()
 		}
 	case "csmode_c_begin":
 		client, bHave := g_ClientMap[clientId]
@@ -906,20 +911,23 @@ func (msg *reqMsg) read(bytes []byte) (bool, []byte) {
 }
 
 type Client struct {
-	id        string
-	buster    bool
-	engine    *nat.AttemptEngine
-	pipes     map[int]net.Conn          // client for pipes
-	specPipes map[string]net.Conn       // client for pipes
-	sessions  map[string]*clientSession // session to pipeid
-	ready     bool
-	bUdp      bool
+	id          string
+	buster      bool
+	engine      *nat.AttemptEngine
+	pipes       map[int]net.Conn          // client for pipes
+	specPipes   map[string]net.Conn       // client for pipes
+	sessions    map[string]*clientSession // session to pipeid
+	sessionLock sync.RWMutex
+	ready       bool
+	bUdp        bool
 }
 
 // pipe : client to client
 // local : client to local apps
 func (sc *Client) getSession(sessionId string) *clientSession {
+	sc.sessionLock.RLock()
 	session, _ := sc.sessions[sessionId]
+	sc.sessionLock.RUnlock()
 	return session
 }
 
@@ -927,12 +935,16 @@ func (sc *Client) removeSession(sessionId string) bool {
 	if clientType == 1 {
 		common.RmId("udp", sessionId)
 	}
+	sc.sessionLock.RLock()
 	session, bHave := sc.sessions[sessionId]
+	sc.sessionLock.RUnlock()
 	if bHave {
 		if session.localConn != nil {
 			session.localConn.Close()
 		}
+		sc.sessionLock.Lock()
 		delete(sc.sessions, sessionId)
+		sc.sessionLock.Unlock()
 		//log.Println("client", sc.id, "remove session", sessionId)
 		return true
 	}
@@ -993,11 +1005,15 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId string, action string, c
 					//remoteConn.Close()
 					return
 				} else {
+					sc.sessionLock.Lock()
 					sc.sessions[sessionId] = &clientSession{pipe: pipe, localConn: s_conn}
+					sc.sessionLock.Unlock()
 					go handleLocalPortResponse(sc, sessionId)
 				}
 			} else {
+				sc.sessionLock.Lock()
 				sc.sessions[sessionId] = &clientSession{pipe: pipe, localConn: nil, status: "init", recvMsg: ""}
+				sc.sessionLock.Unlock()
 			}
 		}
 	}
@@ -1065,7 +1081,9 @@ func (sc *Client) MultiListen() bool {
 					}
 					return
 				}
+				sc.sessionLock.Lock()
 				sc.sessions[sessionId] = &clientSession{pipe: pipe, localConn: conn}
+				sc.sessionLock.Unlock()
 				log.Println("client", sc.id, "create session", sessionId)
 				go handleLocalServerResponse(sc, sessionId)
 			}

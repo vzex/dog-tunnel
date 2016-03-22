@@ -19,7 +19,8 @@ const (
 var bDebug = flag.Bool("debug", false, "whether show nat pipe debug msg")
 
 var defaultQueueSize = 1
-var defaultPipeBuffSize = 20000
+
+const dataLimit = 4000
 
 func debug(args ...interface{}) {
 	if *bDebug {
@@ -37,40 +38,153 @@ func udp_output(buf []byte, _len int32, kcp *ikcp.Ikcpcb, user interface{}) int3
 	return 0
 }
 
+type cache struct {
+	b []byte
+	l int
+	c chan int
+}
+
 type Conn struct {
 	conn          *net.UDPConn
 	local, remote net.Addr
 	closed        bool
 	quit          chan bool
 	sendChan      chan string
+	checkCanWrite chan chan bool
+	readChan      chan cache
 	kcp           *ikcp.Ikcpcb
 
 	tmp            []byte
+	tmp2           []byte
 	encode, decode func([]byte) []byte
 }
 
 func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 	sock.SetDeadline(time.Time{})
-	conn := &Conn{conn: sock, local: local, remote: remote, closed: false, quit: make(chan bool), tmp: make([]byte, 2000), sendChan: make(chan string, 10)}
+	conn := &Conn{conn: sock, local: local, remote: remote, closed: false, quit: make(chan bool), tmp: make([]byte, 2000), tmp2: make([]byte, 2000), sendChan: make(chan string, 10), checkCanWrite: make(chan chan bool), readChan: make(chan cache)}
 	debug("create", id)
 	conn.kcp = ikcp.Ikcp_create(uint32(id), conn)
 	conn.kcp.Output = udp_output
 	ikcp.Ikcp_wndsize(conn.kcp, 128, 128)
 	ikcp.Ikcp_nodelay(conn.kcp, 1, 10, 2, 1)
-	go conn.onUpdate()
 	return conn
 }
 
+func (c *Conn) Run() {
+	go c.onUpdate()
+}
+
 func (c *Conn) onUpdate() {
+	recvChan := make(chan []byte)
+	go func() {
+		for {
+			n, addr, err := c.conn.ReadFrom(c.tmp)
+			//debug("want read!", n, addr, err)
+			// Generic non-address related errors.
+			if addr == nil && err != nil {
+				if !err.(net.Error).Timeout() {
+					continue
+				} else {
+					break
+				}
+			}
+			b := make([]byte, n)
+			copy(b, c.tmp[:n])
+			select {
+			case recvChan <- b:
+			case <-c.quit:
+				return
+			}
+		}
+	}()
 	updateChan := time.NewTicker(20 * time.Millisecond)
+	waitList := [](chan bool){}
+	recoverChan := make(chan bool)
+	var waitRecvCache *cache
 out:
 	for {
 		select {
-		case s := <-c.sendChan:
-			if !c.closed {
-				b := []byte(s)
-				ikcp.Ikcp_send(c.kcp, b, len(b))
+		case cache := <-c.readChan:
+			for {
+				hr := ikcp.Ikcp_recv(c.kcp, c.tmp2, 2000)
+				if hr > 0 {
+					copy(cache.b, c.tmp2[:hr])
+					if c.decode != nil {
+						d := c.decode(cache.b[:hr])
+						copy(cache.b, d)
+						hr = int32(len(d))
+					}
+					select {
+					case cache.c <- int(hr):
+					case <-c.quit:
+					}
+				} else {
+					waitRecvCache = &cache
+				}
+				break
 			}
+		case b := <-recvChan:
+			ikcp.Ikcp_input(c.kcp, b, len(b))
+			if waitRecvCache != nil {
+				ca := *waitRecvCache
+				for {
+					hr := ikcp.Ikcp_recv(c.kcp, c.tmp2, 2000)
+					if hr > 0 {
+						waitRecvCache = nil
+						copy(ca.b, c.tmp2[:hr])
+						if c.decode != nil {
+							d := c.decode(ca.b[:hr])
+							copy(ca.b, d)
+							hr = int32(len(d))
+						}
+						select {
+						case ca.c <- int(hr):
+						case <-c.quit:
+						}
+					} else {
+					}
+					break
+				}
+			}
+		case <-recoverChan:
+			for _, r := range waitList {
+				log.Println("recover writing data")
+				select {
+				case r <- true:
+				case <-c.quit:
+				}
+			}
+			waitList = [](chan bool){}
+		case s := <-c.checkCanWrite:
+			if !c.closed {
+				if ikcp.Ikcp_waitsnd(c.kcp) > dataLimit {
+					log.Println("wait for data limit")
+					waitList = append(waitList, s)
+					var f func()
+					f = func() {
+						n := ikcp.Ikcp_waitsnd(c.kcp)
+						if n <= dataLimit/2 {
+							select {
+							case <-c.quit:
+								log.Println("recover writing data quit")
+							case recoverChan <- true:
+							}
+						} else {
+							time.AfterFunc(40*time.Millisecond, f)
+						}
+					}
+					time.AfterFunc(20*time.Millisecond, f)
+					log.Println("wait for data limitover")
+				} else {
+					select {
+					case s <- true:
+					case <-c.quit:
+					}
+				}
+			}
+		case s := <-c.sendChan:
+			b := []byte(s)
+			ikcp.Ikcp_send(c.kcp, b, len(b))
 		case <-updateChan.C:
 			if c.closed {
 				break out
@@ -84,42 +198,19 @@ out:
 }
 func (c *Conn) Read(b []byte) (int, error) {
 	if !c.closed {
-		for {
-			hr := ikcp.Ikcp_recv(c.kcp, c.tmp, 2000)
-			if hr > 0 {
-				copy(b, c.tmp[:hr])
-				if c.decode != nil {
-					d := c.decode(b[:hr])
-					copy(b, d)
-					hr = int32(len(d))
-				}
-				debug("read", hr)
-				return int(hr), nil
+		var n = 0
+		wc := cache{b, 0, make(chan int)}
+		select {
+		case c.readChan <- wc:
+			select {
+			case n = <-wc.c:
+			case <-c.quit:
+				n = 0
 			}
-			bHave := false
-			for {
-				c.conn.SetReadDeadline(time.Now().Add(time.Second * 2))
-				n, addr, err := c.conn.ReadFrom(c.tmp)
-				//debug("want read!", n, addr, err)
-				// Generic non-address related errors.
-				if addr == nil && err != nil {
-					if !err.(net.Error).Timeout() {
-						debug("error!", err.Error())
-						return 0, err
-					} else {
-						break
-					}
-				}
-				//debug("redirect", n)
-				ikcp.Ikcp_input(c.kcp, c.tmp[:n], n)
-				bHave = true
-				break
-			}
-			if !bHave {
-				time.Sleep(10 * time.Millisecond)
-			}
-
+		case <-c.quit:
+			n = 0
 		}
+		return n, nil
 	}
 	return 0, errors.New("force quit")
 }
@@ -138,7 +229,16 @@ func (c *Conn) Write(b []byte) (int, error) {
 		return 0, nil
 	}
 	//log.Println("try write", sendL)
-	c.sendChan <- string(b[:sendL])
+	wc := make(chan bool)
+	select {
+	case c.checkCanWrite <- wc:
+		select {
+		case <-wc:
+			c.sendChan <- string(b[:sendL])
+		case <-c.quit:
+		}
+	case <-c.quit:
+	}
 	return sendL, nil
 }
 
@@ -149,10 +249,6 @@ func (c *Conn) Close() error {
 	if c.quit != nil {
 		close(c.quit)
 		c.quit = nil
-	}
-	if c.sendChan != nil {
-		close(c.sendChan)
-		c.sendChan = nil
 	}
 	return c.conn.Close()
 }

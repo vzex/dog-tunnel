@@ -417,13 +417,11 @@ func main() {
 		}
 	}()
 
-
 	udpaddr, err := net.ResolveUDPAddr("udp", *listenAddrUDP)
 	if err != nil {
 		log.Println("Can't resolve address: ", err)
 		return
 	}
-
 
 	udpconn, err := net.ListenUDP("udp", udpaddr)
 	if err != nil {
@@ -432,7 +430,6 @@ func main() {
 	}
 
 	log.Println("listenAdd: ", *listenAddrUDP)
-
 
 	defer udpconn.Close()
 
