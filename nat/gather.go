@@ -97,7 +97,7 @@ func GatherCandidates(sock *net.UDPConn, outIpList string, udpAddr string) ([]ca
 		sock.SetReadDeadline(time.Now().Add(time.Duration(1) * time.Second))
 		n, _, err := sock.ReadFromUDP(buf)
 		if err != nil {
-			fmt.Println("Can't ReadFromUDP: ", err)
+			fmt.Println("Can't ReadFromUDP: ", err, addr.String())
 			continue
 		} else {
 			p2pAddr = string(buf[0:n])

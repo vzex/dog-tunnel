@@ -74,17 +74,12 @@ func udphandleClient(conn *net.UDPConn) {
 
 		data := make([]byte, 1024)
 
-		log.Println("begin read ")
-		n, remoteAddr, err := conn.ReadFromUDP(data)
-		log.Println("end read ")
+		_, remoteAddr, err := conn.ReadFromUDP(data)
 		if err != nil {
 			log.Println("failed to read UDP msg because of ", err.Error())
 			break
 		}
 
-		log.Println("Read", n, remoteAddr, string(data[0:n]))
-
-		log.Println("write", remoteAddr.String())
 		conn.WriteToUDP([]byte(remoteAddr.String()), remoteAddr)
 	}
 }
