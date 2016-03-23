@@ -82,7 +82,7 @@ func (c *Conn) onUpdate() {
 			//debug("want read!", n, addr, err)
 			// Generic non-address related errors.
 			if addr == nil && err != nil {
-				if !err.(net.Error).Timeout() {
+				if err.(net.Error).Timeout() {
 					continue
 				} else {
 					break
