@@ -84,38 +84,40 @@ func GatherCandidates(sock *net.UDPConn, outIpList string, udpAddr string) ([]ca
 		}
 	}
 
-	addr, err := net.ResolveUDPAddr("udp", udpAddr)
-	if err != nil {
-		fmt.Println("Can't resolve udp address: ", err)
-		return nil, err
-	}
-	p2pAddr := ""
-
-	for i := 0; i < 5; i++ {
-		sock.WriteToUDP([]byte("makehole"), addr)
-		buf := make([]byte, 100)
-		sock.SetReadDeadline(time.Now().Add(time.Duration(1) * time.Second))
-		n, _, err := sock.ReadFromUDP(buf)
+	if udpAddr != "" {
+		addr, err := net.ResolveUDPAddr("udp", udpAddr)
 		if err != nil {
-			fmt.Println("Can't ReadFromUDP: ", err, addr.String())
-			continue
-		} else {
-			p2pAddr = string(buf[0:n])
-			fmt.Println("read: ", p2pAddr)
-			break
+			fmt.Println("Can't resolve udp address: ", err)
+			return nil, err
 		}
-	}
+		p2pAddr := ""
 
-	addLen := len(p2pAddr)
-	if addLen > 0 {
-		tmparr := strings.Split(p2pAddr, ":")
+		for i := 0; i < 5; i++ {
+			sock.WriteToUDP([]byte("makehole"), addr)
+			buf := make([]byte, 100)
+			sock.SetReadDeadline(time.Now().Add(time.Duration(1) * time.Second))
+			n, _, err := sock.ReadFromUDP(buf)
+			if err != nil {
+				fmt.Println("Can't ReadFromUDP: ", err, addr.String())
+				continue
+			} else {
+				p2pAddr = string(buf[0:n])
+				fmt.Println("read: ", p2pAddr)
+				break
+			}
+		}
 
-		var strip string
-		var strport string
-		strip, strport = tmparr[0], tmparr[1]
-		ip := net.ParseIP(strip)
-		port, _ := strconv.Atoi(strport)
-		ret = append(ret, candidate{&net.UDPAddr{IP: ip, Port: port}})
+		addLen := len(p2pAddr)
+		if addLen > 0 {
+			tmparr := strings.Split(p2pAddr, ":")
+
+			var strip string
+			var strport string
+			strip, strport = tmparr[0], tmparr[1]
+			ip := net.ParseIP(strip)
+			port, _ := strconv.Atoi(strport)
+			ret = append(ret, candidate{&net.UDPAddr{IP: ip, Port: port}})
+		}
 	}
 	arr := strings.Split(outIpList, ";")
 
