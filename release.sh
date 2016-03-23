@@ -8,9 +8,6 @@ fi
 rm -f dtunnel_*$1.tgz
 echo "Build ReleaseFile for version $version"
 
-cd $GOROOT/src
-GOOS=linux GOARCH=amd64 bash ./make.bash
-cd -
 echo "build linux_amd64"
 GOOS=linux GOARCH=amd64 make
 tar zcvf dtunnel_linux_x64_$1.tgz dtunnel dtunnel_s
@@ -20,15 +17,9 @@ tar zcvf dtunnel_linux_x86_$1.tgz dtunnel dtunnel_s
 echo "build mac_x64"
 GOOS=darwin GOARCH=amd64 make
 tar zcvf dtunnel_mac_x64_$1.tgz dtunnel dtunnel_s
-cd $GOROOT/src
-GOOS=windows GOARCH=386 bash ./make.bash
-cd -
 echo "build win32"
 GOOS=windows GOARCH=386 make && mv dtunnel dtunnel.exe && mv dtunnel_s dtunnel_s.exe
 tar zcvf dtunnel_win32_$1.tgz dtunnel.exe dtunnel_s.exe
-cd $GOROOT/src
-GOOS=linux GOARCH=arm bash ./make.bash
-cd -
 echo "build linux_arm"
 GOOS=linux GOARCH=arm make
 tar zcvf dtunnel_linux_arm_$1.tgz dtunnel dtunnel_s
