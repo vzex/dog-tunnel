@@ -82,7 +82,7 @@ func Read(conn net.Conn, callback ReadCallBack) {
 		if l < headerLen*3 {
 			return 0, nil, nil
 		}
-		if l > 1024*1024 {
+		if l > 1048576 {  //1024*1024=1048576
 			conn.Close()
 			log.Println("invalid query!")
 			return 0, nil, errors.New("to large data!")
@@ -93,7 +93,13 @@ func Read(conn net.Conn, callback ReadCallBack) {
 		binary.Read(buf, binary.LittleEndian, &l2)
 		binary.Read(buf, binary.LittleEndian, &l3)
 		tail := l - headerLen*3
-		if tail < int(l1+l2+l3) {
+		lhead := l1 + l2 + l3
+		if lhead > 1048576 {
+			conn.Close()
+			log.Println("invalid query2!")
+			return 0, nil, errors.New("to large data!")
+		}
+		if uint32(tail) < lhead {
 			return 0, nil, nil
 		}
 		id := make([]byte, l1)
