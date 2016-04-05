@@ -85,7 +85,7 @@ func Read(conn net.Conn, callback ReadCallBack) {
 		if l > 1048576 {  //1024*1024=1048576
 			conn.Close()
 			log.Println("invalid query!")
-			return 0, nil, errors.New("to large data!")
+			return 0, nil, errors.New("too large data!")
 		}
 		var l1, l2, l3 uint32
 		buf := bytes.NewReader(data)
@@ -97,7 +97,7 @@ func Read(conn net.Conn, callback ReadCallBack) {
 		if lhead > 1048576 {
 			conn.Close()
 			log.Println("invalid query2!")
-			return 0, nil, errors.New("to large data!")
+			return 0, nil, errors.New("too large data!")
 		}
 		if uint32(tail) < lhead {
 			return 0, nil, nil
