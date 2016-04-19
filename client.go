@@ -62,7 +62,7 @@ var xorData = flag.String("xor", "", "xor key,c/s must use a some key")
 
 var serviceAddr = flag.String("service", "", "listen addr for client connect")
 var localAddr = flag.String("local", "", "if local not empty, treat me as client, this is the addr for local listen, otherwise, treat as server,use \"udp:\" ahead, open udp port")
-var remoteAction = flag.String("action", "socks5", "for client control server, if action is socks5,remote is socks5 server, if is addr like 127.0.0.1:22, remote server is a port redirect server, can use \"udp:\" ahead,\"route\" is for transparent socks")
+var remoteAction = flag.String("action", "socks5", "for client control server, if action is socks5,remote is socks5 server, if is addr like 127.0.0.1:22, remote server is a port redirect server, can use \"udp:\" ahead,\"route\" is for transparent socks,\"socks5_smart\" is same with socks5, but will autodecide which request use proxy,and which request will be handled locally")
 var bVerbose = flag.Bool("v", false, "verbose mode")
 var bShowVersion = flag.Bool("version", false, "show version")
 var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
@@ -180,14 +180,19 @@ func initAesIV() {
 	}
 }
 
-func checkUdp(s string) (string, bool) {
+func checkUdp(s string) (string, bool, string) {
 	action := s
 	bUdp := false
+        tail := ""
 	if strings.HasPrefix(s, "udp:") {
 		action = strings.TrimPrefix(action, "udp:")
 		bUdp = true
-	}
-	return action, bUdp
+	} else if strings.HasPrefix(s, "socks5_") {
+		action = "socks5"
+		tail = strings.TrimPrefix(action, "socks5_")
+        }
+
+	return action, bUdp, tail
 }
 
 func getEncodeFunc(aesBlock cipher.Block) func([]byte) []byte {
@@ -255,7 +260,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	client, bHave := g_ClientMap[id]
 	g_ClientMapLock.RUnlock()
 	if !bHave {
-		client = &Client{id: id, ready: true, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool)}
+		client = &Client{id: id, ready: true, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool), monitorTbl:make(map[int]*smartSession)}
 		g_ClientMapLock.Lock()
 		g_ClientMap[id] = client
 		g_ClientMapLock.Unlock()
@@ -285,7 +290,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		}
 	}
 	client.reverseAddr = *localAddr
-	client.action, client.bUdp = checkUdp(*remoteAction)
+	client.action, client.bUdp, client.socks5_arg = checkUdp(*remoteAction)
 	common.WriteCrypt(s_conn, -1, eInit_action, []byte(*remoteAction), client.encode)
 	client.stimeout = *sessionTimeout
 
@@ -362,7 +367,7 @@ func Listen(bIsTcp bool, addr string) bool {
 		client, have := g_ClientMap[id]
 		g_ClientMapLock.RUnlock()
 		if !have {
-			client = &Client{id: id, ready: true, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool)}
+			client = &Client{id: id, ready: true, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool), monitorTbl:make(map[int]*smartSession)}
 			g_ClientMapLock.Lock()
 			g_ClientMap[id] = client
 			g_ClientMapLock.Unlock()
@@ -650,7 +655,7 @@ func main() {
 	if *localAddr == "" {
 		clientType = 0
 	}
-	_, bUdp := checkUdp(*remoteAction)
+	_, bUdp, _ := checkUdp(*remoteAction)
 	if bUdp && *sessionTimeout == 0 {
 		println("you must assign session_timeout arg")
 		return
@@ -797,13 +802,14 @@ type clientSession struct {
 	recvMsg      string
 	extra        uint8
 	dieT         time.Time
+        hash         string
 }
 
-func (session *clientSession) processSockProxy(sessionId int, content string, callback func([]byte, string)) {
+func (session *clientSession) processSockProxy(content string, callback func([]byte, string)) {
 	session.recvMsg += content
 	bytes := []byte(session.recvMsg)
 	size := len(bytes)
-	//log.Println("recv msg-====", len(session.recvMsg),  session.status, sessionId)
+	//log.Println("recv msg-====", len(session.recvMsg),  session.status)
 	switch session.status {
 	case "init":
 		if size < 2 {
@@ -840,7 +846,7 @@ func (session *clientSession) processSockProxy(sessionId int, content string, ca
 	case "ok":
 		return
 	}
-	session.processSockProxy(sessionId, "", callback)
+	session.processSockProxy("", callback)
 }
 
 type ansMsg struct {
@@ -995,6 +1001,9 @@ type Client struct {
 	encryptstr     string
 	stimeout       int
 	quit           chan bool
+        socks5_arg     string
+        monitorTbl      map[int]*smartSession
+	monitorLock     sync.RWMutex
 }
 
 // pipe : client to client
@@ -1106,13 +1115,13 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		go sc.removeSession(sessionId)
 	case eInit_action_back:
 		log.Println("server force do action", content)
-		sc.action, sc.bUdp = checkUdp(content)
+		sc.action, sc.bUdp, sc.socks5_arg = checkUdp(content)
 	case eInit_action:
 		sc.action = content
 		log.Println("init action", content)
-		sc.action, sc.bUdp = checkUdp(content)
+		sc.action, sc.bUdp, sc.socks5_arg = checkUdp(content)
 		if *remoteAction != "" && *remoteAction != sc.action {
-			sc.action, sc.bUdp = checkUdp(*remoteAction)
+			sc.action, sc.bUdp, sc.socks5_arg = checkUdp(*remoteAction)
 			go common.WriteCrypt(pipe, sessionId, eInit_action_back, []byte(*remoteAction), sc.encode)
 		}
 	case eReverse:
@@ -1448,11 +1457,12 @@ func (sc *Client) MultiListen() bool {
 					time.Sleep(time.Second)
 					continue
 				}
-				sessionId := genId([]byte(from.String()))
+                                hashStr := from.String()
+				sessionId := genId([]byte(hashStr))
 				session := sc.getSession(sessionId)
-				if session == nil {
+				if session == nil || session.hash != hashStr {
 					timeNow.RLock()
-					session = &clientSession{pipe: pipe, localUdpAddr: from, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
+                                        session = &clientSession{pipe: pipe, localUdpAddr: from, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second), hash: hashStr}
 					timeNow.RUnlock()
 					sc.createSession(sessionId, session)
 					log.Println("create udp session", sessionId)
@@ -1554,6 +1564,17 @@ func (sc *Client) getOnePipe() *pipeInfo {
 	return choose
 }
 
+type smartSession struct {
+        
+}
+func (sc *Client) addSmartMonitor(sessionId int) *smartSession {
+	session:= &smartSession{}
+	sc.monitorLock.Lock()
+	sc.monitorTbl[sessionId] = session
+	sc.monitorLock.Unlock()
+	return session
+}
+
 ///////////////////////multi pipe support
 func (session *clientSession) handleLocalPortResponse(client *Client, id int, url string) {
 	sessionId := id
@@ -1632,6 +1653,12 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 	var recv string
 	var host string
 
+        var smartSession *smartSession
+        if client.action == "socks5" && client.socks5_arg == "smart" {
+                smartSession = client.addSmartMonitor(sessionId)
+		_ = smartSession
+        }
+
 	for {
 		size, err := reader.Read(arr)
 		if err != nil {
@@ -1643,7 +1670,7 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 			timeNow.RUnlock()
 		}
 		if client.action == "socks5" && !bParsed {
-			session.processSockProxy(sessionId, string(arr[0:size]), func(head []byte, _host string) {
+			session.processSockProxy(string(arr[0:size]), func(head []byte, _host string) {
 				host = _host
 				common.WriteCrypt(pipe, sessionId, eTunnel_open, head, client.encode)
 				if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, []byte(session.recvMsg), client.encode) != nil {
