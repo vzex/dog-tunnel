@@ -1116,6 +1116,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		println(content)
 		sc.Quit()
 	case eTunnel_msg_s:
+		go sc.endSmartMonitor(sessionId, false)
 		if sc.bUdp {
 			if sc.listenerUdp != nil && session != nil {
 				sc.listenerUdp.WriteToUDP([]byte(content), session.localUdpAddr)
@@ -1136,7 +1137,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 			//log.Println("cannot tunnel msg", sessionId)
 		}
 	case eTunnel_close_s:
-		go sc.endSmartMonitor(sessionId, false)
 		go sc.removeSession(sessionId)
 	case eInit_action_back:
 		log.Println("server force do action", content)
@@ -1612,10 +1612,11 @@ type hostWay struct {
 }
 
 type smartSession struct {
-	way    *hostWay
-	conn   net.Conn
-	client *Client
-	id     int
+	way       *hostWay
+	conn      net.Conn
+	client    *Client
+	id        int
+	localconn net.Conn
 }
 
 func (st *smartSession) onRecv(msg []byte) {
@@ -1626,15 +1627,17 @@ func (st *smartSession) onRecv(msg []byte) {
 		st.conn.Write(msg)
 	}
 }
-func (st *smartSession) start(hello reqMsg, callback func()) {
+func (st *smartSession) start(hello reqMsg, callback func(bool)) {
 	var s_conn net.Conn
 	url := hello.url
 	var err error
+	log.Println("be start", url)
 	if s_conn == nil && err == nil {
 		s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
 	}
 	if err != nil {
-		log.Println("connect to local server fail:", err.Error(), url)
+		callback(false)
+		log.Println("smart connect to local server fail:", err.Error(), url)
 	} else {
 		st.conn = s_conn
 		reader := bufio.NewReader(s_conn)
@@ -1643,21 +1646,25 @@ func (st *smartSession) start(hello reqMsg, callback func()) {
 		if session != nil {
 			pipe = session.pipe
 		}
+		log.Println("start", url)
 		go func() {
 			arr := make([]byte, WriteBufferSize)
-			l := 0
+			b := false
 			for {
 				size, err := reader.Read(arr)
 				if err != nil {
 					break
 				}
-				l += size
+				log.Println("recv", url, size, st.id, st.way.status, st.way.times)
 				if st.way.status == DecideLocal {
 					st.client.OnTunnelRecv(nil, st.id, eTunnel_msg_s, string(arr[:size]), pipe)
+				} else {
+					if !b {
+						log.Println("try endSmartMonitor", st.id, st.way.times)
+						callback(true)
+						b = true
+					}
 				}
-			}
-			if l > 0 {
-				callback()
 			}
 		}()
 	}
@@ -1669,8 +1676,8 @@ func (sc *Client) endSmartMonitor(sessionId int, bLocal bool) {
 	}
 	sc.monitorLock.Lock()
 	session, b := sc.monitorTbl[sessionId]
-	if b {
-		log.Println("endSmartMonitor", sessionId, bLocal, session.way.host)
+	if b && session.conn != nil {
+		log.Println("endSmartMonitor", sessionId, bLocal, session.way.host, session.way.times)
 		if bLocal {
 			session.way.times += 1
 			if session.way.times > 3 {
@@ -1701,19 +1708,19 @@ func (sc *Client) getHostWay(host string) *hostWay {
 	}
 	way = &hostWay{status: NotDecide, host: host}
 	sc.hostWayTbl[host] = way
-	return nil
+	return way
 }
 
-func (sc *Client) addSmartMonitor(sessionId int, hello reqMsg, way *hostWay) *smartSession {
+func (sc *Client) addSmartMonitor(sessionId int, hello reqMsg, way *hostWay, conn net.Conn) *smartSession {
 	if sc.socks5_arg != "smart" {
 		return nil
 	}
-	session := &smartSession{way: way, client: sc, id: sessionId}
+	session := &smartSession{way: way, client: sc, id: sessionId, localconn: conn}
 	sc.monitorLock.Lock()
 	sc.monitorTbl[sessionId] = session
 	sc.monitorLock.Unlock()
-	session.start(hello, func() {
-		sc.endSmartMonitor(sessionId, true)
+	session.start(hello, func(bLocal bool) {
+		sc.endSmartMonitor(sessionId, bLocal)
 	})
 	return session
 }
@@ -1832,7 +1839,7 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 				host = _host
 				way = client.getHostWay(host)
 				if way != nil && way.status != DecideRemote {
-					smartSession = client.addSmartMonitor(sessionId, hello, way)
+					smartSession = client.addSmartMonitor(sessionId, hello, way, conn)
 				}
 				if way == nil || way.status != DecideLocal {
 					common.WriteCrypt(pipe, sessionId, eTunnel_open, head, client.encode)
@@ -1884,6 +1891,9 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 	}
 	common.WriteCrypt(pipe, sessionId, eTunnel_close, []byte{}, client.encode)
 	client.removeSession(sessionId)
+	if smartSession != nil && smartSession.conn != nil {
+		smartSession.conn.Close()
+	}
 	if *bCache && client.action == "socks5" {
 		arr := strings.Split(recv, "\r\n\r\n")
 		for _, s := range arr {
