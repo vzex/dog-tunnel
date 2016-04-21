@@ -50,6 +50,7 @@ const (
 	eTunnel_msg_c_udp
 	eTunnel_close
 	eTunnel_open
+	eTunnel_ready
 )
 
 //var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
@@ -183,14 +184,14 @@ func initAesIV() {
 func checkUdp(s string) (string, bool, string) {
 	action := s
 	bUdp := false
-        tail := ""
+	tail := ""
 	if strings.HasPrefix(s, "udp:") {
 		action = strings.TrimPrefix(action, "udp:")
 		bUdp = true
 	} else if strings.HasPrefix(s, "socks5_") {
-		action = "socks5"
 		tail = strings.TrimPrefix(action, "socks5_")
-        }
+		action = "socks5"
+	}
 
 	return action, bUdp, tail
 }
@@ -260,7 +261,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	client, bHave := g_ClientMap[id]
 	g_ClientMapLock.RUnlock()
 	if !bHave {
-		client = &Client{id: id, ready: true, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool), monitorTbl:make(map[int]*smartSession)}
+		client = &Client{id: id, ready: true, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan struct{}), monitorTbl: make(map[int]*smartSession), hostWayTbl: make(map[string]*hostWay)}
 		g_ClientMapLock.Lock()
 		g_ClientMap[id] = client
 		g_ClientMapLock.Unlock()
@@ -367,7 +368,7 @@ func Listen(bIsTcp bool, addr string) bool {
 		client, have := g_ClientMap[id]
 		g_ClientMapLock.RUnlock()
 		if !have {
-			client = &Client{id: id, ready: true, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan bool), monitorTbl:make(map[int]*smartSession)}
+			client = &Client{id: id, ready: true, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan struct{}), monitorTbl: make(map[int]*smartSession), hostWayTbl: make(map[string]*hostWay)}
 			g_ClientMapLock.Lock()
 			g_ClientMap[id] = client
 			g_ClientMapLock.Unlock()
@@ -802,10 +803,12 @@ type clientSession struct {
 	recvMsg      string
 	extra        uint8
 	dieT         time.Time
-        hash         string
+	hash         string
+	wait         chan struct{}
+	waitLock     sync.RWMutex
 }
 
-func (session *clientSession) processSockProxy(content string, callback func([]byte, string)) {
+func (session *clientSession) processSockProxy(content string, callback func([]byte, string, reqMsg)) {
 	session.recvMsg += content
 	bytes := []byte(session.recvMsg)
 	size := len(bytes)
@@ -840,7 +843,7 @@ func (session *clientSession) processSockProxy(content string, callback func([]b
 		if bOk {
 			session.status = "ok"
 			session.recvMsg = string(tail)
-			callback(bytes, hello.url)
+			callback(bytes, hello.url, hello)
 		}
 		return
 	case "ok":
@@ -1000,10 +1003,13 @@ type Client struct {
 	newindex       int
 	encryptstr     string
 	stimeout       int
-	quit           chan bool
-        socks5_arg     string
-        monitorTbl      map[int]*smartSession
-	monitorLock     sync.RWMutex
+	quit           chan struct{}
+	socks5_arg     string
+	monitorTbl     map[int]*smartSession
+	monitorLock    sync.RWMutex
+
+	hostWayTbl  map[string]*hostWay
+	hostWayLock sync.RWMutex
 }
 
 // pipe : client to client
@@ -1022,6 +1028,23 @@ func (sc *Client) getSession(sessionId int) *clientSession {
 	}
 }
 
+func (sc *Client) freezeSession(sessionId int) {
+	sc.sessionLock.RLock()
+	defer sc.sessionLock.RUnlock()
+	session, bHave := sc.sessions[sessionId]
+	if bHave {
+		session.freeze()
+	}
+}
+func (sc *Client) unFreezeSession(sessionId int) {
+	sc.sessionLock.RLock()
+	defer sc.sessionLock.RUnlock()
+	session, bHave := sc.sessions[sessionId]
+	if bHave {
+		session.unfreeze()
+	}
+}
+
 func (sc *Client) removeSession(sessionId int) bool {
 	sc.sessionLock.Lock()
 	defer sc.sessionLock.Unlock()
@@ -1033,6 +1056,7 @@ func (sc *Client) removeSession(sessionId int) bool {
 		if session.localConn != nil {
 			session.localConn.Close()
 		}
+		session.unfreeze()
 		session.connLock.RUnlock()
 		if session.localUdpConn != nil {
 			session.localUdpConn.Close()
@@ -1112,6 +1136,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 			//log.Println("cannot tunnel msg", sessionId)
 		}
 	case eTunnel_close_s:
+		go sc.endSmartMonitor(sessionId, false)
 		go sc.removeSession(sessionId)
 	case eInit_action_back:
 		log.Println("server force do action", content)
@@ -1194,7 +1219,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		aesBlock, _ := aes.NewCipher([]byte(aesKey))
 		sc.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
 	case eTunnel_msg_c_udp:
-		if session !=nil && session.localUdpConn != nil {
+		if session != nil && session.localUdpConn != nil {
 			//log.Println("tunnel", (content), sessionId)
 			timeNow.RLock()
 			if sc.stimeout > 0 {
@@ -1217,72 +1242,80 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		}
 	case eTunnel_close:
 		go sc.removeSession(sessionId)
+	case eTunnel_ready:
+		go sc.unFreezeSession(sessionId)
 	case eTunnel_open:
-		if sc.action != "socks5" {
-			remote := sc.action
-			if sc.bUdp {
-				sock, _err := net.ListenUDP("udp", &net.UDPAddr{})
-				if _err != nil {
-					log.Println("dial addr fail", _err.Error())
-					msg := _err.Error()
-					go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
-					return
-				}
-				timeNow.RLock()
-				udpAddr, err := net.ResolveUDPAddr("udp", sc.action)
-				if err != nil {
-					log.Println("resolve addr fail", err.Error())
-					msg := err.Error()
-					go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
-					return
-				}
+		go func() {
+			defer func() {
+				go common.WriteCrypt(pipe, sessionId, eTunnel_ready, []byte{}, sc.encode)
+			}()
+			if sc.action != "socks5" {
+				remote := sc.action
+				if sc.bUdp {
+					sock, _err := net.ListenUDP("udp", &net.UDPAddr{})
+					if _err != nil {
+						log.Println("dial addr fail", _err.Error())
+						msg := _err.Error()
+						go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
+						return
+					}
+					timeNow.RLock()
+					udpAddr, err := net.ResolveUDPAddr("udp", sc.action)
+					if err != nil {
+						log.Println("resolve addr fail", err.Error())
+						msg := err.Error()
+						go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
+						return
+					}
 
-				session := &clientSession{pipe: pinfo, localUdpConn: sock, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second), localUdpAddr: udpAddr}
-				timeNow.RUnlock()
-				sc.createSession(sessionId, session)
-				go func() {
-					arr := make([]byte, WriteBufferSize)
-					for {
-						n, _, err := sock.ReadFromUDP(arr)
-						if err != nil {
-							break
-						} else {
-							if common.WriteCrypt(pinfo.conn, sessionId, eTunnel_msg_s, arr[:n], sc.encode) != nil {
+					session := &clientSession{pipe: pinfo, localUdpConn: sock, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second), localUdpAddr: udpAddr}
+					timeNow.RUnlock()
+					sc.createSession(sessionId, session)
+					go func() {
+						arr := make([]byte, WriteBufferSize)
+						for {
+							n, _, err := sock.ReadFromUDP(arr)
+							if err != nil {
 								break
 							} else {
-								timeNow.RLock()
-								session.pipe.Add(int64(n), timeNow.Unix())
-								timeNow.RUnlock()
+								if common.WriteCrypt(pinfo.conn, sessionId, eTunnel_msg_s, arr[:n], sc.encode) != nil {
+									break
+								} else {
+									timeNow.RLock()
+									session.pipe.Add(int64(n), timeNow.Unix())
+									timeNow.RUnlock()
+								}
 							}
 						}
-					}
-					sc.removeSession(sessionId)
-					common.WriteCrypt(pinfo.conn, sessionId, eTunnel_close_s, []byte{}, sc.encode)
-				}()
-				return
-			}
-			if sc.action == "route" {
-				remote = content
-			}
-			s_conn, err := net.DialTimeout("tcp", remote, 10*time.Second)
-			if err != nil {
-				log.Println("connect to local server fail:", err.Error(), remote)
-				msg := "cannot connect to bind addr" + remote
-				go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
-				return
+						sc.removeSession(sessionId)
+						common.WriteCrypt(pinfo.conn, sessionId, eTunnel_close_s, []byte{}, sc.encode)
+					}()
+					return
+				}
+				if sc.action == "route" {
+					remote = content
+				}
+				s_conn, err := net.DialTimeout("tcp", remote, 10*time.Second)
+				if err != nil {
+					log.Println("connect to local server fail:", err.Error(), remote)
+					msg := "cannot connect to bind addr" + remote
+					go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
+					return
+				} else {
+					timeNow.RLock()
+					session := &clientSession{pipe: pinfo, localConn: s_conn, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
+					timeNow.RUnlock()
+					sc.createSession(sessionId, session)
+					go session.handleLocalPortResponse(sc, sessionId, "")
+				}
 			} else {
 				timeNow.RLock()
-				session := &clientSession{pipe: pinfo, localConn: s_conn, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
+				session = &clientSession{pipe: pinfo, localConn: nil, status: "init", recvMsg: "", dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
 				timeNow.RUnlock()
 				sc.createSession(sessionId, session)
-				go session.handleLocalPortResponse(sc, sessionId, "")
-			}
-		} else {
-			timeNow.RLock()
-			session = &clientSession{pipe: pinfo, localConn: nil, status: "init", recvMsg: "", dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
-			timeNow.RUnlock()
-			sc.createSession(sessionId, session)
-			go func() {
+				defer func() {
+					go common.WriteCrypt(pipe, sessionId, eTunnel_ready, []byte{}, sc.encode)
+				}()
 				var hello reqMsg
 				bOk, _ := hello.read([]byte(content))
 				if !bOk {
@@ -1331,8 +1364,8 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
 					timeNow.RUnlock()
 				}
-			}()
-		}
+			}
+		}()
 	}
 }
 
@@ -1457,12 +1490,12 @@ func (sc *Client) MultiListen() bool {
 					time.Sleep(time.Second)
 					continue
 				}
-                                hashStr := from.String()
+				hashStr := from.String()
 				sessionId := genId([]byte(hashStr))
 				session := sc.getSession(sessionId)
 				if session == nil || session.hash != hashStr {
 					timeNow.RLock()
-                                        session = &clientSession{pipe: pipe, localUdpAddr: from, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second), hash: hashStr}
+					session = &clientSession{pipe: pipe, localUdpAddr: from, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second), hash: hashStr}
 					timeNow.RUnlock()
 					sc.createSession(sessionId, session)
 					log.Println("create udp session", sessionId)
@@ -1564,14 +1597,124 @@ func (sc *Client) getOnePipe() *pipeInfo {
 	return choose
 }
 
-type smartSession struct {
-        
+type decideStatus byte
+
+const (
+	NotDecide = decideStatus(iota)
+	DecideLocal
+	DecideRemote
+)
+
+type hostWay struct {
+	status decideStatus
+	times  int
+	host   string
 }
-func (sc *Client) addSmartMonitor(sessionId int) *smartSession {
-	session:= &smartSession{}
+
+type smartSession struct {
+	way    *hostWay
+	conn   net.Conn
+	client *Client
+	id     int
+}
+
+func (st *smartSession) onRecv(msg []byte) {
+	if len(msg) <= 0 {
+		return
+	}
+	if st.conn != nil {
+		st.conn.Write(msg)
+	}
+}
+func (st *smartSession) start(hello reqMsg, callback func()) {
+	var s_conn net.Conn
+	url := hello.url
+	var err error
+	if s_conn == nil && err == nil {
+		s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
+	}
+	if err != nil {
+		log.Println("connect to local server fail:", err.Error(), url)
+	} else {
+		st.conn = s_conn
+		reader := bufio.NewReader(s_conn)
+		session := st.client.getSession(st.id)
+		var pipe *pipeInfo
+		if session != nil {
+			pipe = session.pipe
+		}
+		go func() {
+			arr := make([]byte, WriteBufferSize)
+			l := 0
+			for {
+				size, err := reader.Read(arr)
+				if err != nil {
+					break
+				}
+				l += size
+				if st.way.status == DecideLocal {
+					st.client.OnTunnelRecv(nil, st.id, eTunnel_msg_s, string(arr[:size]), pipe)
+				}
+			}
+			if l > 0 {
+				callback()
+			}
+		}()
+	}
+}
+
+func (sc *Client) endSmartMonitor(sessionId int, bLocal bool) {
+	if sc.socks5_arg != "smart" {
+		return
+	}
+	sc.monitorLock.Lock()
+	session, b := sc.monitorTbl[sessionId]
+	if b {
+		log.Println("endSmartMonitor", sessionId, bLocal, session.way.host)
+		if bLocal {
+			session.way.times += 1
+			if session.way.times > 3 {
+				log.Println("decide local", session.way.host)
+				session.way.status = DecideLocal
+			}
+		} else {
+			session.way.times -= 1
+			if session.way.times < -3 {
+				log.Println("decide remote", session.way.host)
+				session.way.status = DecideRemote
+			}
+		}
+		delete(sc.monitorTbl, sessionId)
+	}
+	sc.monitorLock.Unlock()
+}
+
+func (sc *Client) getHostWay(host string) *hostWay {
+	if sc.socks5_arg != "smart" {
+		return nil
+	}
+	sc.hostWayLock.Lock()
+	defer sc.hostWayLock.Unlock()
+	way, b := sc.hostWayTbl[host]
+	if b {
+		return way
+	}
+	way = &hostWay{status: NotDecide, host: host}
+	sc.hostWayTbl[host] = way
+	return nil
+}
+
+func (sc *Client) addSmartMonitor(sessionId int, hello reqMsg, way *hostWay) *smartSession {
+	if sc.socks5_arg != "smart" {
+		return nil
+	}
+	session := &smartSession{way: way, client: sc, id: sessionId}
 	sc.monitorLock.Lock()
 	sc.monitorTbl[sessionId] = session
 	sc.monitorLock.Unlock()
+	session.start(hello, func() {
+		sc.endSmartMonitor(sessionId, true)
+	})
 	return session
 }
 
@@ -1620,6 +1763,23 @@ func (session *clientSession) handleLocalPortResponse(client *Client, id int, ur
 	common.WriteCrypt(pipe, sessionId, eTunnel_close_s, []byte{}, client.encode)
 }
 
+func (session *clientSession) freeze() {
+	c := make(chan struct{})
+	session.waitLock.Lock()
+	session.wait = c
+	session.waitLock.Unlock()
+	<-c
+}
+
+func (session *clientSession) unfreeze() {
+	session.waitLock.Lock()
+	if session.wait != nil {
+		close(session.wait)
+		session.wait = nil
+	}
+	session.waitLock.Unlock()
+}
+
 func (session *clientSession) handleLocalServerResponse(client *Client, sessionId int) {
 	buffSize := WriteBufferSize
 	var pipe net.Conn
@@ -1645,6 +1805,7 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 	}
 	if client.action != "socks5" {
 		common.WriteCrypt(pipe, sessionId, eTunnel_open, []byte(remote), client.encode)
+		session.freeze()
 	}
 	arr := make([]byte, buffSize)
 	reader := bufio.NewReader(conn)
@@ -1653,11 +1814,8 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 	var recv string
 	var host string
 
-        var smartSession *smartSession
-        if client.action == "socks5" && client.socks5_arg == "smart" {
-                smartSession = client.addSmartMonitor(sessionId)
-		_ = smartSession
-        }
+	var smartSession *smartSession
+	var way *hostWay
 
 	for {
 		size, err := reader.Read(arr)
@@ -1670,30 +1828,53 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 			timeNow.RUnlock()
 		}
 		if client.action == "socks5" && !bParsed {
-			session.processSockProxy(string(arr[0:size]), func(head []byte, _host string) {
+			session.processSockProxy(string(arr[0:size]), func(head []byte, _host string, hello reqMsg) {
 				host = _host
-				common.WriteCrypt(pipe, sessionId, eTunnel_open, head, client.encode)
-				if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, []byte(session.recvMsg), client.encode) != nil {
-					bNeedBreak = true
+				way = client.getHostWay(host)
+				if way != nil && way.status != DecideRemote {
+					smartSession = client.addSmartMonitor(sessionId, hello, way)
+				}
+				if way == nil || way.status != DecideLocal {
+					common.WriteCrypt(pipe, sessionId, eTunnel_open, head, client.encode)
+					session.freeze()
+					if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, []byte(session.recvMsg), client.encode) != nil {
+						bNeedBreak = true
+					} else {
+						timeNow.RLock()
+						session.pipe.Add(int64(len(session.recvMsg)), timeNow.Unix())
+						timeNow.RUnlock()
+						if *bCache {
+							recv += session.recvMsg
+						}
+						if smartSession != nil {
+							smartSession.onRecv([]byte(session.recvMsg))
+						}
+					}
 				} else {
-					timeNow.RLock()
-					session.pipe.Add(int64(len(session.recvMsg)), timeNow.Unix())
-					timeNow.RUnlock()
-					if *bCache {
-						recv += session.recvMsg
+					if smartSession != nil {
+						smartSession.onRecv([]byte(session.recvMsg))
 					}
 				}
 				bParsed = true
 			})
 		} else {
-			if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, arr[0:size], client.encode) != nil {
-				bNeedBreak = true
+			if way != nil && way.status == DecideLocal {
+				if smartSession != nil {
+					smartSession.onRecv(arr[:size])
+				}
 			} else {
-				timeNow.RLock()
-				session.pipe.Add(int64(size), timeNow.Unix())
-				timeNow.RUnlock()
-				if *bCache && client.action == "socks5" {
-					recv += string(arr[:size])
+				if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, arr[0:size], client.encode) != nil {
+					bNeedBreak = true
+				} else {
+					timeNow.RLock()
+					session.pipe.Add(int64(size), timeNow.Unix())
+					timeNow.RUnlock()
+					if *bCache && client.action == "socks5" {
+						recv += string(arr[:size])
+					}
+					if smartSession != nil {
+						smartSession.onRecv(arr[:size])
+					}
 				}
 			}
 		}
