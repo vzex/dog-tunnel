@@ -1755,7 +1755,7 @@ func (sc *Client) endSmartMonitor(sessionId int, bLocal bool) {
 	if b {
 		timeNow.RLock()
 		if session.way.decide == NotDecide || timeNow.After(session.way.overt) {
-			log.Println("endSmartMonitor", sessionId, bLocal, session.way.host, session.way.times)
+			//log.Println("endSmartMonitor", sessionId, bLocal, session.way.host, session.way.times)
 			if bLocal {
 				session.way.times += 1
 				if session.way.times > *smartCount {
@@ -1811,7 +1811,7 @@ func (sc *Client) addSmartMonitor(sessionId int, hello reqMsg, way *hostWay, con
 }
 
 func (sc *Client) checkSmart() {
-	t := time.NewTicker(time.Second)
+	t := time.NewTicker(time.Minute)
 out:
 	for {
 		select {
