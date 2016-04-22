@@ -69,6 +69,7 @@ var bShowVersion = flag.Bool("version", false, "show version")
 var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
 var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
 var timeOut = flag.Int("timeout", 100, "udp pipe set timeout(seconds)")
+var smartCount = flag.Int("smartN", 3, "for socks5_smart mode,affect when to decide the http request to go locally or remotely")
 
 var bDebug = flag.Int("debug", 0, "more output log")
 var bReverse = flag.Bool("r", false, "reverse mode, if true, client 's \"-local\" address will be listened on server side")
@@ -292,6 +293,9 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	}
 	client.reverseAddr = *localAddr
 	client.action, client.bUdp, client.socks5_arg = checkUdp(*remoteAction)
+	if client.socks5_arg == "smart" {
+		go client.checkSmart()
+	}
 	common.WriteCrypt(s_conn, -1, eInit_action, []byte(*remoteAction), client.encode)
 	client.stimeout = *sessionTimeout
 
@@ -804,13 +808,13 @@ type clientSession struct {
 	extra        uint8
 	dieT         time.Time
 	hash         string
-	wait         chan struct{}
 	decide       decideStatus
 	decideLock   sync.RWMutex
 	ready        bool
 	cacheMsg     string
 	cacheLock    sync.RWMutex
 	headSendN    int32
+	headFailN    int32
 }
 
 func (session *clientSession) processSockProxy(content string, callback func([]byte, string, reqMsg)) {
@@ -1111,8 +1115,16 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		}
 		if conn != nil {
 			if action == eTunnel_msg_s_head {
-				if atomic.AddInt32(&session.headSendN, 1) > 1 {
-					return
+				if []byte(content)[1] != 0 {
+					if atomic.AddInt32(&session.headFailN, 1) > 1 {
+						sc.unDecide(sessionId)
+					} else {
+						return
+					}
+				} else {
+					if atomic.AddInt32(&session.headSendN, 1) > 1 {
+						return
+					}
 				}
 			}
 			f := func() {
@@ -1652,6 +1664,7 @@ type hostWay struct {
 	decide decideStatus
 	times  int
 	host   string
+	overt  time.Time
 }
 
 type smartSession struct {
@@ -1674,6 +1687,17 @@ func (st *smartSession) start(hello reqMsg) {
 	var s_conn net.Conn
 	url := hello.url
 	var err error
+	if *dnsCacheNum > 0 && hello.atyp == 3 {
+		host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
+		resChan := make(chan *dnsQueryRes)
+		checkDns <- &dnsQueryReq{c: resChan, host: host, port: int(hello.dst_port2), reqtype: hello.reqtype, url: url}
+		res := <-resChan
+		s_conn = res.conn
+		err = res.err
+		if res.ip != "" {
+			url = net.JoinHostPort(res.ip, fmt.Sprintf("%d", hello.dst_port2))
+		}
+	}
 	if s_conn == nil && err == nil {
 		s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
 	}
@@ -1707,27 +1731,50 @@ func (st *smartSession) start(hello reqMsg) {
 	}
 }
 
+func (sc *Client) unDecide(sessionId int) {
+	if sc.socks5_arg != "smart" {
+		return
+	}
+	sc.monitorLock.Lock()
+	session, b := sc.monitorTbl[sessionId]
+	if b {
+		host := session.way.host
+		sc.hostWayLock.Lock()
+		delete(sc.hostWayTbl, host)
+		sc.hostWayLock.Unlock()
+	}
+	sc.monitorLock.Unlock()
+}
+
 func (sc *Client) endSmartMonitor(sessionId int, bLocal bool) {
 	if sc.socks5_arg != "smart" {
 		return
 	}
 	sc.monitorLock.Lock()
 	session, b := sc.monitorTbl[sessionId]
-	if b && session.conn != nil {
-		log.Println("endSmartMonitor", sessionId, bLocal, session.way.host, session.way.times)
-		if bLocal {
-			session.way.times += 1
-			if session.way.times > 3 {
-				log.Println("decide local", session.way.host)
-				session.way.decide = DecideLocal
+	if b {
+		timeNow.RLock()
+		if session.way.decide == NotDecide || timeNow.After(session.way.overt) {
+			log.Println("endSmartMonitor", sessionId, bLocal, session.way.host, session.way.times)
+			if bLocal {
+				session.way.times += 1
+				if session.way.times > *smartCount {
+					log.Println("decide local", session.way.host)
+					session.way.decide = DecideLocal
+					session.way.overt = timeNow.Add(5 * time.Minute)
+				}
+			} else {
+				session.way.times -= 1
+				if session.way.times < -*smartCount {
+					log.Println("decide remote", session.way.host)
+					session.way.decide = DecideRemote
+					session.way.overt = timeNow.Add(5 * time.Minute)
+				}
 			}
 		} else {
-			session.way.times -= 1
-			if session.way.times < -3 {
-				log.Println("decide remote", session.way.host)
-				session.way.decide = DecideRemote
-			}
+			session.way.overt = timeNow.Add(5 * time.Minute)
 		}
+		timeNow.RUnlock()
 		delete(sc.monitorTbl, sessionId)
 	}
 	sc.monitorLock.Unlock()
@@ -1741,6 +1788,9 @@ func (sc *Client) getHostWay(host string) *hostWay {
 	defer sc.hostWayLock.Unlock()
 	way, b := sc.hostWayTbl[host]
 	if b {
+		if time.Now().After(way.overt) {
+			way.decide = NotDecide
+		}
 		return way
 	}
 	way = &hostWay{decide: NotDecide, host: host}
@@ -1758,6 +1808,29 @@ func (sc *Client) addSmartMonitor(sessionId int, hello reqMsg, way *hostWay, con
 	sc.monitorLock.Unlock()
 	session.start(hello)
 	return session
+}
+
+func (sc *Client) checkSmart() {
+	t := time.NewTicker(time.Second)
+out:
+	for {
+		select {
+		case <-t.C:
+			timeNow.RLock()
+			now := timeNow
+			timeNow.RUnlock()
+			sc.hostWayLock.Lock()
+			for host, way := range sc.hostWayTbl {
+				if now.After(way.overt) {
+					delete(sc.hostWayTbl, host)
+				}
+			}
+			sc.hostWayLock.Unlock()
+		case <-sc.quit:
+			break out
+		}
+	}
+	t.Stop()
 }
 
 ///////////////////////multi pipe support
