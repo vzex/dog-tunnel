@@ -1115,6 +1115,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		}
 		if conn != nil {
 			if action == eTunnel_msg_s_head {
+				//log.Println("eTunnel_msg_s_head", []byte(content)[1], session.headFailN, session.headSendN)
 				if []byte(content)[1] != 0 {
 					if atomic.AddInt32(&session.headFailN, 1) > 1 {
 						sc.unDecide(sessionId)
@@ -1162,7 +1163,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				f()
 			}
 		} else {
-			//log.Println("cannot tunnel msg", sessionId)
+			log.Println("cannot tunnel msg", sessionId)
 		}
 	case eTunnel_close_s:
 		go sc.removeSession(sessionId)
@@ -1673,6 +1674,8 @@ type smartSession struct {
 	client    *Client
 	id        int
 	localconn net.Conn
+	cacheLock sync.RWMutex
+	cacheMsg  string
 }
 
 func (st *smartSession) onRecv(msg []byte) {
@@ -1681,6 +1684,10 @@ func (st *smartSession) onRecv(msg []byte) {
 	}
 	if st.conn != nil {
 		st.conn.Write(msg)
+	} else {
+		st.cacheLock.Lock()
+		st.cacheMsg += string(msg)
+		st.cacheLock.Unlock()
 	}
 }
 func (st *smartSession) start(hello reqMsg) {
@@ -1714,10 +1721,15 @@ func (st *smartSession) start(hello reqMsg) {
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_msg_s_head, string(ansmsg.buf[:ansmsg.mlen]), pipe)
 	} else {
 		st.conn = s_conn
-		reader := bufio.NewReader(s_conn)
+		st.cacheLock.RLock()
+		if st.cacheMsg != "" {
+			s_conn.Write([]byte(st.cacheMsg))
+		}
+		st.cacheLock.RUnlock()
 		ansmsg.gen(&hello, 0)
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_msg_s_head, string(ansmsg.buf[:ansmsg.mlen]), pipe)
 		go func() {
+			reader := bufio.NewReader(s_conn)
 			arr := make([]byte, WriteBufferSize)
 			for {
 				size, err := reader.Read(arr)
@@ -1806,7 +1818,7 @@ func (sc *Client) addSmartMonitor(sessionId int, hello reqMsg, way *hostWay, con
 	sc.monitorLock.Lock()
 	sc.monitorTbl[sessionId] = session
 	sc.monitorLock.Unlock()
-	session.start(hello)
+	go session.start(hello)
 	return session
 }
 
