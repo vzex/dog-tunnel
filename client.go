@@ -1163,7 +1163,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				f()
 			}
 		} else {
-			log.Println("cannot tunnel msg", sessionId)
+			//log.Println("cannot tunnel msg", sessionId)
 		}
 	case eTunnel_close_s:
 		go sc.removeSession(sessionId)
@@ -1682,13 +1682,13 @@ func (st *smartSession) onRecv(msg []byte) {
 	if len(msg) <= 0 {
 		return
 	}
+	st.cacheLock.Lock()
 	if st.conn != nil {
 		st.conn.Write(msg)
 	} else {
-		st.cacheLock.Lock()
 		st.cacheMsg += string(msg)
-		st.cacheLock.Unlock()
 	}
+	st.cacheLock.Unlock()
 }
 func (st *smartSession) start(hello reqMsg) {
 	var s_conn net.Conn
@@ -1720,12 +1720,12 @@ func (st *smartSession) start(hello reqMsg) {
 		ansmsg.gen(&hello, 4)
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_msg_s_head, string(ansmsg.buf[:ansmsg.mlen]), pipe)
 	} else {
+		st.cacheLock.Lock()
 		st.conn = s_conn
-		st.cacheLock.RLock()
 		if st.cacheMsg != "" {
 			s_conn.Write([]byte(st.cacheMsg))
 		}
-		st.cacheLock.RUnlock()
+		st.cacheLock.Unlock()
 		ansmsg.gen(&hello, 0)
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_msg_s_head, string(ansmsg.buf[:ansmsg.mlen]), pipe)
 		go func() {
@@ -1966,6 +1966,12 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 						}
 					}
 				} else {
+					timeNow.RLock()
+					session.pipe.Add(int64(len(session.recvMsg)), timeNow.Unix())
+					timeNow.RUnlock()
+					if *bCache {
+						recv += session.recvMsg
+					}
 					if smartSession != nil {
 						smartSession.onRecv([]byte(session.recvMsg))
 					}
@@ -1991,6 +1997,13 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 					if *bCache && client.action == "socks5" {
 						recv += string(arr[:size])
 					}
+				}
+			} else {
+				timeNow.RLock()
+				session.pipe.Add(int64(size), timeNow.Unix())
+				timeNow.RUnlock()
+				if *bCache && client.action == "socks5" {
+					recv += string(arr[:size])
 				}
 			}
 		}
