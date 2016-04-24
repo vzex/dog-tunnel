@@ -57,7 +57,7 @@ const (
 const WriteBufferSize = pipe.WriteBufferSize
 
 var authKey = flag.String("auth", "", "key for auth")
-var pipeN = flag.Int("pipe", 1, "pipe num(todo...)")
+var pipeN = flag.Int("pipe", 1, "pipe num(max 100)")
 var bTcp = flag.Bool("tcp", false, "use tcp to replace udp")
 var xorData = flag.String("xor", "", "xor key,c/s must use a some key")
 
@@ -1117,8 +1117,9 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 			if action == eTunnel_msg_s_head {
 				//log.Println("eTunnel_msg_s_head", []byte(content)[1], session.headFailN, session.headSendN)
 				if []byte(content)[1] != 0 {
+					sc.checkDecide(sessionId, pipe==nil)
 					if atomic.AddInt32(&session.headFailN, 1) > 1 {
-						sc.unDecide(sessionId)
+						//sc.unDecide(sessionId)
 					} else {
 						return
 					}
@@ -1743,17 +1744,18 @@ func (st *smartSession) start(hello reqMsg) {
 	}
 }
 
-func (sc *Client) unDecide(sessionId int) {
+func (sc *Client) checkDecide(sessionId int, bLocal bool) {
 	if sc.socks5_arg != "smart" {
 		return
 	}
 	sc.monitorLock.Lock()
 	session, b := sc.monitorTbl[sessionId]
 	if b {
-		host := session.way.host
-		sc.hostWayLock.Lock()
-		delete(sc.hostWayTbl, host)
-		sc.hostWayLock.Unlock()
+		decide := session.way.decide
+		if (decide == DecideLocal && bLocal) || (decide == DecideRemote && !bLocal) {
+			log.Println("smart cancel decide", session.way.host)
+			session.way.decide = NotDecide
+		}
 	}
 	sc.monitorLock.Unlock()
 }
@@ -1771,14 +1773,14 @@ func (sc *Client) endSmartMonitor(sessionId int, bLocal bool) {
 			if bLocal {
 				session.way.times += 1
 				if session.way.times > *smartCount {
-					log.Println("decide local", session.way.host)
+					log.Println("smart decide local", session.way.host)
 					session.way.decide = DecideLocal
 					session.way.overt = timeNow.Add(5 * time.Minute)
 				}
 			} else {
 				session.way.times -= 1
 				if session.way.times < -*smartCount {
-					log.Println("decide remote", session.way.host)
+					log.Println("smart decide remote", session.way.host)
 					session.way.decide = DecideRemote
 					session.way.overt = timeNow.Add(5 * time.Minute)
 				}
@@ -1834,6 +1836,7 @@ out:
 			sc.hostWayLock.Lock()
 			for host, way := range sc.hostWayTbl {
 				if now.After(way.overt) {
+					log.Println("smart remove decide", host)
 					delete(sc.hostWayTbl, host)
 				}
 			}
