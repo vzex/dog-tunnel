@@ -3,7 +3,7 @@
 -action 指明通道行为，默认socks5（socks5代理服务）,可设置ip:port，作为端口转发用，客户端可指定该参数，当服务端指定参数时会强制采用服务端策略, 指定参数route将开启透明代理模式，windows版本不支持该模式，该模式下请自行设置用户的DNS和网关，将需要的tcp连接通过iptables转发到-local端口即可
 -auth 用于简单的登录验证，两端不一致时客户端会被断开
 -debug 调试输出
--dnscache 当socks5模式时有效，指定dns缓存时间，默认0，单位分钟
+-dnscache 当socks5(socks5_smart)模式时有效，指定dns缓存时间，默认0，单位分钟,socks5_smart模式下近端也可指定该参数,因为会有请求通过近端解析
 -encrypt 客户端指定，表示该通道是否启用消息加密
 -local 通道连通时本地监听端口，格式ip:port
 -pipe 通道个数，默认1，最大10
