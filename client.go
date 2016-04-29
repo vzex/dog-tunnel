@@ -2001,12 +2001,12 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 	if client.action != "socks5" {
 		if client.bSmart {
 			way = client.getHostWay(host)
-			if pipe == nil && way != nil {
-				way.decide = DecideLocal
-			}
-			if way != nil && way.decide != NotDecide {
+			if way != nil && (way.decide != NotDecide || pipe == nil) {
 				session.decideLock.Lock()
 				session.decide = way.decide
+				if pipe == nil {
+					session.decide = DecideLocal
+				}
 				sessionDecide = session.decide
 				session.decideLock.Unlock()
 			}
@@ -2040,12 +2040,12 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 			session.processSockProxy(string(arr[0:size]), func(head []byte, _host string, hello reqMsg) {
 				host = _host
 				way = client.getHostWay(host)
-				if pipe == nil && way != nil {
-					way.decide = DecideLocal
-				}
-				if way != nil && way.decide != NotDecide {
+				if way != nil && (way.decide != NotDecide || pipe == nil) {
 					session.decideLock.Lock()
 					session.decide = way.decide
+					if pipe == nil {
+						session.decide = DecideLocal
+					}
 					sessionDecide = session.decide
 					session.decideLock.Unlock()
 				}
