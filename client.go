@@ -91,7 +91,7 @@ const maxPipes = 100
 
 var pipen int32 = 0
 
-func clientReport(r int) {
+func clientReport(r int, bSmart bool) {
 	if r >= 0 {
 		_pipen := atomic.AddInt32(&pipen, 1)
 		if _pipen == int32(*pipeN) {
@@ -119,7 +119,9 @@ func clientReport(r int) {
 			client, bHave := g_ClientMap[*serviceAddr]
 			g_ClientMapLock.RUnlock()
 			if bHave {
-				client.Quit()
+				if !bSmart {
+					client.Quit()
+				}
 			}
 		}
 	}
@@ -239,15 +241,19 @@ func getDecodeFunc(aesBlock cipher.Block) func([]byte) []byte {
 	}
 }
 
-func CreateSessionAndLoop(bIsTcp bool, idindex int) {
-	CreateSession(bIsTcp, idindex)
-	time.AfterFunc(time.Second*3, func() {
-		CreateSessionAndLoop(bIsTcp, idindex)
+func CreateSessionAndLoop(bIsTcp bool, idindex int, bSmart bool) {
+	CreateSession(bIsTcp, idindex, bSmart)
+	dt := 3
+	if bSmart {
+		dt = 15
+	}
+	time.AfterFunc(time.Second*time.Duration(dt), func() {
+		CreateSessionAndLoop(bIsTcp, idindex, bSmart)
 	})
-	log.Println("sys will reconnect pipe", idindex, "after 3 seconds")
+	log.Println("sys will reconnect pipe", idindex, "after "+strconv.Itoa(dt)+" seconds")
 }
 
-func CreateSession(bIsTcp bool, idindex int) bool {
+func CreateSession(bIsTcp bool, idindex int, bSmart bool) bool {
 	var s_conn net.Conn
 	var err error
 	if bIsTcp {
@@ -298,7 +304,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	client.pipesLock.Lock()
 	client.pipes[idindex] = pinfo
 	client.pipesLock.Unlock()
-	clientReport(idindex)
+	clientReport(idindex, bSmart)
 	callback := func(conn net.Conn, sessionId int, action byte, content []byte) {
 		var msg string
 		if client.decode != nil {
@@ -314,7 +320,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 		common.ReadUDP(s_conn, callback, pipe.ReadBufferSize)
 	}
 	log.Println("remove pipe", idindex)
-	clientReport(-1)
+	clientReport(-1, bSmart)
 	client.pipesLock.Lock()
 	delete(client.pipes, idindex)
 	client.pipesLock.Unlock()
@@ -323,7 +329,7 @@ func CreateSession(bIsTcp bool, idindex int) bool {
 	client.pipesLock.RLock()
 	l := len(client.pipes)
 	client.pipesLock.RUnlock()
-	if l == 0 {
+	if l == 0 && !bSmart {
 		client.Quit()
 	}
 	return true
@@ -808,7 +814,7 @@ func main() {
 				}
 			}
 			for i := 0; i < *pipeN; i++ {
-				go CreateSessionAndLoop(*bTcp, i)
+				go CreateSessionAndLoop(*bTcp, i, client.bSmart)
 			}
 			w.Done()
 		}
