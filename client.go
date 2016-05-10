@@ -1149,7 +1149,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 			return
 		}
 		if conn != nil {
-			if action == eTunnel_msg_s_head {
+			if action == eTunnel_msg_s_head && sc.bSmart {
 				//log.Println("eTunnel_msg_s_head", []byte(content)[1], session.headFailN, session.headSendN)
 				if []byte(content)[1] != 0 {
 					sc.checkDecide(sessionId, pipe == nil)
@@ -1205,10 +1205,10 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		}
 	case eTunnel_close_s:
 		if session != nil {
-                        if !sc.bSmart {
+			if !sc.bSmart {
 				go sc.removeSession(sessionId)
-                                return
-                        }
+				return
+			}
 			session.decideLock.Lock()
 			decide := session.decide
 			session.decideLock.Unlock()
