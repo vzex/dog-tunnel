@@ -242,6 +242,25 @@ func getDecodeFunc(aesBlock cipher.Block) func([]byte) []byte {
 	}
 }
 
+func CreateMainClient(id string) *Client {
+	client := &Client{id: id, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan struct{}), monitorTbl: make(map[int]*smartSession), hostWayTbl: make(map[string]*hostWay)}
+	client.smartN = *smartCount
+	g_ClientMapLock.Lock()
+	g_ClientMap[id] = client
+	g_ClientMapLock.Unlock()
+	if *sessionTimeout > 0 {
+		go client.sessionCheckDie()
+	}
+	client.reverseAddr = *localAddr
+	client.action, client.bUdp, client.bSmart = checkUdp(*remoteAction)
+	if client.bSmart {
+		if !*bReverse {
+			go client.checkSmart()
+			go client.MultiListen()
+		}
+	}
+	return client
+}
 func CreateSessionAndLoop(bIsTcp bool, idindex int, bSmart bool) {
 	CreateSession(bIsTcp, idindex, bSmart)
 	dt := 3
@@ -273,7 +292,7 @@ func CreateSession(bIsTcp bool, idindex int, bSmart bool) bool {
 	g_ClientMapLock.RUnlock()
 	if !bHave {
 		log.Println("can't find the client")
-		return false
+		client = CreateMainClient(*serviceAddr)
 	}
 	if *authKey != "" {
 		log.Println("request auth key", *authKey)
@@ -801,22 +820,7 @@ func main() {
 			client, bHave := g_ClientMap[id]
 			g_ClientMapLock.RUnlock()
 			if !bHave {
-				client = &Client{id: id, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan struct{}), monitorTbl: make(map[int]*smartSession), hostWayTbl: make(map[string]*hostWay)}
-				client.smartN = *smartCount
-				g_ClientMapLock.Lock()
-				g_ClientMap[id] = client
-				g_ClientMapLock.Unlock()
-				if *sessionTimeout > 0 {
-					go client.sessionCheckDie()
-				}
-				client.reverseAddr = *localAddr
-				client.action, client.bUdp, client.bSmart = checkUdp(*remoteAction)
-				if client.bSmart {
-					if !*bReverse {
-						go client.checkSmart()
-						go client.MultiListen()
-					}
-				}
+				client = CreateMainClient(id)
 			}
 			for i := 0; i < *pipeN; i++ {
 				go CreateSessionAndLoop(*bTcp, i, client.bSmart)
