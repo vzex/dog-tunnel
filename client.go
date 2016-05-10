@@ -51,6 +51,7 @@ const (
 	eTunnel_close
 	eTunnel_open
 	eTunnel_msg_s_head
+	eInit_smartN
 )
 
 //var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
@@ -297,6 +298,9 @@ func CreateSession(bIsTcp bool, idindex int, bSmart bool) bool {
 	}
 	client.stimeout = *sessionTimeout
 	common.WriteCrypt(s_conn, -1, eInit_action, []byte(*remoteAction), client.encode)
+	if client.smartN > 0 {
+		common.WriteCrypt(s_conn, -1, eInit_smartN, []byte(strconv.Itoa(client.smartN)), client.encode)
+	}
 
 	timeNow.RLock()
 	pinfo := &pipeInfo{conn: s_conn, total: 0, t: timeNow.Unix(), owner: nil, newindex: 0}
@@ -798,6 +802,7 @@ func main() {
 			g_ClientMapLock.RUnlock()
 			if !bHave {
 				client = &Client{id: id, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan struct{}), monitorTbl: make(map[int]*smartSession), hostWayTbl: make(map[string]*hostWay)}
+				client.smartN = *smartCount
 				g_ClientMapLock.Lock()
 				g_ClientMap[id] = client
 				g_ClientMapLock.Unlock()
@@ -807,8 +812,8 @@ func main() {
 				client.reverseAddr = *localAddr
 				client.action, client.bUdp, client.bSmart = checkUdp(*remoteAction)
 				if client.bSmart {
-					go client.checkSmart()
 					if !*bReverse {
+						go client.checkSmart()
 						go client.MultiListen()
 					}
 				}
@@ -1043,6 +1048,8 @@ type Client struct {
 
 	hostWayTbl  map[string]*hostWay
 	hostWayLock sync.RWMutex
+
+	smartN int
 }
 
 // pipe : client to client
@@ -1216,11 +1223,15 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 			sc.action, sc.bUdp, sc.bSmart = checkUdp(*remoteAction)
 			go common.WriteCrypt(pipe, sessionId, eInit_action_back, []byte(*remoteAction), sc.encode)
 		}
+	case eInit_smartN:
+		sc.smartN, _ = strconv.Atoi(content)
+		log.Println("init smartN ", content)
 	case eReverse:
 		sc.reverseAddr = content
-		if !sc.bSmart {
-			go sc.MultiListen()
+		if sc.smartN > 0 {
+			go sc.checkSmart()
 		}
+		go sc.MultiListen()
 	case eReady:
 		currReadyId++
 		sc.readyId = strconv.Itoa(currReadyId)
@@ -1841,13 +1852,13 @@ func (sc *Client) endSmartMonitor(sessionId int, bLocal bool) {
 			//log.Println("endSmartMonitor", sessionId, bLocal, session.way.host, session.way.times)
 			if bLocal {
 				session.way.times += 1
-				if session.way.times > *smartCount {
+				if session.way.times > sc.smartN {
 					log.Println("smart decide local", session.way.host)
 					session.way.decide = DecideLocal
 				}
 			} else {
 				session.way.times -= 1
-				if session.way.times < -*smartCount {
+				if session.way.times < -sc.smartN {
 					log.Println("smart decide remote", session.way.host)
 					session.way.decide = DecideRemote
 				}
