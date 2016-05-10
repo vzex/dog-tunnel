@@ -1205,6 +1205,10 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		}
 	case eTunnel_close_s:
 		if session != nil {
+                        if !sc.bSmart {
+				go sc.removeSession(sessionId)
+                                return
+                        }
 			session.decideLock.Lock()
 			decide := session.decide
 			session.decideLock.Unlock()
