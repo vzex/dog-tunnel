@@ -293,7 +293,7 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 	}
 	session.kcp = ikcp.Ikcp_create(uint32(session.id), session)
 	session.kcp.Output = udp_output
-	ikcp.Ikcp_wndsize(session.kcp, 128, 128)
+	ikcp.Ikcp_wndsize(session.kcp, 1024, 1024)
 	ikcp.Ikcp_nodelay(session.kcp, 1, 10, 2, 1)
 	go session.loop()
 	return session, nil
@@ -384,7 +384,7 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 					session.status = "ok"
 					session.kcp = ikcp.Ikcp_create(uint32(session.id), session)
 					session.kcp.Output = udp_output
-					ikcp.Ikcp_wndsize(session.kcp, 128, 128)
+					ikcp.Ikcp_wndsize(session.kcp, 1024, 1024)
 					ikcp.Ikcp_nodelay(session.kcp, 1, 10, 2, 1)
 					go session.loop()
 					go func() {
@@ -487,7 +487,7 @@ func (session *UDPMakeSession) loop() {
 			case <-recoverChan:
 				fastCheck = false
 				for _, r := range waitList {
-					log.Println("recover writing data")
+					//log.Println("recover writing data")
 					select {
 					case r <- struct{}{}:
 					case <-session.quitChan:
