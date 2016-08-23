@@ -104,6 +104,7 @@ type Listener struct {
 	readBuffer   []byte
 	sessions     map[string]*UDPMakeSession
 	sessionsLock sync.RWMutex
+	setting      *KcpSetting
 }
 
 func (l *Listener) Accept() (net.Conn, error) {
@@ -160,7 +161,7 @@ func (l *Listener) inner_loop() {
 				l.sessionsLock.Lock()
 				l.sessions[addr] = session
 				l.sessionsLock.Unlock()
-				session.serverInit(l)
+				session.serverInit(l, l.setting)
 				session.serverDo(string(l.readBuffer[:n]))
 			}
 			//log.Println("debug out.........")
@@ -207,6 +208,10 @@ func (l *Listener) loop() {
 }
 
 func Listen(addr string) (*Listener, error) {
+	return ListenWithSetting(addr, DefaultKcpSetting())
+}
+
+func ListenWithSetting(addr string, setting *KcpSetting) (*Listener, error) {
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return nil, err
@@ -216,7 +221,7 @@ func Listen(addr string) (*Listener, error) {
 		return nil, _err
 	}
 
-	listener := &Listener{connChan: make(chan *UDPMakeSession), quitChan: make(chan struct{}), sock: sock, readBuffer: make([]byte, ReadBufferSize), sessions: make(map[string]*UDPMakeSession)}
+	listener := &Listener{connChan: make(chan *UDPMakeSession), quitChan: make(chan struct{}), sock: sock, readBuffer: make([]byte, ReadBufferSize), sessions: make(map[string]*UDPMakeSession), setting: setting}
 	go listener.loop()
 	return listener, nil
 }
@@ -225,7 +230,27 @@ func Dial(addr string) (*UDPMakeSession, error) {
 	return DialTimeout(addr, 30)
 }
 
+type KcpSetting struct {
+	Nodelay  int32
+	Interval int32 //not for set
+	Resend   int32
+	Nc       int32
+
+	Sndwnd int32
+	Rcvwnd int32
+
+	Mtu int32
+}
+
+func DefaultKcpSetting() *KcpSetting {
+	return &KcpSetting{Nodelay: 1, Interval: 10, Resend: 2, Nc: 1, Sndwnd: 1024, Rcvwnd: 1024, Mtu: 1400}
+}
+
 func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
+	return DialTimeoutWithSetting(addr, timeout, DefaultKcpSetting())
+}
+
+func DialTimeoutWithSetting(addr string, timeout int, setting *KcpSetting) (*UDPMakeSession, error) {
 	bReset := false
 	if timeout < 5 {
 		bReset = true
@@ -274,6 +299,7 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 		}
 	})
 	if code != 0 {
+		log.Println("handshakefail test", code)
 		return nil, errors.New("handshake fail,1")
 	}
 	code = session.doAndWait(func() {
@@ -293,8 +319,9 @@ func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
 	}
 	session.kcp = ikcp.Ikcp_create(uint32(session.id), session)
 	session.kcp.Output = udp_output
-	ikcp.Ikcp_wndsize(session.kcp, 1024, 1024)
-	ikcp.Ikcp_nodelay(session.kcp, 1, 10, 2, 1)
+	ikcp.Ikcp_wndsize(session.kcp, setting.Sndwnd, setting.Rcvwnd)
+	ikcp.Ikcp_nodelay(session.kcp, setting.Nodelay, setting.Interval, setting.Resend, setting.Nc)
+	ikcp.Ikcp_setmtu(session.kcp, setting.Mtu)
 	go session.loop()
 	return session, nil
 }
@@ -345,7 +372,7 @@ func (session *UDPMakeSession) serverDo(s string) {
 		}
 	}()
 }
-func (session *UDPMakeSession) serverInit(l *Listener) {
+func (session *UDPMakeSession) serverInit(l *Listener, setting *KcpSetting) {
 	go func() {
 		c := time.NewTicker(50 * time.Millisecond)
 		defer func() {
@@ -364,6 +391,7 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 				switch session.status {
 				case "init":
 					if status != FirstSYN {
+						log.Println("status != FirstSYN, reset", session.remote, status)
 						session.sock.WriteToUDP(makeEncode(session.encodeBuffer, Reset, 0), session.remote)
 						return
 					}
@@ -379,13 +407,19 @@ func (session *UDPMakeSession) serverInit(l *Listener) {
 					overTime = time.Now().Unix() + session.timeout
 				case "firstack":
 					if status != SndSYN {
+						log.Println("status != SndSYN, nothing", session.remote, status)
+						/*
+							if status == FirstSYN {
+								session.sock.WriteToUDP(makeEncode(session.encodeBuffer, FirstACK, session.id), session.remote)
+							}*/
 						return
 					}
 					session.status = "ok"
 					session.kcp = ikcp.Ikcp_create(uint32(session.id), session)
 					session.kcp.Output = udp_output
-					ikcp.Ikcp_wndsize(session.kcp, 1024, 1024)
-					ikcp.Ikcp_nodelay(session.kcp, 1, 10, 2, 1)
+					ikcp.Ikcp_wndsize(session.kcp, setting.Sndwnd, setting.Rcvwnd)
+					ikcp.Ikcp_nodelay(session.kcp, setting.Nodelay, setting.Interval, setting.Resend, setting.Nc)
+					ikcp.Ikcp_setmtu(session.kcp, setting.Mtu)
 					go session.loop()
 					go func() {
 						select {
