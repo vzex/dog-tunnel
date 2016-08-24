@@ -23,6 +23,9 @@ tar zcvf dtunnel_mac_x64_$1_lite.tgz dtunnel_lite
 echo "build win32"
 GOOS=windows GOARCH=386 make && mv dtunnel_lite dtunnel_lite.exe
 tar zcvf dtunnel_win32_$1_lite.tgz dtunnel_lite.exe
+echo "build win64"
+GOOS=windows GOARCH=amd64 make && mv dtunnel_lite dtunnel_lite.exe
+tar zcvf dtunnel_win64_$1_lite.tgz dtunnel_lite.exe
 #cd $GOROOT/src
 #GOOS=linux GOARCH=arm sh ./make.bash
 #cd -
