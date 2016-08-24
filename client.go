@@ -61,10 +61,11 @@ var authKey = flag.String("auth", "", "key for auth")
 var pipeN = flag.Int("pipe", 1, "pipe num(max 100)")
 var bTcp = flag.Bool("tcp", false, "use tcp to replace udp")
 var xorData = flag.String("xor", "", "xor key,c/s must use a some key")
+var kcpSettings = flag.String("kcp", "", "k1:v1;k2:v2;... k in (nodelay, resend, nc, snd, rcv, mtu),two sides should use the same setting")
 
 var serviceAddr = flag.String("service", "", "listen addr for client connect")
 var localAddr = flag.String("local", "", "if local not empty, treat me as client, this is the addr for local listen, otherwise, treat as server,use \"udp:\" ahead, open udp port")
-var remoteAction = flag.String("action", "socks5", "for client control server, if action is socks5,remote is socks5 server, if is addr like 127.0.0.1:22, remote server is a port redirect server, can use \"udp:\" ahead,\"route\" is for transparent socks")
+var remoteAction = flag.String("action", "", "for client to control server, if action is socks5,remote is socks5 server, if is addr like 127.0.0.1:22, remote server is a port redirect server, can use \"udp:\" ahead,\"route\" is for transparent socks, client default socks5, server default empty,if server's action is not empty, it will force clients's action=server's action")
 var bVerbose = flag.Bool("v", false, "verbose mode")
 var bShowVersion = flag.Bool("version", false, "show version")
 var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
@@ -91,6 +92,40 @@ var cacheChan chan reqArg
 const maxPipes = 100
 
 var pipen int32 = 0
+
+func getKcpSetting() *pipe.KcpSetting {
+	setting := pipe.DefaultKcpSetting()
+	if *kcpSettings != "" {
+		arr := strings.Split(*kcpSettings, ";")
+		for _, v := range arr {
+			_arr := strings.Split(v, ":")
+			if len(_arr) == 2 {
+				k := _arr[0]
+				var val int32
+				var _val int
+				_val, _ = strconv.Atoi(_arr[1])
+				val = int32(_val)
+
+				switch k {
+				case "nodelay":
+					setting.Nodelay = val
+				case "resend":
+					setting.Resend = val
+				case "nc":
+					setting.Nc = val
+				case "snd":
+					setting.Sndwnd = val
+				case "rcv":
+					setting.Rcvwnd = val
+				case "mtu":
+					setting.Mtu = val
+				}
+			}
+		}
+	}
+	setting.Xor = *xorData
+	return setting
+}
 
 func clientReport(r int, bSmart bool) {
 	if r >= 0 {
@@ -279,7 +314,8 @@ func CreateSession(bIsTcp bool, idindex int, bSmart bool) bool {
 	if bIsTcp {
 		s_conn, err = net.DialTimeout("tcp", *serviceAddr, 30*time.Second)
 	} else {
-		s_conn, err = pipe.DialTimeout(*serviceAddr, *timeOut)
+		setting := getKcpSetting()
+		s_conn, err = pipe.DialTimeoutWithSetting(*serviceAddr, *timeOut, setting)
 	}
 	if err != nil {
 		log.Println("try dial err", err.Error())
@@ -365,7 +401,8 @@ func Listen(bIsTcp bool, addr string) bool {
 		g_LocalConnLock.Unlock()
 	} else {
 		g_LocalConnLock.Lock()
-		g_LocalConn, err = pipe.Listen(addr)
+		setting := getKcpSetting()
+		g_LocalConn, err = pipe.ListenWithSetting(addr, setting)
 		g_LocalConnLock.Unlock()
 	}
 	if err != nil {
@@ -681,6 +718,9 @@ func main() {
 	}
 	if *localAddr == "" {
 		clientType = 0
+	}
+	if *remoteAction == "" &&  clientType == 1 {
+		*remoteAction = "socks5"
 	}
 	if *smartCount > 0 {
 		if *remoteAction == "socks5" || *remoteAction == "route" {
