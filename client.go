@@ -79,7 +79,7 @@ var sessionTimeout = flag.Int("session_timeout", 0, "if > 0, session will check 
 var bCache = flag.Bool("cache", false, "(valid in socks5 mode)if cache is true,save files requested with GET method into cache/ dir,cache request not pass through server side,no support for https")
 
 var clientType = 1
-var currReadyId = 0
+var currReadyId int32 = 0
 
 type reqArg struct {
 	url   string
@@ -441,23 +441,31 @@ func Listen(bIsTcp bool, addr string) bool {
 		}
 
 		idindex := -1
+		maxId := 0
+		f := func(i int) {
+			idindex = i
+			timeNow.RLock()
+			now := timeNow.Unix()
+			timeNow.RUnlock()
+			client.pipesLock.Lock()
+			client.pipes[idindex] = &pipeInfo{conn: conn, total: 0, t: now, owner: nil, newindex: 0}
+			client.pipesLock.Unlock()
+		}
 		for i := 0; i < maxPipes; i++ {
 			client.pipesLock.RLock()
 			_, bHave := client.pipes[i]
 			client.pipesLock.RUnlock()
+			if maxId < i {
+				maxId = i
+			}
 			if !bHave {
-				idindex = i
-				timeNow.RLock()
-				now := timeNow.Unix()
-				timeNow.RUnlock()
-				client.pipesLock.Lock()
-				client.pipes[i] = &pipeInfo{conn: conn, total: 0, t: now, owner: nil, newindex: 0}
-				client.pipesLock.Unlock()
+				f(i)
 				break
 			}
 		}
 		if idindex == -1 {
-			log.Println("cannot over max pipes", maxPipes, "for", id)
+			f(maxId + 1)
+			log.Println("over max pipes", maxPipes, "for", id, maxId+1)
 		} else {
 			log.Println("add pipe", idindex, "for", id)
 		}
@@ -719,7 +727,7 @@ func main() {
 	if *localAddr == "" {
 		clientType = 0
 	}
-	if *remoteAction == "" &&  clientType == 1 {
+	if *remoteAction == "" && clientType == 1 {
 		*remoteAction = "socks5"
 	}
 	if *smartCount > 0 {
@@ -1281,8 +1289,8 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		}
 		go sc.MultiListen()
 	case eReady:
-		currReadyId++
-		sc.readyId = strconv.Itoa(currReadyId)
+		atomic.AddInt32(&currReadyId, 1)
+		sc.readyId = strconv.Itoa(int(currReadyId))
 		log.Println("currid", sc.readyId, sc.id)
 		common.WriteCrypt(pipe, -1, eReadyback, []byte(sc.readyId), sc.encode)
 	case eReadyback:
@@ -1310,33 +1318,49 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		for _, c := range g_ClientMap {
 			if c.readyId == readyId {
 				log.Println("collect", sc.id, "=>", c.id, readyId)
+				if c == sc {
+					log.Println("collect", sc.id, "pipe already", readyId)
+				}
+				maxId := 0
+
+				f := func(c *Client, i int) {
+					timeNow.RLock()
+					now := timeNow.Unix()
+					timeNow.RUnlock()
+					c.pipesLock.Lock()
+					c.pipes[i] = &pipeInfo{conn: pipe, total: 0, t: now, owner: nil, newindex: 0}
+					c.pipesLock.Unlock()
+					newindex := 0
+					sc.pipesLock.RLock()
+					for _i, _info := range sc.pipes {
+						if _info.conn == pipe {
+							_info.Lock()
+							_info.newindex = i
+							_info.owner = c
+							_info.Unlock()
+							newindex = _i
+							break
+						}
+					}
+					sc.pipesLock.RUnlock()
+					log.Println("collect", sc.id, "pipe", newindex, "=>", c.id, "pipe", i)
+				}
+				ok := false
 				for i := 1; i < maxPipes; i++ {
+					if maxId < i {
+						maxId = i
+					}
 					c.pipesLock.RLock()
 					_, b := c.pipes[i]
 					c.pipesLock.RUnlock()
 					if !b {
-						timeNow.RLock()
-						now := timeNow.Unix()
-						timeNow.RUnlock()
-						c.pipesLock.Lock()
-						c.pipes[i] = &pipeInfo{conn: pipe, total: 0, t: now, owner: nil, newindex: 0}
-						c.pipesLock.Unlock()
-						newindex := 0
-						sc.pipesLock.RLock()
-						for _i, _info := range sc.pipes {
-							if _info.conn == pipe {
-								_info.Lock()
-								_info.newindex = i
-								_info.owner = c
-								_info.Unlock()
-								newindex = _i
-								break
-							}
-						}
-						sc.pipesLock.RUnlock()
-						log.Println("collect", sc.id, "pipe", newindex, "=>", c.id, "pipe", i)
+						f(c, i)
+						ok = true
 						break
 					}
+				}
+				if !ok {
+					f(c, maxId+1)
 				}
 				break
 			}
