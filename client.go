@@ -1301,6 +1301,8 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				log.Println("collect", sc.id, "=>", c.id, readyId)
 				if c == sc {
 					log.Println("collect", sc.id, "pipe already", readyId)
+					g_ClientMapLock.RUnlock()
+					return
 				}
 				maxId := 0
 
