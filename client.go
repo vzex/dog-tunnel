@@ -57,26 +57,26 @@ const (
 //var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 const WriteBufferSize = pipe.WriteBufferSize
 
-var authKey = flag.String("auth", "", "key for auth")
-var pipeN = flag.Int("pipe", 1, "pipe num(max 100)")
-var bTcp = flag.Bool("tcp", false, "use tcp to replace udp")
-var xorData = flag.String("xor", "", "xor key,c/s must use a some key")
-var kcpSettings = flag.String("kcp", "", "k1:v1;k2:v2;... k in (nodelay, resend, nc, snd, rcv, mtu),two sides should use the same setting")
+var authKey = flag.String("auth", "", "cs: key for auth")
+var pipeN = flag.Int("pipe", 1, "c: pipe num")
+var bTcp = flag.Bool("tcp", false, "cs: use tcp to replace udp")
+var xorData = flag.String("xor", "", "cs: xor key,c/s must use a some key")
+var kcpSettings = flag.String("kcp", "", "cs: k1:v1;k2:v2;... k in (nodelay, resend, nc, snd, rcv, mtu),two sides should use the same setting")
 
-var serviceAddr = flag.String("service", "", "listen addr for client connect")
-var localAddr = flag.String("local", "", "if local not empty, treat me as client, this is the addr for local listen, otherwise, treat as server,use \"udp:\" ahead, open udp port")
-var remoteAction = flag.String("action", "", "for client to control server, if action is socks5,remote is socks5 server, if is addr like 127.0.0.1:22, remote server is a port redirect server, can use \"udp:\" ahead,\"route\" is for transparent socks, client default socks5, server default empty,if server's action is not empty, it will force clients's action=server's action")
-var bVerbose = flag.Bool("v", false, "verbose mode")
-var bShowVersion = flag.Bool("version", false, "show version")
-var bEncrypt = flag.Bool("encrypt", false, "p2p mode encrypt")
-var dnsCacheNum = flag.Int("dnscache", 0, "if > 0, dns will cache xx minutes")
-var timeOut = flag.Int("timeout", 100, "udp pipe set timeout(seconds)")
-var smartCount = flag.Int("smartN", 0, "if >0, smart mode open(just for socks5 or route mode),it means how many requests of the same url at least are needed for sys to decide whether request going locally or remotely")
+var serviceAddr = flag.String("service", "", "cs: listen addr for client connect")
+var localAddr = flag.String("local", "", "c: if local not empty, treat me as client, this is the addr for local listen, otherwise, treat as server,use \"udp:\" ahead, open udp port")
+var remoteAction = flag.String("action", "", "c: for client to control server, if action is socks5,remote is socks5 server, if is addr like 127.0.0.1:22, remote server is a port redirect server, can use \"udp:\" ahead,\"route\" is for transparent socks, client default socks5, server default empty,if server's action is not empty, it will force clients's action=server's action")
+var bVerbose = flag.Bool("v", false, "c|s: verbose mode")
+var bShowVersion = flag.Bool("version", false, "c|s: show version")
+var bEncrypt = flag.Bool("encrypt", false, "c: p2p mode encrypt")
+var dnsCacheNum = flag.Int("dnscache", 0, "c|s: if > 0, dns will cache xx minutes")
+var timeOut = flag.Int("timeout", 100, "c: udp pipe set timeout(seconds)")
+var smartCount = flag.Int("smartN", 0, "c: if >0, smart mode open(just for socks5 or route mode),it means how many requests of the same url at least are needed for sys to decide whether request going locally or remotely")
 
-var bDebug = flag.Int("debug", 0, "more output log")
-var bReverse = flag.Bool("r", false, "reverse mode, if true, client 's \"-local\" address will be listened on server side")
-var sessionTimeout = flag.Int("session_timeout", 0, "if > 0, session will check itself if it's alive, if no msg tranfer for some seconds, socket will be closed, use this to avoid of zombie tcp sockets")
-var bCache = flag.Bool("cache", false, "(valid in socks5 mode)if cache is true,save files requested with GET method into cache/ dir,cache request not pass through server side,no support for https")
+var bDebug = flag.Int("debug", 0, "c|s: more output log")
+var bReverse = flag.Bool("r", false, "c: reverse mode, if true, client 's \"-local\" address will be listened on server side")
+var sessionTimeout = flag.Int("session_timeout", 0, "c: if > 0, session will check itself if it's alive, if no msg tranfer for some seconds, socket will be closed, use this to avoid of zombie tcp sockets")
+var bCache = flag.Bool("cache", false, "c: (valid in socks5 mode)if cache is true,save files requested with GET method into cache/ dir,cache request not pass through server side,no support for https")
 
 var clientType = 1
 var currReadyId int32 = 0
@@ -88,8 +88,6 @@ type reqArg struct {
 }
 
 var cacheChan chan reqArg
-
-const maxPipes = 100
 
 var pipen int32 = 0
 
@@ -440,36 +438,23 @@ func Listen(bIsTcp bool, addr string) bool {
 			}
 		}
 
-		idindex := -1
 		maxId := 0
 		f := func(i int) {
-			idindex = i
 			timeNow.RLock()
 			now := timeNow.Unix()
 			timeNow.RUnlock()
-			client.pipesLock.Lock()
-			client.pipes[idindex] = &pipeInfo{conn: conn, total: 0, t: now, owner: nil, newindex: 0}
-			client.pipesLock.Unlock()
+			client.pipes[i] = &pipeInfo{conn: conn, total: 0, t: now, owner: nil, newindex: 0}
 		}
-		for i := 0; i < maxPipes; i++ {
-			client.pipesLock.RLock()
-			_, bHave := client.pipes[i]
-			client.pipesLock.RUnlock()
+		client.pipesLock.Lock()
+		for i, _ := range client.pipes {
 			if maxId < i {
 				maxId = i
 			}
-			if !bHave {
-				f(i)
-				break
-			}
 		}
-		if idindex == -1 {
-			f(maxId + 1)
-			log.Println("over max pipes", maxPipes, "for", id, maxId+1)
-		} else {
-			log.Println("add pipe", idindex, "for", id)
-		}
-		go client.ServerProcess(bIsTcp, idindex)
+		f(maxId + 1)
+		client.pipesLock.Unlock()
+		log.Println("add pipe", "for", maxId+1)
+		go client.ServerProcess(bIsTcp, maxId+1)
 	}
 	g_LocalConnLock.Lock()
 	g_LocalConn = nil
@@ -740,10 +725,6 @@ func main() {
 	_, bUdp, _ := checkUdp(*remoteAction)
 	if bUdp && *sessionTimeout == 0 {
 		println("you must assign session_timeout arg")
-		return
-	}
-	if clientType == 1 && *pipeN > maxPipes {
-		println("pipe need <=", maxPipes)
 		return
 	}
 	if *bEncrypt {
@@ -1327,41 +1308,30 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					timeNow.RLock()
 					now := timeNow.Unix()
 					timeNow.RUnlock()
-					c.pipesLock.Lock()
 					c.pipes[i] = &pipeInfo{conn: pipe, total: 0, t: now, owner: nil, newindex: 0}
-					c.pipesLock.Unlock()
-					newindex := 0
 					sc.pipesLock.RLock()
+					old := 0
 					for _i, _info := range sc.pipes {
 						if _info.conn == pipe {
 							_info.Lock()
 							_info.newindex = i
+							old = _i
 							_info.owner = c
 							_info.Unlock()
-							newindex = _i
 							break
 						}
 					}
 					sc.pipesLock.RUnlock()
-					log.Println("collect", sc.id, "pipe", newindex, "=>", c.id, "pipe", i)
+					log.Println("collect", sc.id, "pipe", old, "=>", c.id, "pipe", i)
 				}
-				ok := false
-				for i := 1; i < maxPipes; i++ {
+				c.pipesLock.Lock()
+				for i, _ := range c.pipes {
 					if maxId < i {
 						maxId = i
 					}
-					c.pipesLock.RLock()
-					_, b := c.pipes[i]
-					c.pipesLock.RUnlock()
-					if !b {
-						f(c, i)
-						ok = true
-						break
-					}
 				}
-				if !ok {
-					f(c, maxId+1)
-				}
+				f(c, maxId+1)
+				c.pipesLock.Unlock()
 				break
 			}
 		}
