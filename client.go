@@ -77,6 +77,7 @@ var bDebug = flag.Int("debug", 0, "c|s: more output log")
 var bReverse = flag.Bool("r", false, "c: reverse mode, if true, client 's \"-local\" address will be listened on server side")
 var sessionTimeout = flag.Int("session_timeout", 0, "c: if > 0, session will check itself if it's alive, if no msg tranfer for some seconds, socket will be closed, use this to avoid of zombie tcp sockets")
 var bCache = flag.Bool("cache", false, "c: (valid in socks5 mode)if cache is true,save files requested with GET method into cache/ dir,cache request not pass through server side,no support for https")
+var bSrc = flag.Bool("src", false, "c: whether logging src ip, just for tcp redirection")
 
 var clientType = 1
 var currReadyId int32 = 0
@@ -2054,6 +2055,9 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 		host = remote
 	}
 	if client.action != "socks5" {
+		if *bSrc {
+			log.Println("map", conn.RemoteAddr().String(), client.action)
+		}
 		if client.bSmart {
 			way = client.getHostWay(host)
 			if way != nil && (way.decide != NotDecide || pipe == nil) {
@@ -2095,6 +2099,9 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 			session.processSockProxy(string(arr[0:size]), func(head []byte, _host string, hello reqMsg) {
 				host = _host
 				way = client.getHostWay(host)
+				if *bSrc {
+					log.Println("map", conn.RemoteAddr().String(), host)
+				}
 				if way != nil && (way.decide != NotDecide || pipe == nil) {
 					session.decideLock.Lock()
 					session.decide = way.decide
