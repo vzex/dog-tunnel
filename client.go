@@ -65,7 +65,7 @@ var kcpSettings = flag.String("kcp", "", "cs: k1:v1;k2:v2;... k in (nodelay, res
 
 var serviceAddr = flag.String("service", "", "cs: listen addr for client connect")
 var localAddr = flag.String("local", "", "c: if local not empty, treat me as client, this is the addr for local listen, otherwise, treat as server,use \"udp:\" ahead, open udp port")
-var remoteAction = flag.String("action", "", "c: for client to control server, if action is socks5,remote is socks5 server, if is addr like 127.0.0.1:22, remote server is a port redirect server, can use \"udp:\" ahead,\"route\" is for transparent socks, client default socks5, server default empty,if server's action is not empty, it will force clients's action=server's action")
+var remoteAction = flag.String("action", "", "c|s: for client to control server, if action is socks5,remote is socks5 server, if is addr like 127.0.0.1:22, remote server is a port redirect server, can use \"udp:\" ahead,\"route\" is for transparent socks, client default socks5, server default empty,if server's action is not empty, it will force clients's action=server's action")
 var bVerbose = flag.Bool("v", false, "c|s: verbose mode")
 var bShowVersion = flag.Bool("version", false, "c|s: show version")
 var bEncrypt = flag.Bool("encrypt", false, "c: p2p mode encrypt")

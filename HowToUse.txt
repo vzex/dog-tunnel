@@ -1,25 +1,33 @@
-参数说明
-
+参数说明  v1.20
+    所有参数前面加了c/s字样，用于描述参数的可使用范围
+    c表示只能客户端使用，s只能服务端
+    cs代表两端必须一致 c|s代表两端都可以用，可不保证一致，具体用法参考--help
 -action 指明通道行为，默认socks5（socks5代理服务）,可设置ip:port，作为端口转发用，客户端可指定该参数，当服务端指定参数时会强制采用服务端策略, 指定参数route将开启透明代理模式，windows版本不支持该模式，该模式下请自行设置用户的DNS和网关，将需要的tcp连接通过iptables转发到-local端口即可
 -auth 用于简单的登录验证，两端不一致时客户端会被断开
--debug 调试输出
+-debug 调试输出,需要和-v一起使用
 -dnscache (有加速效果)当socks5(socks5_smart)模式时有效，指定dns缓存时间，默认0，单位分钟,socks5_smart模式下近端也可指定该参数,因为会有请求通过近端解析
 -encrypt 客户端指定，表示该通道是否启用消息加密
 -local 通道连通时本地监听端口，格式ip:port
--pipe (有加速效果)通道个数，默认1，最大100
+-pipe (有加速效果)通道个数，默认1
 -r 反向模式，true时客户端触发action行为，服务端监听local指定的端口
 -service 通道服务端地址，客户端指定时为连接地址，服务端指定时为监听地址，用于通道打通，双方地址一致，一般为服务端ip:port
 -tcp tcp模式，默认false，使用udp模式在网络差的环境下效率更高，cpu占用也更高(待优化),两端需一致
 -timeout 客户端执行连接超时时间，tcp模式关闭模式时有效
 -v 更多输出信息
 -version 版本信息
+-src 记录来源ip和访问目的ip
+
 -xor 两端须一致，用于udp模式握手加密,内容为任意字符串(主要用于隐藏通讯协议特征，建议设置)
 -session_timeout 指定连接会话在不活跃状态时多久（秒）后被销毁，防止被动连接的情况下产生僵尸socket，默认0不自动销毁
+-kcp 可设置kcp协议相关参数，高级用户使用，格式参考-kcp nodelay:1;snd=100; 
 
+------------------------------------
+可直接跳到文章最下端的参数详解部分阅读
+------------------------------------
 
 使用：
 服务端开启
-dtunnel_lite -service 127.0.0.1:1234 -v -action "" -xor 1213343
+dtunnel_lite -service 127.0.0.1:1234 -v -xor 1213343
 监听本地1234的udp服务端口，action为空表示客户端连接时不限制action行为,如果服务端想限制客户端行为，可强制设置action内容
 xor为用户指定字符串用于握手加密，可不指定
 
@@ -56,6 +64,71 @@ dtunnel_lite 最基本的三个参数 -service, -local, -action
 带-local参数的即为近端，不带即为远端(服务端)
 -local 代表近端连接远端成功后，本地需要监听什么端口，比如做端口映射，-local :8888代表本地监听8888端口，你连接本地的8888端口即连接到了被映射的远端端口了
 -action 是代表近端连接远端后-local端口具体的行为，这个行为可以是 端口映射(tcp或者udp)，socks5代理(或者socks5_smart模式), route(route_smart)模式，该参数一般由近端指定，远端指定的话，会强制近端使用远端
-的策略，这个参数的默认值为socks5，因此如果近端想做端口映射或者其他服务，需要远端设置-action ""来解除限制
+的策略，这个参数的默认值客户端为socks5，服务端为空
 
 其他参数请根据需要添加
+
+------------------------------------
+参数详解
+------------------------------------
+
+还是以本地1234服务端口为例
+最基本用法,开启socks5代理，代理端口8787
+s: ./dtunnel_lite -service 127.0.0.1:1234
+c: ./dtunnel_lite -service 127.0.0.1:1234 -local :8787
+
+
+开启端口映射，远端(这里的远端还是本机) 22 端口映射到端口8787
+s: ./dtunnel_lite -service 127.0.0.1:1234
+c: ./dtunnel_lite -service 127.0.0.1:1234 -local :8787 -action 127.0.0.1:22
+
+服务端限制只能允许socks5
+s: ./dtunnel_lite -service 127.0.0.1:1234 -action socks5
+c: ./dtunnel_lite -service 127.0.0.1:1234 -local :8787 -action 127.0.0.1:22
+这条c的行为会被强制改为socks5代理
+
+下面以上面的socks5为例，说一下其他参数用法
+双端异或加密
+s: ./dtunnel_lite -service 127.0.0.1:1234 -xor 3333
+c: ./dtunnel_lite -service 127.0.0.1:1234 -local :8787 -xor 3333
+xor会把包含握手阶段的所有数据进行异或运算，隐藏特征码
+
+-encrypt参数加密
+s: ./dtunnel_lite -service 127.0.0.1:1234 -xor 3333
+c: ./dtunnel_lite -service 127.0.0.1:1234 -local :8787 -xor 3333 -encrypt
+传输数据时使用aes加解密，同时也包含了异或运算（狗洞没有做数据校验，以后版本可能会支持）
+
+-auth
+进行连接认证(其实还在考虑要不要把这个参数去掉，因为目前来说和xor能达到的效果是比较类似的，虽然意义不一样,-xor不一致的时候握手失败，而-auth不一致是逻辑上的登录失败)
+s: ./dtunnel_lite -service 127.0.0.1:1234 -xor 3333 -auth xxx
+c: ./dtunnel_lite -service 127.0.0.1:1234 -local :8787 -xor 3333 -encrypt -auth xxx
+
+-timeout添加握手超时检查(同样指定时长内会话连接没有响应也会断开，会话本身有ping机制，没有数据传输也会保持响应)
+s: ./dtunnel_lite -service 127.0.0.1:1234 -xor 3333 -auth xxx
+c: ./dtunnel_lite -service 127.0.0.1:1234 -local :8787 -xor 3333 -encrypt -auth xxx -timeout 10
+
+-session_timeout
+用于处理某些连到客户端的僵尸连接，如果我本身做了端口映射，需要和本地端口保持长连接的，那么这个参数没有必要，但是如果是socks5这种，本身没有保持长连接一直不断线的必要，可能浏览器或者其他程序连到本地监听的端口后因为某些异常导致tcp连接无法正常断开，那么可能会有僵尸连接存在，设了这个参数，当连接时长超过这个时间没有数据交互时，连接会断开(注意，是把本地监听的8787端口连上来的客户端断开，而不是c/s之间的连接断开)
+s: ./dtunnel_lite -service 127.0.0.1:1234 -xor 3333 -auth xxx
+c: ./dtunnel_lite -service 127.0.0.1:1234 -local :8787 -xor 3333 -encrypt -auth xxx -timeout 10 -session_timeout 60
+
+-smartN n开启smart模式, n=0的时候关闭
+这个数值是个经验值，表示对应的网址请求n次后会根据请求速度对比产生决策，到底之后是要走c端代理，还是s端代理，c端代理的话，就和本地直接访问一样了，s端代理就是默认的代理方式
+如果你想长期使用socks5代理，又不想不停的添加过滤规则决定哪些需要代理哪些不需要代理的话，这个模式是你最好的选择
+s: ./dtunnel_lite -service 127.0.0.1:1234 -xor 3333 -auth xxx
+c: ./dtunnel_lite -service 127.0.0.1:1234 -local :8787 -xor 3333 -encrypt -auth xxx -timeout 10 -session_timeout 60 -smartN 5
+
+
+-dnscache n缓存域名,socks5模式下，服务端加上这个参数可以起到加速的作用
+非smart模式的socks5代理(默认就是)
+s: ./dtunnel_lite -service 127.0.0.1:1234 -xor 3333 -auth xxx -dnscache 10
+c: ./dtunnel_lite -service 127.0.0.1:1234 -local :8787 -xor 3333 -encrypt -auth xxx -timeout 10 -session_timeout 60
+smart模式的socks5代理,客户端也可以加这个参数，因为会有请求直接通过客户端来访问
+s: ./dtunnel_lite -service 127.0.0.1:1234 -xor 3333 -auth xxx -dnscache 10
+c: ./dtunnel_lite -service 127.0.0.1:1234 -local :8787 -xor 3333 -encrypt -auth xxx -timeout 10 -session_timeout 60 -smartN 5 -dnscache 10
+
+-action route
+路由模式，这个是一般和iptables配合使用，一般将网关的tcp请求转发过来，同样支持smart模式，不举例说明了
+
+另外，狗洞的socks5针对socks5协议头和浏览器端的交互单独做了优化，协议头部分是c端直接和浏览器交互的，避免和s端来回通讯影响速度，所以直接用狗洞
+开socks5服务，和通过狗洞映射端口的方式加速远端的其他socks5服务相比的话，理论上前者实现的方式是要更快的
