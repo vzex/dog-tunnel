@@ -1,6 +1,6 @@
 package nat
 
-import "../ikcp"
+import "github.com/vzex/dog-tunnel/ikcp"
 
 import (
 	"errors"

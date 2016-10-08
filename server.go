@@ -1,9 +1,6 @@
 package main
 
 import (
-	"./admin"
-	"./auth"
-	"./common"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -16,6 +13,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/vzex/dog-tunnel/admin"
+	"github.com/vzex/dog-tunnel/auth"
+	"github.com/vzex/dog-tunnel/common"
 )
 
 var listenAddr = flag.String("addr", "0.0.0.0:8000", "server addr")
