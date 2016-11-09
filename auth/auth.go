@@ -1,14 +1,15 @@
 package auth
 
 import (
-	"../common"
 	"database/sql"
 	"errors"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
 	"log"
 	"reflect"
 	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/vzex/dog-tunnel/common"
 )
 
 const (

@@ -1,14 +1,15 @@
 package admin
 
 import (
-	"../auth"
-	"../common"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"strconv"
+
+	"github.com/vzex/dog-tunnel/auth"
+	"github.com/vzex/dog-tunnel/common"
 )
 
 var g_AdminCommands map[string]cmdHandler

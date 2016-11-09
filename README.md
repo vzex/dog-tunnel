@@ -7,6 +7,9 @@ It's amazing fast and stable , gain better performance than other tunnel solutio
 It's written with pure golang by vzex.
 
 ## Installation
+### Build From Source:
+
+go get -u -d github.com/vzex/dog-tunnel && cd $GOPATH/src/github.com/vzex/dog-tunnel/ && make
 
 ### [Run dog tunnel with docker container](doc/docker.md)
 
