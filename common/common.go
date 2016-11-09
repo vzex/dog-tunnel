@@ -13,7 +13,7 @@ import (
 	"strconv"
 )
 
-const Version = 0.70
+const Version = 0.80
 
 type ClientSetting struct {
 	AccessKey string
@@ -82,7 +82,7 @@ func Read(conn net.Conn, callback ReadCallBack) {
 		if l < headerLen*3 {
 			return 0, nil, nil
 		}
-		if l > 1048576 {  //1024*1024=1048576
+		if l > 1048576 { //1024*1024=1048576
 			conn.Close()
 			log.Println("invalid query!")
 			return 0, nil, errors.New("too large data!")

@@ -11,9 +11,8 @@ import (
 )
 
 const (
-	normalMsg = byte(iota)
-	confirmMsg
-	pingMsg
+	Ping byte = 1
+	Data byte = 2
 )
 
 var bDebug = flag.Bool("debug", false, "whether show nat pipe debug msg")
@@ -57,11 +56,12 @@ type Conn struct {
 	tmp            []byte
 	tmp2           []byte
 	encode, decode func([]byte) []byte
+	overTime       int64
 }
 
 func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 	sock.SetDeadline(time.Time{})
-	conn := &Conn{conn: sock, local: local, remote: remote, closed: false, quit: make(chan bool), tmp: make([]byte, 2000), tmp2: make([]byte, 2000), sendChan: make(chan string, 10), checkCanWrite: make(chan chan bool), readChan: make(chan cache)}
+	conn := &Conn{conn: sock, local: local, remote: remote, closed: false, quit: make(chan bool), tmp: make([]byte, 2000), tmp2: make([]byte, 2000), sendChan: make(chan string, 10), checkCanWrite: make(chan chan bool), readChan: make(chan cache), overTime: time.Now().Unix() + 30}
 	debug("create", id)
 	conn.kcp = ikcp.Ikcp_create(uint32(id), conn)
 	conn.kcp.Output = udp_output
@@ -97,26 +97,59 @@ func (c *Conn) onUpdate() {
 			}
 		}
 	}()
+	ping := make(chan struct{})
+	pingC := 0
+
 	updateChan := time.NewTicker(20 * time.Millisecond)
 	waitList := [](chan bool){}
 	recoverChan := make(chan bool)
 	var waitRecvCache *cache
+	go func() {
+		select {
+		case ping <- struct{}{}:
+		case <-c.quit:
+		}
+
+	}()
 out:
 	for {
 		select {
+		case <-ping:
+			pingC++
+			if pingC >= 4 {
+				pingC = 0
+				go c.Ping()
+			}
+			if time.Now().Unix() > c.overTime {
+				log.Println("overtime close", c.LocalAddr().String(), c.RemoteAddr().String())
+				go c.Close()
+			} else {
+				time.AfterFunc(300*time.Millisecond, func() {
+					select {
+					case ping <- struct{}{}:
+					case <-c.quit:
+					}
+				})
+			}
 		case cache := <-c.readChan:
 			for {
 				hr := ikcp.Ikcp_recv(c.kcp, c.tmp2, 2000)
 				if hr > 0 {
-					copy(cache.b, c.tmp2[:hr])
-					if c.decode != nil {
-						d := c.decode(cache.b[:hr])
-						copy(cache.b, d)
-						hr = int32(len(d))
-					}
-					select {
-					case cache.c <- int(hr):
-					case <-c.quit:
+					action := c.tmp2[0]
+					if action == Data {
+						copy(cache.b, c.tmp2[1:hr])
+						hr--
+						if c.decode != nil {
+							d := c.decode(cache.b[:hr])
+							copy(cache.b, d)
+							hr = int32(len(d))
+						}
+						select {
+						case cache.c <- int(hr):
+						case <-c.quit:
+						}
+					} else {
+						continue
 					}
 				} else {
 					waitRecvCache = &cache
@@ -124,22 +157,29 @@ out:
 				break
 			}
 		case b := <-recvChan:
+			c.overTime = time.Now().Unix() + 30
 			ikcp.Ikcp_input(c.kcp, b, len(b))
 			if waitRecvCache != nil {
 				ca := *waitRecvCache
 				for {
 					hr := ikcp.Ikcp_recv(c.kcp, c.tmp2, 2000)
 					if hr > 0 {
-						waitRecvCache = nil
-						copy(ca.b, c.tmp2[:hr])
-						if c.decode != nil {
-							d := c.decode(ca.b[:hr])
-							copy(ca.b, d)
-							hr = int32(len(d))
-						}
-						select {
-						case ca.c <- int(hr):
-						case <-c.quit:
+						action := c.tmp2[0]
+						if action == Data {
+							waitRecvCache = nil
+							copy(ca.b, c.tmp2[1:hr])
+							hr--
+							if c.decode != nil {
+								d := c.decode(ca.b[:hr])
+								copy(ca.b, d)
+								hr = int32(len(d))
+							}
+							select {
+							case ca.c <- int(hr):
+							case <-c.quit:
+							}
+						} else {
+							continue
 						}
 					} else {
 					}
@@ -234,7 +274,10 @@ func (c *Conn) Write(b []byte) (int, error) {
 	case c.checkCanWrite <- wc:
 		select {
 		case <-wc:
-			c.sendChan <- string(b[:sendL])
+			data := make([]byte, sendL+1)
+			data[0] = Data
+			copy(data[1:], b)
+			c.sendChan <- string(data)
 		case <-c.quit:
 		}
 	case <-c.quit:
@@ -242,6 +285,23 @@ func (c *Conn) Write(b []byte) (int, error) {
 	return sendL, nil
 }
 
+func (c *Conn) Ping() (int, error) {
+	if c.closed {
+		return 0, errors.New("eof")
+	}
+	wc := make(chan bool)
+	select {
+	case c.checkCanWrite <- wc:
+		select {
+		case <-wc:
+			data := []byte{Ping}
+			c.sendChan <- string(data)
+		case <-c.quit:
+		}
+	case <-c.quit:
+	}
+	return 1, nil
+}
 func (c *Conn) Close() error {
 	if !c.closed {
 		c.closed = true
