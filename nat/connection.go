@@ -46,7 +46,7 @@ func udp_output(buf []byte, _len int32, kcp *ikcp.Ikcpcb, user interface{}) int3
 		case <-c.quit:
 		}
 	}()
-	c.output(buf[:_len])
+	//c.output(buf[:_len])
 	//c.conn.WriteTo(buf[:_len], c.remote)
 	return 0
 }
