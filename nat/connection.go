@@ -29,6 +29,7 @@ var defaultQueueSize = 1
 
 const dataLimit = 4000
 const SendBuffSize = 2000
+const CacheBuffSize = SendBuffSize + 1000
 
 func debug(args ...interface{}) {
 	if *bDebug {
@@ -93,7 +94,7 @@ type Conn struct {
 
 func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 	sock.SetDeadline(time.Time{})
-	conn := &Conn{conn: sock, local: local, remote: remote, closed: false, quit: make(chan bool), tmp: make([]byte, 2000), tmp2: make([]byte, 2000), sendChan: make(chan string, 10), checkCanWrite: make(chan chan bool), readChan: make(chan cache), overTime: time.Now().Unix() + 30, fecWriteId: 0, fecSendC: 0, outputChan: make(chan []byte)}
+	conn := &Conn{conn: sock, local: local, remote: remote, closed: false, quit: make(chan bool), tmp: make([]byte, CacheBuffSize), tmp2: make([]byte, CacheBuffSize), sendChan: make(chan string, 10), checkCanWrite: make(chan chan bool), readChan: make(chan cache), overTime: time.Now().Unix() + 30, fecWriteId: 0, fecSendC: 0, outputChan: make(chan []byte)}
 	debug("create", id)
 	conn.kcp = ikcp.Ikcp_create(uint32(id), conn)
 	conn.kcp.Output = udp_output
@@ -216,7 +217,7 @@ out:
 			}
 		case cache := <-c.readChan:
 			for {
-				hr := ikcp.Ikcp_recv(c.kcp, c.tmp2, 2000)
+				hr := ikcp.Ikcp_recv(c.kcp, c.tmp2, CacheBuffSize)
 				if hr > 0 {
 					action := c.tmp2[0]
 					if action == Data {
@@ -296,7 +297,7 @@ out:
 			if waitRecvCache != nil {
 				ca := *waitRecvCache
 				for {
-					hr := ikcp.Ikcp_recv(c.kcp, c.tmp2, 2000)
+					hr := ikcp.Ikcp_recv(c.kcp, c.tmp2, CacheBuffSize)
 					if hr > 0 {
 						action := c.tmp2[0]
 						if action == Data {

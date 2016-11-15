@@ -1171,7 +1171,7 @@ func handleLocalPortResponse(client *Client, id string) {
 	if conn == nil {
 		return
 	}
-	arr := make([]byte, 1000)
+	arr := make([]byte, nat.SendBuffSize)
 	reader := bufio.NewReader(conn)
 	for {
 		size, err := reader.Read(arr)
@@ -1199,7 +1199,7 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 	}
 	conn := session.localConn
 	common.Write(pipe, sessionId, "tunnel_open", "")
-	arr := make([]byte, 1000)
+	arr := make([]byte, nat.SendBuffSize)
 	reader := bufio.NewReader(conn)
 	for {
 		size, err := reader.Read(arr)
