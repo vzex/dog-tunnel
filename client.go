@@ -62,6 +62,8 @@ var pipeN = flag.Int("pipe", 1, "c: pipe num")
 var bTcp = flag.Bool("tcp", false, "cs: use tcp to replace udp")
 var xorData = flag.String("xor", "", "cs: xor key,c/s must use a some key")
 var kcpSettings = flag.String("kcp", "", "cs: k1:v1;k2:v2;... k in (nodelay, resend, nc, snd, rcv, mtu),two sides should use the same setting")
+var dataShards = flag.Int("ds", 0, "c: dataShards for fec")
+var parShards = flag.Int("ps", 0, "c: pariryShards for fec")
 
 var serviceAddr = flag.String("service", "", "cs: listen addr for client connect")
 var localAddr = flag.String("local", "", "c: if local not empty, treat me as client, this is the addr for local listen, otherwise, treat as server,use \"udp:\" ahead, open udp port")
@@ -314,7 +316,7 @@ func CreateSession(bIsTcp bool, idindex int, bSmart bool) bool {
 		s_conn, err = net.DialTimeout("tcp", *serviceAddr, 30*time.Second)
 	} else {
 		setting := getKcpSetting()
-		s_conn, err = pipe.DialTimeoutWithSetting(*serviceAddr, *timeOut, setting)
+		s_conn, err = pipe.DialTimeoutWithSetting(*serviceAddr, *timeOut, setting, *dataShards, *parShards)
 	}
 	if err != nil {
 		log.Println("try dial err", err.Error())
