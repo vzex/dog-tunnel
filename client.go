@@ -34,6 +34,9 @@ var serverBustAddr = flag.String("buster", "dog-tunnel.tk:8018", "MakeHole serve
 
 var addInitAddr = flag.String("addip", "127.0.0.1", "addip for bust,xx.xx.xx.xx;xx.xx.xx.xx;")
 var pipeNum = flag.Int("pipen", 1, "pipe num for transmission")
+var kcpSettings = flag.String("kcp", "", "k1:v1;k2:v2;... k in (nodelay, resend, nc, snd, rcv, mtu),two sides should use the same setting")
+var dataShards = flag.Int("ds", 0, "dataShards for fec")
+var parityShards = flag.Int("ps", 0, "parityShards for fec")
 
 var serveName = flag.String("reg", "", "reg the name for client link, must assign reg or link")
 
@@ -361,6 +364,40 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 	}
 }
 
+func getKcpSetting() *nat.KcpSetting {
+	setting := nat.DefaultKcpSetting()
+	if *kcpSettings != "" {
+		arr := strings.Split(*kcpSettings, ";")
+		for _, v := range arr {
+			_arr := strings.Split(v, ":")
+			if len(_arr) == 2 {
+				k := _arr[0]
+				var val int32
+				var _val int
+				_val, _ = strconv.Atoi(_arr[1])
+				val = int32(_val)
+
+				switch k {
+				case "nodelay":
+					setting.Nodelay = val
+				case "resend":
+					setting.Resend = val
+				case "nc":
+					setting.Nc = val
+				case "snd":
+					setting.Sndwnd = val
+				case "rcv":
+					setting.Rcvwnd = val
+				case "mtu":
+					setting.Mtu = val
+				}
+			}
+		}
+	}
+	//setting.Xor = *xorData
+	return setting
+}
+
 func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
 	id := session.id
 	var otherAddrList string
@@ -379,6 +416,9 @@ func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
 	outip += ";" + *addInitAddr
 	_id, _ := strconv.Atoi(id)
 	engine, err := nat.Init(outip, buster, _id, *serverBustAddr)
+	engine.Kcp = getKcpSetting()
+	engine.D = *dataShards
+	engine.P = *parityShards
 	if err != nil {
 		println("init error", err.Error())
 		disconnect()

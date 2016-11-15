@@ -7,7 +7,7 @@ import (
 	"errors"
 	"flag"
 	"log"
-	"math/rand"
+	//"math/rand"
 	"net"
 	"time"
 )
@@ -18,9 +18,6 @@ const (
 
 	FecData byte = 1
 	FecOver byte = 2
-
-	DataShards   = 5
-	ParityShards = 3
 )
 
 var bDebug = flag.Bool("debug", false, "whether show nat pipe debug msg")
@@ -81,15 +78,34 @@ type Conn struct {
 	encode, decode func([]byte) []byte
 	overTime       int64
 
-	fecW         *reedsolomon.Encoder
-	fecR         *reedsolomon.Encoder
-	fecRCacheTbl map[uint]*fecInfo
-	fecWCacheTbl map[uint]*fecInfo
-	fecCanWrite  bool
-	fecWriteId   uint //uint16
-	fecSendC     uint
-	fecSendL     int
-	fecRecvId    uint
+	fecDataShards   int
+	fecParityShards int
+	fecW            *reedsolomon.Encoder
+	fecR            *reedsolomon.Encoder
+	fecRCacheTbl    map[uint]*fecInfo
+	fecWCacheTbl    map[uint]*fecInfo
+	fecWriteId      uint //uint16
+	fecSendC        uint
+	fecSendL        int
+	fecRecvId       uint
+}
+
+type KcpSetting struct {
+	Nodelay  int32
+	Interval int32 //not for set
+	Resend   int32
+	Nc       int32
+
+	Sndwnd int32
+	Rcvwnd int32
+
+	Mtu int32
+
+	//Xor string
+}
+
+func DefaultKcpSetting() *KcpSetting {
+	return &KcpSetting{Nodelay: 1, Interval: 10, Resend: 2, Nc: 1, Sndwnd: 1024, Rcvwnd: 1024, Mtu: 1400}
 }
 
 func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
@@ -98,13 +114,18 @@ func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 	debug("create", id)
 	conn.kcp = ikcp.Ikcp_create(uint32(id), conn)
 	conn.kcp.Output = udp_output
-	ikcp.Ikcp_wndsize(conn.kcp, 128, 128)
-	ikcp.Ikcp_nodelay(conn.kcp, 1, 10, 2, 1)
-	//conn.SetFec(DataShards, ParityShards)
+	conn.SetKcp(DefaultKcpSetting())
 	return conn
 }
 
+func (c *Conn) SetKcp(setting *KcpSetting) {
+	ikcp.Ikcp_wndsize(c.kcp, setting.Sndwnd, setting.Rcvwnd)
+	ikcp.Ikcp_nodelay(c.kcp, setting.Nodelay, setting.Interval, setting.Resend, setting.Nc)
+	ikcp.Ikcp_setmtu(c.kcp, setting.Mtu)
+}
 func (c *Conn) SetFec(DataShards, ParityShards int) (er error) {
+	c.fecDataShards = DataShards
+	c.fecParityShards = ParityShards
 	var fec reedsolomon.Encoder
 	fec, er = reedsolomon.New(DataShards, ParityShards)
 	if er != nil {
@@ -115,7 +136,6 @@ func (c *Conn) SetFec(DataShards, ParityShards int) (er error) {
 	if er == nil {
 		c.fecRCacheTbl = make(map[uint]*fecInfo)
 		c.fecWCacheTbl = make(map[uint]*fecInfo)
-		c.fecCanWrite = true
 		c.fecW = &fec
 	} else {
 		c.fecR = nil
@@ -179,26 +199,26 @@ out:
 					for id, info := range c.fecRCacheTbl {
 						if curr >= info.overTime {
 							for seq, b := range info.bytes {
-								if len(b) >= 7 && seq < DataShards {
+								if len(b) >= 7 && seq < c.fecDataShards {
 									_len := int(b[0]) | (int(b[1]) << 8)
 									ikcp.Ikcp_input(c.kcp, b[7:], _len)
-									log.Println("timeout,input for resend", seq, id, _len, len(b)-7)
+									//log.Println("timeout,input for resend", seq, id, _len, len(b)-7)
 								}
 							}
 							delete(c.fecRCacheTbl, id)
-							log.Println("timeout after del", id, len(c.fecRCacheTbl))
+							//log.Println("timeout after del", id, len(c.fecRCacheTbl))
 						}
 					}
 					for id, info := range c.fecWCacheTbl {
 						if curr >= info.overTime {
-							for seq, b := range info.bytes {
+							for _, b := range info.bytes {
 								c.conn.WriteTo(b, c.remote)
-								log.Println("timeout,write ", seq, id)
+								//log.Println("timeout,write ", seq, id)
 							}
 							delete(c.fecWCacheTbl, id)
 							c.fecSendC = 0
 							c.fecSendL = 0
-							log.Println("flush timeout send id", id)
+							//log.Println("flush timeout send id", id)
 							break
 						}
 					}
@@ -246,18 +266,17 @@ out:
 				if len(b) <= 7 {
 					break
 				}
-				_len := int(b[0]) | (int(b[1]) << 8)
 				id := uint(int(b[2]) | (int(b[3]) << 8) | (int(b[4]) << 16) | (int(b[5]) << 24))
 				var seq uint = uint(b[6])
 				//binary.Read(head[:4], binary.LittleEndian, &id)
-				log.Println("recv chan", _len, id, seq, c.fecRecvId)
+				//log.Println("recv chan", _len, id, seq, c.fecRecvId)
 				if id < c.fecRecvId {
-					log.Println("drop id for noneed", id, seq)
+					//log.Println("drop id for noneed", id, seq)
 					break
 				}
 				tbl, have := c.fecRCacheTbl[id]
 				if !have {
-					tbl = &fecInfo{make([][]byte, DataShards+ParityShards), time.Now().Unix() + 3}
+					tbl = &fecInfo{make([][]byte, c.fecDataShards+c.fecParityShards), time.Now().Unix() + 3}
 					c.fecRCacheTbl[id] = tbl
 				}
 				if tbl.bytes[seq] != nil {
@@ -272,23 +291,23 @@ out:
 						count++
 					}
 				}
-				if count >= DataShards {
+				if count >= c.fecDataShards {
 					er := (*c.fecR).Reconstruct(tbl.bytes)
 					if er != nil {
-						if count >= DataShards+ParityShards {
+						if count >= c.fecDataShards+c.fecParityShards {
 							log.Println("Reconstruct fail, close pipe", er.Error())
 							go c.Close()
 						}
 						break
 					}
-					log.Println("Reconstruct ok, input", id)
-					for i := 0; i < DataShards; i++ {
+					//log.Println("Reconstruct ok, input", id)
+					for i := 0; i < c.fecDataShards; i++ {
 						_len := int(tbl.bytes[i][0]) | (int(tbl.bytes[i][1]) << 8)
 						ikcp.Ikcp_input(c.kcp, tbl.bytes[i][7:], int(_len))
-						log.Println("input for ok", i, id, _len)
+						///	log.Println("input for ok", i, id, _len)
 					}
 					delete(c.fecRCacheTbl, id)
-					log.Println("after del", id, len(c.fecRCacheTbl))
+					//log.Println("after del", id, len(c.fecRCacheTbl))
 					c.fecRecvId++
 				}
 			} else {
@@ -332,8 +351,8 @@ out:
 			waitList = [](chan bool){}
 		case s := <-c.checkCanWrite:
 			if !c.closed {
-				if (ikcp.Ikcp_waitsnd(c.kcp) > dataLimit) || (c.fecW != nil && !c.fecCanWrite) {
-					log.Println("wait for data limit or fec")
+				if ikcp.Ikcp_waitsnd(c.kcp) > dataLimit {
+					log.Println("wait for data limit")
 					waitList = append(waitList, s)
 					var f func()
 					f = func() {
@@ -392,16 +411,14 @@ func (c *Conn) Read(b []byte) (int, error) {
 
 func (c *Conn) output(b []byte) {
 	if c.fecWCacheTbl == nil {
-		if rand.Intn(100) > 15 {
-			c.conn.WriteTo(b, c.remote)
-		}
+		c.conn.WriteTo(b, c.remote)
 	} else {
 		id := c.fecWriteId
 		c.fecSendC++
 
 		info, have := c.fecWCacheTbl[id]
 		if !have {
-			info = &fecInfo{make([][]byte, DataShards+ParityShards), time.Now().Unix() + 3}
+			info = &fecInfo{make([][]byte, c.fecDataShards+c.fecParityShards), time.Now().Unix() + 3}
 			c.fecWCacheTbl[id] = info
 		}
 		_b := make([]byte, len(b)+7)
@@ -418,16 +435,16 @@ func (c *Conn) output(b []byte) {
 		if c.fecSendL < len(_b) {
 			c.fecSendL = len(_b)
 		}
-		if c.fecSendC >= DataShards {
-			for i := 0; i < DataShards; i++ {
+		if c.fecSendC >= uint(c.fecDataShards) {
+			for i := 0; i < c.fecDataShards; i++ {
 				if c.fecSendL > len(info.bytes[i]) {
 					__b := make([]byte, c.fecSendL)
 					copy(__b, info.bytes[i])
 					info.bytes[i] = __b
 				}
 			}
-			for i := 0; i < ParityShards; i++ {
-				info.bytes[i+DataShards] = make([]byte, c.fecSendL)
+			for i := 0; i < c.fecParityShards; i++ {
+				info.bytes[i+c.fecDataShards] = make([]byte, c.fecSendL)
 			}
 			er := (*c.fecW).Encode(info.bytes)
 			if er != nil {
@@ -435,22 +452,21 @@ func (c *Conn) output(b []byte) {
 				go c.Close()
 				return
 			}
-			for i, _info := range info.bytes {
-				_len := int(_info[0]) | (int(_info[1]) << 8)
-				if rand.Intn(100) >= 15 {
-					c.conn.WriteTo(_info, c.remote)
-					log.Println("output udp id", id, i, _len, len(_info))
-				} else {
-					log.Println("drop output udp id", id, i, _len, len(_info))
-				}
+			for _, _info := range info.bytes {
+				//if rand.Intn(100) >= 15 {
+				c.conn.WriteTo(_info, c.remote)
+				//	log.Println("output udp id", id, i, _len, len(_info))
+				//} else {
+				//	log.Println("drop output udp id", id, i, _len, len(_info))
+				//}
 			}
 			delete(c.fecWCacheTbl, id)
 			c.fecSendC = 0
 			c.fecSendL = 0
 			c.fecWriteId++
-			log.Println("flush id", id)
+			//log.Println("flush id", id)
 		}
-		log.Println("output sn", c.fecWriteId, c.fecSendC, _len)
+		//log.Println("output sn", c.fecWriteId, c.fecSendC, _len)
 	}
 }
 

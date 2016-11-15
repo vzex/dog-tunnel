@@ -40,6 +40,8 @@ type AttemptEngine struct {
 	p2pconn        net.Conn
 	otherReady     bool
 	status         string
+	Kcp            *KcpSetting
+	D, P           int
 }
 
 const probeTimeout = 500 * time.Millisecond
@@ -205,6 +207,12 @@ func (e *AttemptEngine) read() error {
 				if e.p2pconn == nil {
 					debug("make conn success", from.String(), e.local_attempts[i].localaddr.String())
 					e.p2pconn = newConn(e.sock, e.local_attempts[i].Addr, e.local_attempts[i].localaddr, e.id)
+					if e.Kcp != nil {
+						e.p2pconn.(*Conn).SetKcp(e.Kcp)
+					}
+					if e.D > 0 && e.P > 0 {
+						e.p2pconn.(*Conn).SetFec(e.D, e.P)
+					}
 					for j := range e.attempts {
 						my_remote_addr := e.attempts[j].Addr
 						response, err := stun.InformReady(packet.Tid[:], my_remote_addr, nil)
