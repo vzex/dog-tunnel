@@ -160,8 +160,19 @@ func (c *Conn) onUpdate() {
 					break
 				}
 			}
-			b := make([]byte, n)
-			copy(b, c.tmp[:n])
+			var b []byte
+			if *bCompress {
+				_b, _er := zappy.Decode(nil, c.tmp[:n])
+				if _er != nil {
+					log.Println("decompress fail", _er.Error())
+					go c.Close()
+				}
+				//log.Println("decompress", len(_b), n)
+				b = _b
+			} else {
+				b = make([]byte, n)
+				copy(b, c.tmp[:n])
+			}
 			select {
 			case recvChan <- b:
 			case <-c.quit:
@@ -272,16 +283,6 @@ out:
 			}
 		case b := <-recvChan:
 			c.overTime = time.Now().Unix() + 30
-			if *bCompress {
-				_b, _er := zappy.Decode(nil, b)
-				if _er != nil {
-					log.Println("decompress fail", _er.Error())
-					go c.Close()
-					break
-				}
-				//log.Println("decompress", len(_b), len(b))
-				b = _b
-			}
 			if c.fecR != nil {
 				if len(b) <= 7 {
 					break
@@ -473,7 +474,7 @@ func (c *Conn) output(b []byte) {
 		}
 		//if rand.Intn(100) > 20 {
 		c.writeTo(_b)
-		//log.Println("output udp id", id, _len, len(_b))
+		//log.Println("output udp id", id, _len, len(_b), _b[6])
 		//}
 		if c.fecSendC >= uint(c.fecDataShards) {
 			for i := 0; i < c.fecDataShards; i++ {
