@@ -2,6 +2,7 @@ package nat
 
 import "github.com/vzex/dog-tunnel/ikcp"
 import "github.com/klauspost/reedsolomon"
+import "github.com/cznic/zappy"
 
 import (
 	"errors"
@@ -21,6 +22,7 @@ const (
 )
 
 var bDebug = flag.Bool("debug", false, "whether show nat pipe debug msg")
+var bCompress = flag.Bool("compress", false, "whether compress data, two sides should be same")
 
 var defaultQueueSize = 1
 
@@ -80,6 +82,8 @@ type Conn struct {
 	fecSendC        uint
 	fecSendL        int
 	fecRecvId       uint
+
+	compressCache []byte
 }
 
 type KcpSetting struct {
@@ -107,6 +111,9 @@ func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 	conn.kcp = ikcp.Ikcp_create(uint32(id), conn)
 	conn.kcp.Output = udp_output
 	conn.SetKcp(DefaultKcpSetting())
+	if *bCompress {
+		conn.compressCache = make([]byte, CacheBuffSize*2)
+	}
 	return conn
 }
 
@@ -222,7 +229,7 @@ out:
 							if c.fecRecvId <= id {
 								c.fecRecvId = id + 1
 							}
-							log.Println("timeout after del", id, len(c.fecRCacheTbl))
+							//log.Println("timeout after del", id, len(c.fecRCacheTbl))
 						}
 					}
 				}
@@ -265,6 +272,16 @@ out:
 			}
 		case b := <-recvChan:
 			c.overTime = time.Now().Unix() + 30
+			if *bCompress {
+				_b, _er := zappy.Decode(nil, b)
+				if _er != nil {
+					log.Println("decompress fail", _er.Error())
+					go c.Close()
+					break
+				}
+				//log.Println("decompress", len(_b), len(b))
+				b = _b
+			}
 			if c.fecR != nil {
 				if len(b) <= 7 {
 					break
@@ -272,14 +289,14 @@ out:
 				id := uint(int(b[2]) | (int(b[3]) << 8) | (int(b[4]) << 16) | (int(b[5]) << 24))
 				var seq = uint(b[6])
 				_len := int(b[0]) | (int(b[1]) << 8)
-				log.Println("recv chan", len(b), _len, id, seq, c.fecRecvId)
+				//log.Println("recv chan", len(b), _len, id, seq, c.fecRecvId)
 				if id < c.fecRecvId {
-					log.Println("drop id for noneed", id, seq)
+					//log.Println("drop id for noneed", id, seq)
 					break
 				}
 				if seq < uint(c.fecDataShards) {
 					ikcp.Ikcp_input(c.kcp, b[7:], _len)
-					log.Println("direct input udp", id, seq, _len)
+					//log.Println("direct input udp", id, seq, _len)
 				}
 				if seq >= uint(c.fecDataShards+c.fecParityShards) {
 					log.Println("-ds and -ps must be equal on both sides")
@@ -323,25 +340,23 @@ out:
 					}
 					er := (*c.fecR).Reconstruct(tbl.bytes)
 					if er != nil {
-						log.Println("Reconstruct fail", er.Error())
+						//log.Println("Reconstruct fail", er.Error())
 						break
 					} else {
-						log.Println("Reconstruct ok, input", id)
+						//log.Println("Reconstruct ok, input", id)
 						for i := 0; i < c.fecDataShards; i++ {
 							if _, have := markTbl[i]; !have {
 								_len := int(tbl.bytes[i][0]) | (int(tbl.bytes[i][1]) << 8)
 								ikcp.Ikcp_input(c.kcp, tbl.bytes[i][7:], int(_len))
-								log.Println("fec input for mark ok", i, id, _len)
+								//log.Println("fec input for mark ok", i, id, _len)
 							}
 						}
 					}
 					delete(c.fecRCacheTbl, id)
-					log.Println("after del", id, len(c.fecRCacheTbl))
+					//log.Println("after del", id, len(c.fecRCacheTbl))
 					if c.fecRecvId <= id {
 						c.fecRecvId = id + 1
 					}
-				} else {
-					break
 				}
 			} else {
 				ikcp.Ikcp_input(c.kcp, b, len(b))
@@ -416,9 +431,23 @@ func (c *Conn) Read(b []byte) (int, error) {
 	return 0, errors.New("force quit")
 }
 
+func (c *Conn) writeTo(b []byte) {
+	if *bCompress {
+		enc, er := zappy.Encode(c.compressCache, b)
+		if er != nil {
+			log.Println("compress error", er.Error())
+			go c.Close()
+			return
+		}
+		//log.Println("compress", len(b), len(enc))
+		c.conn.WriteTo(enc, c.remote)
+	} else {
+		c.conn.WriteTo(b, c.remote)
+	}
+}
 func (c *Conn) output(b []byte) {
 	if c.fecW == nil {
-		c.conn.WriteTo(b, c.remote)
+		c.writeTo(b)
 	} else {
 		id := c.fecWriteId
 		c.fecSendC++
@@ -443,8 +472,8 @@ func (c *Conn) output(b []byte) {
 			c.fecSendL = len(_b)
 		}
 		//if rand.Intn(100) > 20 {
-		c.conn.WriteTo(_b, c.remote)
-		log.Println("output udp id", id, _len, len(_b))
+		c.writeTo(_b)
+		//log.Println("output udp id", id, _len, len(_b))
 		//}
 		if c.fecSendC >= uint(c.fecDataShards) {
 			for i := 0; i < c.fecDataShards; i++ {
@@ -466,18 +495,18 @@ func (c *Conn) output(b []byte) {
 			for i := c.fecDataShards; i < c.fecDataShards+c.fecParityShards; i++ {
 				_info := info.bytes[i]
 				//if rand.Intn(100) > 20 {
-				c.conn.WriteTo(_info, c.remote)
-				_len := int(_info[0]) | (int(_info[1]) << 8)
-				log.Println("output udp id fec", id, i, _len, len(_info))
+				c.writeTo(_info)
+				//_len := int(_info[0]) | (int(_info[1]) << 8)
+				//log.Println("output udp id fec", id, i, _len, len(_info))
 				//}
 			}
 			c.fecWCacheTbl = nil
 			c.fecSendC = 0
 			c.fecSendL = 0
 			c.fecWriteId++
-			log.Println("flush id", id)
+			//log.Println("flush id", id)
 		}
-		log.Println("output sn", c.fecWriteId, c.fecSendC, _len)
+		//log.Println("output sn", c.fecWriteId, c.fecSendC, _len)
 	}
 }
 

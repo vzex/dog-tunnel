@@ -366,6 +366,7 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 
 func getKcpSetting() *nat.KcpSetting {
 	setting := nat.DefaultKcpSetting()
+	bSetResend := false
 	if *kcpSettings != "" {
 		arr := strings.Split(*kcpSettings, ";")
 		for _, v := range arr {
@@ -382,6 +383,7 @@ func getKcpSetting() *nat.KcpSetting {
 					setting.Nodelay = val
 				case "resend":
 					setting.Resend = val
+					bSetResend = true
 				case "nc":
 					setting.Nc = val
 				case "snd":
@@ -395,6 +397,12 @@ func getKcpSetting() *nat.KcpSetting {
 		}
 	}
 	//setting.Xor = *xorData
+	if *dataShards > 0 && *parityShards > 0 {
+		if !bSetResend {
+			setting.Resend = 0
+			println("resend default to 0 in fec mode")
+		}
+	}
 	return setting
 }
 
@@ -480,6 +488,14 @@ func main() {
 	}
 	if !*bVerbose {
 		log.SetOutput(ioutil.Discard)
+	}
+	if *dataShards < 0 || *dataShards >= 128 {
+		println("-ds should in [0-127]")
+		return
+	}
+	if *parityShards < 0 || *parityShards >= 128 {
+		println("-ds should in [0-127]")
+		return
 	}
 	if *serveName == "" && *linkName == "" {
 		println("you must assign reg or link")
