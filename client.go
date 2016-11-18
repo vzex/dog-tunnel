@@ -1,9 +1,6 @@
 package main
 
 import (
-	"./common"
-	"./pipe"
-	"./platform"
 	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
@@ -11,6 +8,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/vzex/dog-tunnel/common"
+	"github.com/vzex/dog-tunnel/pipe"
+	"github.com/vzex/dog-tunnel/platform"
 	"io/ioutil"
 	"log"
 	"math/rand"
@@ -65,7 +65,6 @@ var kcpSettings = flag.String("kcp", "", "cs: k1:v1;k2:v2;... k in (nodelay, res
 var dataShards = flag.Int("ds", 0, "c: dataShards for fec")
 var parShards = flag.Int("ps", 0, "c: pariryShards for fec")
 var bCompress = flag.Bool("compress", false, "whether compress data, two sides should be same")
-
 
 var serviceAddr = flag.String("service", "", "cs: listen addr for client connect")
 var localAddr = flag.String("local", "", "c: if local not empty, treat me as client, this is the addr for local listen, otherwise, treat as server,use \"udp:\" ahead, open udp port")

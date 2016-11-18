@@ -1,10 +1,10 @@
 package pipe
 
 import (
-	"../common"
-	"../ikcp"
 	"encoding/binary"
 	"errors"
+	"github.com/vzex/dog-tunnel/common"
+	"github.com/vzex/dog-tunnel/ikcp"
 	"log"
 	"net"
 	"sync"
@@ -47,7 +47,7 @@ func iclock() int32 {
 func udp_output(buf []byte, _len int32, kcp *ikcp.Ikcpcb, user interface{}) int32 {
 	c := user.(*UDPMakeSession)
 	//log.Println("send udp", _len, c.remote.String())
-        c.output(buf[:_len])
+	c.output(buf[:_len])
 	return 0
 }
 
@@ -125,7 +125,7 @@ type UDPMakeSession struct {
 
 	xor string
 
-        compressCache []byte
+	compressCache   []byte
 	fecDataShards   int
 	fecParityShards int
 	fecW            *reedsolomon.Encoder
@@ -182,19 +182,19 @@ func (l *Listener) inner_loop() {
 			if bHave {
 				if session.status == "ok" {
 					if session.remote.String() == from.String() && n >= int(ikcp.IKCP_OVERHEAD) {
-                                                var buf []byte
-                                                if n <= 7 || session.compressCache == nil {
-                                                        buf = make([]byte, n)
-                                                        copy(buf, l.readBuffer[:n])
-                                                } else {
-                                                        _b, _er := zappy.Decode(nil, l.readBuffer[:n])
-                                                        if _er != nil {
-                                                                log.Println("decompress fail", _er.Error())
-                                                                go session.Close()
-                                                        }
-                                                        //log.Println("decompress", len(_b), n)
-                                                        buf = _b
-                                                }
+						var buf []byte
+						if n <= 7 || session.compressCache == nil {
+							buf = make([]byte, n)
+							copy(buf, l.readBuffer[:n])
+						} else {
+							_b, _er := zappy.Decode(nil, l.readBuffer[:n])
+							if _er != nil {
+								log.Println("decompress fail", _er.Error())
+								go session.Close()
+							}
+							//log.Println("decompress", len(_b), n)
+							buf = _b
+						}
 						session.DoAction2("input", buf, n)
 					}
 					continue
@@ -338,7 +338,7 @@ func DialTimeoutWithSetting(addr string, timeout int, setting *KcpSetting, ds, p
 	session.sock = sock
 	session.status = "firstsyn"
 	session.timeout = int64(timeout)
-	if ds!= 0 && ps != 0 {
+	if ds != 0 && ps != 0 {
 		er := session.SetFec(ds, ps)
 		if er != nil {
 			log.Println("set fec error:", er.Error())
@@ -346,15 +346,15 @@ func DialTimeoutWithSetting(addr string, timeout int, setting *KcpSetting, ds, p
 			log.Println("set fec ok:", ds, ps)
 		}
 	}
-        if comp {
-                session.compressCache = make([]byte, ReadBufferSize * 1.5)
-        }
+	if comp {
+		session.compressCache = make([]byte, ReadBufferSize*1.5)
+	}
 	_timeout := int(timeout / 2)
 	if _timeout < 5 {
 		timeout = 5
 	}
 	arg := int(int32(timeout) + int32(mainV<<24) + int32(subV<<16))
-	arg2 := int16((ds<<8)|ps)
+	arg2 := int16((ds << 8) | ps)
 	info := makeEncode(session.encodeBuffer, FirstSYN, arg, arg2, session.xor)
 	code := session.doAndWait(func() {
 		sock.WriteToUDP(info, udpAddr)
@@ -460,29 +460,29 @@ out:
 }
 
 func (session *UDPMakeSession) writeTo(b []byte) {
-        if session.compressCache != nil {
-                enc, er := zappy.Encode(session.compressCache, b)
-                if er != nil {
-                        log.Println("compress error", er.Error())
-                        go session.Close()
-                        return
-                }
-                //log.Println("compress", len(b), len(enc))
-                session.sock.WriteTo(enc, session.remote)
-        } else {
-                session.sock.WriteTo(b, session.remote)
-        }
+	if session.compressCache != nil {
+		enc, er := zappy.Encode(session.compressCache, b)
+		if er != nil {
+			log.Println("compress error", er.Error())
+			go session.Close()
+			return
+		}
+		//log.Println("compress", len(b), len(enc))
+		session.sock.WriteTo(enc, session.remote)
+	} else {
+		session.sock.WriteTo(b, session.remote)
+	}
 
 }
 
 func (session *UDPMakeSession) output(b []byte) {
 	if session.fecW == nil {
-                session.writeTo(b)
+		session.writeTo(b)
 	} else {
 		id := session.fecWriteId
 		session.fecSendC++
 
-		info:= session.fecWCacheTbl
+		info := session.fecWCacheTbl
 		if info == nil {
 			info = &fecInfo{make([][]byte, session.fecDataShards+session.fecParityShards), time.Now().Unix() + 15}
 			session.fecWCacheTbl = info
@@ -501,7 +501,7 @@ func (session *UDPMakeSession) output(b []byte) {
 		if session.fecSendL < len(_b) {
 			session.fecSendL = len(_b)
 		}
-                session.writeTo(_b)
+		session.writeTo(_b)
 		if session.fecSendC >= uint(session.fecDataShards) {
 			for i := 0; i < session.fecDataShards; i++ {
 				if session.fecSendL > len(info.bytes[i]) {
@@ -519,12 +519,12 @@ func (session *UDPMakeSession) output(b []byte) {
 				go session.Close()
 				return
 			}
-			for i := session.fecDataShards; i < session.fecDataShards + session.fecParityShards; i++ {
+			for i := session.fecDataShards; i < session.fecDataShards+session.fecParityShards; i++ {
 				//if rand.Intn(100) >= 15 {
-                                _info := info.bytes[i]
-                                session.writeTo(_info)
+				_info := info.bytes[i]
+				session.writeTo(_info)
 				_len := int(_info[0]) | (int(_info[1]) << 8)
-					log.Println("output udp id", id, i, _len, len(_info))
+				log.Println("output udp id", id, i, _len, len(_info))
 				//} else {
 				//	log.Println("drop output udp id", id, i, _len, len(_info))
 				//}
@@ -643,20 +643,20 @@ func (session *UDPMakeSession) loop() {
 					}
 				}
 				if session.remote.String() == from.String() {
-					if n >= int(ikcp.IKCP_OVERHEAD) || n <= 7{
-                                                var buf []byte
-                                                if n <= 7 || session.compressCache == nil {
-                                                        buf = make([]byte, n)
-                                                        copy(buf, session.readBuffer[:n])
-                                                } else {
-                                                        _b, _er := zappy.Decode(nil, session.readBuffer[:n])
-                                                        if _er != nil {
-                                                                log.Println("decompress fail", _er.Error())
-                                                                go session.Close()
-                                                        }
-                                                        //log.Println("decompress", len(_b), n)
-                                                        buf = _b
-                                                }
+					if n >= int(ikcp.IKCP_OVERHEAD) || n <= 7 {
+						var buf []byte
+						if n <= 7 || session.compressCache == nil {
+							buf = make([]byte, n)
+							copy(buf, session.readBuffer[:n])
+						} else {
+							_b, _er := zappy.Decode(nil, session.readBuffer[:n])
+							if _er != nil {
+								log.Println("decompress fail", _er.Error())
+								go session.Close()
+							}
+							//log.Println("decompress", len(_b), n)
+							buf = _b
+						}
 						session.DoAction2("input", buf, n)
 					}
 				}
@@ -695,16 +695,16 @@ func (session *UDPMakeSession) loop() {
 					}
 
 					if session.fecR != nil {
-                                                curr := time.Now().Unix()
-                                                for id, info := range session.fecRCacheTbl {
-                                                        if curr >= info.overTime {
-                                                                delete(session.fecRCacheTbl, id)
-                                                                if session.fecRecvId <= id {
-                                                                        session.fecRecvId = id + 1
-                                                                }
-                                                                //log.Println("timeout after del", id, len(c.fecRCacheTbl))
-                                                        }
-                                                }
+						curr := time.Now().Unix()
+						for id, info := range session.fecRCacheTbl {
+							if curr >= info.overTime {
+								delete(session.fecRCacheTbl, id)
+								if session.fecRecvId <= id {
+									session.fecRecvId = id + 1
+								}
+								//log.Println("timeout after del", id, len(c.fecRCacheTbl))
+							}
+						}
 					}
 				}
 				if time.Now().Unix() > session.overTime {
@@ -804,23 +804,22 @@ func (session *UDPMakeSession) loop() {
 						}
 						id := uint(int(s[2]) | (int(s[3]) << 8) | (int(s[4]) << 16) | (int(s[5]) << 24))
 						var seq uint = uint(s[6])
-                                                _len := int(s[0]) | (int(s[1]) << 8)
+						_len := int(s[0]) | (int(s[1]) << 8)
 
 						//binary.Read(head[:4], binary.LittleEndian, &id)
 						if id < session.fecRecvId {
 							log.Println("drop id for noneed", id, seq)
 							break
 						}
-                                                if seq < uint(session.fecDataShards) {
-                                                        ikcp.Ikcp_input(session.kcp, s[7:], _len)
-                                                        //log.Println("direct input udp", id, seq, _len)
-                                                }
-                                                if seq >= uint(session.fecDataShards+session.fecParityShards) {
-                                                        log.Println("-ds and -ps must be equal on both sides")
-                                                        go session.Close()
-                                                        break
-                                                }
-
+						if seq < uint(session.fecDataShards) {
+							ikcp.Ikcp_input(session.kcp, s[7:], _len)
+							//log.Println("direct input udp", id, seq, _len)
+						}
+						if seq >= uint(session.fecDataShards+session.fecParityShards) {
+							log.Println("-ds and -ps must be equal on both sides")
+							go session.Close()
+							break
+						}
 
 						tbl, have := session.fecRCacheTbl[id]
 						if !have {
@@ -835,51 +834,51 @@ func (session *UDPMakeSession) loop() {
 							tbl.bytes[seq] = s
 						}
 						count := 0
-                                                reaL := 0
+						reaL := 0
 						for _, v := range tbl.bytes {
 							if v != nil {
 								count++
-                                                                if reaL < len(v) {
-                                                                        reaL = len(v)
-                                                                }
+								if reaL < len(v) {
+									reaL = len(v)
+								}
 							}
 						}
 						if count >= session.fecDataShards {
-                                                        markTbl := make(map[int]bool, len(tbl.bytes))
-                                                        for _seq, _b := range tbl.bytes {
-                                                                if _b != nil {
-                                                                        markTbl[_seq] = true
-                                                                }
-                                                        }
-                                                        for i, v := range tbl.bytes {
-                                                                if v != nil {
-                                                                        if len(v) < reaL {
-                                                                                _b := make([]byte, reaL)
-                                                                                copy(_b, v)
-                                                                                tbl.bytes[i] = _b
-                                                                        }
-                                                                }
-                                                        }
+							markTbl := make(map[int]bool, len(tbl.bytes))
+							for _seq, _b := range tbl.bytes {
+								if _b != nil {
+									markTbl[_seq] = true
+								}
+							}
+							for i, v := range tbl.bytes {
+								if v != nil {
+									if len(v) < reaL {
+										_b := make([]byte, reaL)
+										copy(_b, v)
+										tbl.bytes[i] = _b
+									}
+								}
+							}
 
-                                                        er := (*session.fecR).Reconstruct(tbl.bytes)
-                                                        if er != nil {
-                                                                log.Println("2Reconstruct fail, close pipe", count, session.fecDataShards, session.fecParityShards, er.Error())
-                                                                break
-                                                        } else {
-                                                                //log.Println("Reconstruct ok, input", id)
-                                                                for i := 0; i < session.fecDataShards; i++ {
-                                                                        if _, have := markTbl[i]; !have {
-                                                                                _len := int(tbl.bytes[i][0]) | (int(tbl.bytes[i][1]) << 8)
-                                                                                ikcp.Ikcp_input(session.kcp, tbl.bytes[i][7:], int(_len))
-                                                                                //log.Println("fec input for mark ok", i, id, _len)
-                                                                        }
-                                                                }
-                                                        }
-                                                        delete(session.fecRCacheTbl, id)
-                                                        //log.Println("after del", id, len(c.fecRCacheTbl))
-                                                        if session.fecRecvId <= id {
-                                                                session.fecRecvId = id + 1
-                                                        }
+							er := (*session.fecR).Reconstruct(tbl.bytes)
+							if er != nil {
+								log.Println("2Reconstruct fail, close pipe", count, session.fecDataShards, session.fecParityShards, er.Error())
+								break
+							} else {
+								//log.Println("Reconstruct ok, input", id)
+								for i := 0; i < session.fecDataShards; i++ {
+									if _, have := markTbl[i]; !have {
+										_len := int(tbl.bytes[i][0]) | (int(tbl.bytes[i][1]) << 8)
+										ikcp.Ikcp_input(session.kcp, tbl.bytes[i][7:], int(_len))
+										//log.Println("fec input for mark ok", i, id, _len)
+									}
+								}
+							}
+							delete(session.fecRCacheTbl, id)
+							//log.Println("after del", id, len(c.fecRCacheTbl))
+							if session.fecRecvId <= id {
+								session.fecRecvId = id + 1
+							}
 						}
 					} else {
 						if n < 7 {
@@ -887,7 +886,7 @@ func (session *UDPMakeSession) loop() {
 							go session._Close(false)
 							break
 						} else if n == 7 {
-							status, _, _:= makeDecode(s, session.xor)
+							status, _, _ := makeDecode(s, session.xor)
 							if status == Reset || status == ResetAck {
 								log.Println("recv reset2", status)
 								go session._Close(false)
