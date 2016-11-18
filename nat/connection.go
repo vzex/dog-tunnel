@@ -327,8 +327,10 @@ out:
 				}
 				if count >= c.fecDataShards {
 					markTbl := make(map[int]bool, len(tbl.bytes))
-					for _seq := range tbl.bytes {
-						markTbl[_seq] = true
+					for _seq, _b := range tbl.bytes {
+                                                if _b != nil {
+                                                        markTbl[_seq] = true
+                                                }
 					}
 					for i, v := range tbl.bytes {
 						if v != nil {
