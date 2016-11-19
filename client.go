@@ -64,7 +64,7 @@ var xorData = flag.String("xor", "", "cs: xor key,c/s must use a some key")
 var kcpSettings = flag.String("kcp", "", "cs: k1:v1;k2:v2;... k in (nodelay, resend, nc, snd, rcv, mtu),two sides should use the same setting")
 var dataShards = flag.Int("ds", 0, "c: dataShards for fec")
 var parShards = flag.Int("ps", 0, "c: pariryShards for fec")
-var bCompress = flag.Bool("compress", false, "whether compress data, two sides should be same")
+var bCompress = flag.Bool("compress", false, "c: whether compress data, two sides should be same")
 
 var serviceAddr = flag.String("service", "", "cs: listen addr for client connect")
 var localAddr = flag.String("local", "", "c: if local not empty, treat me as client, this is the addr for local listen, otherwise, treat as server,use \"udp:\" ahead, open udp port")
@@ -97,6 +97,7 @@ var pipen int32 = 0
 
 func getKcpSetting() *pipe.KcpSetting {
 	setting := pipe.DefaultKcpSetting()
+	bSetResend := false
 	if *kcpSettings != "" {
 		arr := strings.Split(*kcpSettings, ";")
 		for _, v := range arr {
@@ -113,6 +114,7 @@ func getKcpSetting() *pipe.KcpSetting {
 					setting.Nodelay = val
 				case "resend":
 					setting.Resend = val
+					bSetResend = true
 				case "nc":
 					setting.Nc = val
 				case "snd":
@@ -126,6 +128,12 @@ func getKcpSetting() *pipe.KcpSetting {
 		}
 	}
 	setting.Xor = *xorData
+	if *dataShards > 0 && *parShards > 0 {
+		if !bSetResend {
+			setting.Resend = 0
+			println("resend default to 0 in fec mode")
+		}
+	}
 	return setting
 }
 
@@ -715,6 +723,14 @@ func main() {
 	}
 	if *localAddr == "" {
 		clientType = 0
+	}
+	if *dataShards < 0 || *dataShards >= 128 {
+		println("-ds should in [0-127]")
+		return
+	}
+	if *parShards < 0 || *parShards >= 128 {
+		println("-ds should in [0-127]")
+		return
 	}
 	if *remoteAction == "" && clientType == 1 {
 		*remoteAction = "socks5"
