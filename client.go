@@ -1895,10 +1895,14 @@ func (sc *Client) checkDecide(sessionId int, bLocal bool) {
 	sc.monitorLock.Lock()
 	session, b := sc.monitorTbl[sessionId]
 	if b {
-		decide := session.way.decide
-		if (decide == DecideLocal && bLocal) || (decide == DecideRemote && !bLocal) {
-			log.Println("smart cancel decide", session.way.host)
-			session.way.decide = NotDecide
+		if session.way.decide == NotDecide {
+			if bLocal {
+				session.way.decide = DecideRemote
+			} else {
+				session.way.decide = DecideLocal
+			}
+			log.Println("smart decide immediately", sessionId, session.way, session.way.decide, session.way.host)
+			session.way.overt = timeNow.Add(5 * time.Minute)
 		}
 	}
 	sc.monitorLock.Unlock()
