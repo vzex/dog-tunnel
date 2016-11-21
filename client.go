@@ -35,8 +35,8 @@ var serverBustAddr = flag.String("buster", "dog-tunnel.tk:8018", "MakeHole serve
 var addInitAddr = flag.String("addip", "127.0.0.1", "addip for bust,xx.xx.xx.xx;xx.xx.xx.xx;")
 var pipeNum = flag.Int("pipen", 1, "pipe num for transmission")
 var kcpSettings = flag.String("kcp", "", "k1:v1;k2:v2;... k in (nodelay, resend, nc, snd, rcv, mtu),two sides should use the same setting")
-var dataShards = flag.Int("ds", 0, "dataShards for fec")
-var parityShards = flag.Int("ps", 0, "parityShards for fec")
+var dataShards = flag.Int("ds", 0, "dataShards for fec, only available in p2p mode, two sides should be same")
+var parityShards = flag.Int("ps", 0, "parityShards for fec, only available in p2p mode, two sides should be same")
 
 var serveName = flag.String("reg", "", "reg the name for client link, must assign reg or link")
 
