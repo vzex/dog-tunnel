@@ -127,7 +127,8 @@ func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 					}
 					//log.Println("compress", len(b), len(enc))
 					conn.conn.WriteTo(enc, conn.remote)
-
+				case <-conn.quit:
+					return
 				}
 			}
 		}()
