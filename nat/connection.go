@@ -83,7 +83,8 @@ type Conn struct {
 	fecSendL        int
 	fecRecvId       uint
 
-	compressCache []byte
+	compressCache    []byte
+	compressSendChan chan []byte
 }
 
 type KcpSetting struct {
@@ -113,6 +114,23 @@ func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 	conn.SetKcp(DefaultKcpSetting())
 	if *bCompress {
 		conn.compressCache = make([]byte, CacheBuffSize*2)
+		conn.compressSendChan = make(chan []byte, 100)
+		go func() {
+			for {
+				select {
+				case b := <-conn.compressSendChan:
+					enc, er := zappy.Encode(conn.compressCache, b)
+					if er != nil {
+						log.Println("compress error", er.Error())
+						go conn.Close()
+						break
+					}
+					//log.Println("compress", len(b), len(enc))
+					conn.conn.WriteTo(enc, conn.remote)
+
+				}
+			}
+		}()
 	}
 	return conn
 }
@@ -328,11 +346,15 @@ out:
 				if count >= c.fecDataShards {
 					markTbl := make(map[int]bool, len(tbl.bytes))
 					for _seq, _b := range tbl.bytes {
-                                                if _b != nil {
-                                                        markTbl[_seq] = true
-                                                }
+						if _b != nil {
+							markTbl[_seq] = true
+						}
 					}
+					bNeedRebuild := false
 					for i, v := range tbl.bytes {
+						if i >= c.fecDataShards {
+							bNeedRebuild = true
+						}
 						if v != nil {
 							if len(v) < reaL {
 								_b := make([]byte, reaL)
@@ -341,17 +363,18 @@ out:
 							}
 						}
 					}
-					er := (*c.fecR).Reconstruct(tbl.bytes)
-					if er != nil {
-						//log.Println("Reconstruct fail", er.Error())
-						break
-					} else {
-						//log.Println("Reconstruct ok, input", id)
-						for i := 0; i < c.fecDataShards; i++ {
-							if _, have := markTbl[i]; !have {
-								_len := int(tbl.bytes[i][0]) | (int(tbl.bytes[i][1]) << 8)
-								ikcp.Ikcp_input(c.kcp, tbl.bytes[i][7:], int(_len))
-								//log.Println("fec input for mark ok", i, id, _len)
+					if bNeedRebuild {
+						er := (*c.fecR).Reconstruct(tbl.bytes)
+						if er != nil {
+							//log.Println("Reconstruct fail", er.Error())
+						} else {
+							//log.Println("Reconstruct ok, input", id)
+							for i := 0; i < c.fecDataShards; i++ {
+								if _, have := markTbl[i]; !have {
+									_len := int(tbl.bytes[i][0]) | (int(tbl.bytes[i][1]) << 8)
+									ikcp.Ikcp_input(c.kcp, tbl.bytes[i][7:], int(_len))
+									//log.Println("fec input for mark ok", i, id, _len)
+								}
 							}
 						}
 					}
@@ -436,14 +459,7 @@ func (c *Conn) Read(b []byte) (int, error) {
 
 func (c *Conn) writeTo(b []byte) {
 	if *bCompress {
-		enc, er := zappy.Encode(c.compressCache, b)
-		if er != nil {
-			log.Println("compress error", er.Error())
-			go c.Close()
-			return
-		}
-		//log.Println("compress", len(b), len(enc))
-		c.conn.WriteTo(enc, c.remote)
+		c.compressSendChan <- b
 	} else {
 		c.conn.WriteTo(b, c.remote)
 	}
