@@ -125,17 +125,18 @@ type UDPMakeSession struct {
 
 	xor string
 
-	compressCache   []byte
-	fecDataShards   int
-	fecParityShards int
-	fecW            *reedsolomon.Encoder
-	fecR            *reedsolomon.Encoder
-	fecRCacheTbl    map[uint]*fecInfo
-	fecWCacheTbl    *fecInfo
-	fecWriteId      uint //uint16
-	fecSendC        uint
-	fecSendL        int
-	fecRecvId       uint
+	compressCache    []byte
+	compressSendChan chan []byte
+	fecDataShards    int
+	fecParityShards  int
+	fecW             *reedsolomon.Encoder
+	fecR             *reedsolomon.Encoder
+	fecRCacheTbl     map[uint]*fecInfo
+	fecWCacheTbl     *fecInfo
+	fecWriteId       uint //uint16
+	fecSendC         uint
+	fecSendL         int
+	fecRecvId        uint
 }
 
 type Listener struct {
@@ -220,6 +221,24 @@ func (l *Listener) inner_loop() {
 				}
 				if int(fec)&(1<<7) != 0 {
 					session.compressCache = make([]byte, ReadBufferSize*1.5)
+					session.compressSendChan = make(chan []byte, 100)
+					go func() {
+						for {
+							select {
+							case b := <-session.compressSendChan:
+								enc, er := zappy.Encode(session.compressCache, b)
+								if er != nil {
+									log.Println("compress error", er.Error())
+									go session.Close()
+									break
+								}
+								//log.Println("compress", len(b), len(enc))
+								session.sock.WriteTo(enc, session.remote)
+							case <-session.quitChan:
+								return
+							}
+						}
+					}()
 				}
 				l.sessionsLock.Lock()
 				l.sessions[addr] = session
@@ -351,6 +370,24 @@ func DialTimeoutWithSetting(addr string, timeout int, setting *KcpSetting, ds, p
 	}
 	if comp {
 		session.compressCache = make([]byte, ReadBufferSize*1.5)
+		session.compressSendChan = make(chan []byte, 100)
+		go func() {
+			for {
+				select {
+				case b := <-session.compressSendChan:
+					enc, er := zappy.Encode(session.compressCache, b)
+					if er != nil {
+						log.Println("compress error", er.Error())
+						go session.Close()
+						break
+					}
+					//log.Println("compress", len(b), len(enc))
+					session.sock.WriteTo(enc, session.remote)
+				case <-session.quitChan:
+					return
+				}
+			}
+		}()
 	}
 	_timeout := int(timeout / 2)
 	if _timeout < 5 {
@@ -469,14 +506,7 @@ out:
 
 func (session *UDPMakeSession) writeTo(b []byte) {
 	if session.compressCache != nil && len(b) > 7 {
-		enc, er := zappy.Encode(session.compressCache, b)
-		if er != nil {
-			log.Println("compress error", er.Error())
-			go session.Close()
-			return
-		}
-		//log.Println("compress", len(b), len(enc))
-		session.sock.WriteTo(enc, session.remote)
+		session.compressSendChan <- b
 	} else {
 		session.sock.WriteTo(b, session.remote)
 	}
@@ -857,8 +887,12 @@ func (session *UDPMakeSession) loop() {
 									markTbl[_seq] = true
 								}
 							}
+							bNeedRebuild := false
 							for i, v := range tbl.bytes {
 								if v != nil {
+									if i >= session.fecDataShards {
+										bNeedRebuild = true
+									}
 									if len(v) < reaL {
 										_b := make([]byte, reaL)
 										copy(_b, v)
@@ -867,17 +901,19 @@ func (session *UDPMakeSession) loop() {
 								}
 							}
 
-							er := (*session.fecR).Reconstruct(tbl.bytes)
-							if er != nil {
-								//log.Println("2Reconstruct fail, close pipe", count, session.fecDataShards, session.fecParityShards, er.Error())
-								break
-							} else {
-								//log.Println("Reconstruct ok, input", id)
-								for i := 0; i < session.fecDataShards; i++ {
-									if _, have := markTbl[i]; !have {
-										_len := int(tbl.bytes[i][0]) | (int(tbl.bytes[i][1]) << 8)
-										ikcp.Ikcp_input(session.kcp, tbl.bytes[i][7:], int(_len))
-										//log.Println("fec input for mark ok", i, id, _len)
+							if bNeedRebuild {
+								er := (*session.fecR).Reconstruct(tbl.bytes)
+								if er != nil {
+									//log.Println("2Reconstruct fail, close pipe", count, session.fecDataShards, session.fecParityShards, er.Error())
+									//break //broken data, may be should be closed, now just keep input
+								} else {
+									//log.Println("Reconstruct ok, input", id)
+									for i := 0; i < session.fecDataShards; i++ {
+										if _, have := markTbl[i]; !have {
+											_len := int(tbl.bytes[i][0]) | (int(tbl.bytes[i][1]) << 8)
+											ikcp.Ikcp_input(session.kcp, tbl.bytes[i][7:], int(_len))
+											//log.Println("fec input for mark ok", i, id, _len)
+										}
 									}
 								}
 							}
