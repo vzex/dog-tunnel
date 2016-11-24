@@ -1771,10 +1771,11 @@ const (
 )
 
 type hostWay struct {
-	decide decideStatus
-	times  int
-	host   string
-	overt  time.Time
+	decide      decideStatus
+	times       int
+	host        string
+	overt       time.Time
+	decideTimes int
 }
 
 type smartSession struct {
@@ -1917,16 +1918,18 @@ func (sc *Client) endSmartMonitor(sessionId int, bLocal bool) {
 	if b {
 		timeNow.RLock()
 		if session.way.decide == NotDecide || timeNow.After(session.way.overt) {
+			session.way.decideTimes++
 			//log.Println("endSmartMonitor", sessionId, bLocal, session.way.host, session.way.times)
 			if bLocal {
 				session.way.times += 1
-				if session.way.times > sc.smartN {
-					log.Println("smart decide local", session.way.host)
-					session.way.decide = DecideLocal
-				}
 			} else {
 				session.way.times -= 1
-				if session.way.times < -sc.smartN {
+			}
+			if session.way.decideTimes >= sc.smartN {
+				if session.way.times >= 0 {
+					log.Println("smart decide local", session.way.host)
+					session.way.decide = DecideLocal
+				} else {
 					log.Println("smart decide remote", session.way.host)
 					session.way.decide = DecideRemote
 				}
@@ -1948,6 +1951,8 @@ func (sc *Client) getHostWay(host string) *hostWay {
 	way, b := sc.hostWayTbl[host]
 	if b {
 		if time.Now().After(way.overt) {
+			way.times = 0
+			way.decideTimes = 0
 			way.decide = NotDecide
 		}
 		return way
