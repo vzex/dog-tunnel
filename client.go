@@ -72,6 +72,7 @@ var remoteAction = flag.String("action", "", "c|s: for client to control server,
 var bVerbose = flag.Bool("v", false, "c|s: verbose mode")
 var bShowVersion = flag.Bool("version", false, "c|s: show version")
 var bEncrypt = flag.Bool("encrypt", false, "c: p2p mode encrypt")
+var bconfuse = flag.Bool("confusion", false, "c: p2p mode confusion")
 var dnsCacheNum = flag.Int("dnscache", 0, "c|s: if > 0, dns will cache xx minutes")
 var timeOut = flag.Int("timeout", 100, "c: udp pipe set timeout(seconds)")
 var smartCount = flag.Int("smartN", 0, "c: if >0, smart mode open(just for socks5 or route mode),it means how many requests of the same url at least are needed for sys to decide whether request going locally or remotely")
@@ -325,7 +326,7 @@ func CreateSession(bIsTcp bool, idindex int, bSmart bool) bool {
 		s_conn, err = net.DialTimeout("tcp", *serviceAddr, 30*time.Second)
 	} else {
 		setting := getKcpSetting()
-		s_conn, err = pipe.DialTimeoutWithSetting(*serviceAddr, *timeOut, setting, *dataShards, *parShards, *bCompress)
+		s_conn, err = pipe.DialTimeoutWithSetting(*serviceAddr, *timeOut, setting, *dataShards, *parShards, *bCompress, *bconfuse)
 	}
 	if err != nil {
 		log.Println("try dial err", err.Error())

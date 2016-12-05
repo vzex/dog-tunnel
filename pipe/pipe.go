@@ -6,6 +6,7 @@ import (
 	"github.com/vzex/dog-tunnel/common"
 	"github.com/vzex/dog-tunnel/ikcp"
 	"log"
+	"math/rand"
 	"net"
 	"sync"
 	"time"
@@ -15,6 +16,8 @@ import "github.com/cznic/zappy"
 
 const WriteBufferSize = 5000 //udp writer will add some data for checksum or encrypt
 const ReadBufferSize = 7000  //so reader must be larger
+
+const WriteBufferSizeFake = WriteBufferSize * 0.75
 
 const dataLimit = 4000
 
@@ -62,6 +65,8 @@ const (
 	Close     byte = 7
 	CloseBack byte = 8
 	ResetAck  byte = 9
+
+	Fake byte = 50
 )
 
 func _xor(s []byte, xor string) []byte {
@@ -137,6 +142,8 @@ type UDPMakeSession struct {
 	fecSendC         uint
 	fecSendL         int
 	fecRecvId        uint
+
+	confuseSeed int
 }
 
 type Listener struct {
@@ -331,10 +338,10 @@ func DefaultKcpSetting() *KcpSetting {
 }
 
 func DialTimeout(addr string, timeout int) (*UDPMakeSession, error) {
-	return DialTimeoutWithSetting(addr, timeout, DefaultKcpSetting(), 0, 0, false)
+	return DialTimeoutWithSetting(addr, timeout, DefaultKcpSetting(), 0, 0, false, false)
 }
 
-func DialTimeoutWithSetting(addr string, timeout int, setting *KcpSetting, ds, ps int, comp bool) (*UDPMakeSession, error) {
+func DialTimeoutWithSetting(addr string, timeout int, setting *KcpSetting, ds, ps int, comp, confuse bool) (*UDPMakeSession, error) {
 	bReset := false
 	if timeout < 5 {
 		bReset = true
@@ -360,6 +367,9 @@ func DialTimeoutWithSetting(addr string, timeout int, setting *KcpSetting, ds, p
 	session.sock = sock
 	session.status = "firstsyn"
 	session.timeout = int64(timeout)
+	if confuse {
+		session.confuseSeed = rand.Intn(int(WriteBufferSize/2)) + 10
+	}
 	if ds != 0 && ps != 0 {
 		er := session.SetFec(ds, ps)
 		if er != nil {
@@ -423,7 +433,11 @@ func DialTimeoutWithSetting(addr string, timeout int, setting *KcpSetting, ds, p
 		return nil, errors.New("handshake fail,1")
 	}
 	code = session.doAndWait(func() {
-		sock.WriteToUDP(makeEncode(session.encodeBuffer, SndSYN, session.id, 0, session.xor), udpAddr)
+		if session.confuseSeed > 0 {
+			sock.WriteToUDP(makeEncode(session.encodeBuffer, SndSYN, session.id, 1, session.xor), udpAddr)
+		} else {
+			sock.WriteToUDP(makeEncode(session.encodeBuffer, SndSYN, session.id, 0, session.xor), udpAddr)
+		}
 	}, _timeout, func(status byte, arg int32, arg2 int16) int {
 		if status != SndACK {
 			return -1
@@ -600,7 +614,7 @@ func (session *UDPMakeSession) serverInit(l *Listener, setting *KcpSetting) {
 			select {
 			case s := <-session.handShakeChan:
 				//log.Println("process handshake", session.remote)
-				status, arg, _ := makeDecode([]byte(s), session.xor)
+				status, arg, arg2 := makeDecode([]byte(s), session.xor)
 				switch session.status {
 				case "init":
 					if status != FirstSYN {
@@ -626,6 +640,10 @@ func (session *UDPMakeSession) serverInit(l *Listener, setting *KcpSetting) {
 								session.sock.WriteToUDP(makeEncode(session.encodeBuffer, FirstACK, session.id), session.remote, session.xor)
 							}*/
 						return
+					}
+					if arg2 > 0 {
+						session.confuseSeed = rand.Intn(int(WriteBufferSize/2)) + 10
+						log.Println("confuse!")
 					}
 					session.status = "ok"
 					session.kcp = ikcp.Ikcp_create(uint32(session.id), session)
@@ -717,6 +735,7 @@ func (session *UDPMakeSession) loop() {
 	recoverChan := make(chan struct{})
 
 	var waitRecvCache *cache
+	var forceWait int64 = 0
 	go func() {
 	out:
 		for {
@@ -743,6 +762,17 @@ func (session *UDPMakeSession) loop() {
 							}
 						}
 					}
+					if forceWait > 0 {
+						if time.Now().Unix() > forceWait && ikcp.Ikcp_waitsnd(session.kcp) <= dataLimit/2 {
+							forceWait = 0
+							go func() {
+								select {
+								case <-session.quitChan:
+								case recoverChan <- struct{}{}:
+								}
+							}()
+						}
+					}
 				}
 				if time.Now().Unix() > session.overTime {
 					log.Println("overtime close", session.LocalAddr().String(), session.RemoteAddr().String())
@@ -766,6 +796,12 @@ func (session *UDPMakeSession) loop() {
 				}
 				waitList = [](chan struct{}){}
 			case c := <-session.checkCanWrite:
+				if session.confuseSeed > 0 {
+					if WriteBufferSize/2-rand.Intn(session.confuseSeed) < 500 || rand.Intn(100) < 5 {
+						//make a sleep
+						forceWait = time.Now().Add(time.Millisecond * time.Duration(rand.Intn(1000))).Unix()
+					}
+				}
 				if ikcp.Ikcp_waitsnd(session.kcp) > dataLimit {
 					//log.Println("wait for data limit")
 					waitList = append(waitList, c)
@@ -788,6 +824,8 @@ func (session *UDPMakeSession) loop() {
 						}
 						time.AfterFunc(20*time.Millisecond, f)
 					}
+				} else if forceWait > 0 && time.Now().Unix() < forceWait {
+					waitList = append(waitList, c)
 				} else {
 					select {
 					case c <- struct{}{}:
@@ -801,12 +839,20 @@ func (session *UDPMakeSession) loop() {
 					if hr > 0 {
 						status := tmp[0]
 						if status == Data {
-							copy(ca.b, tmp[1:hr])
+							n := 1
+							l := hr
+							if session.confuseSeed > 0 {
+								n = 3
+								l = (int32(tmp[1]) | (int32(tmp[2]) << 8)) + int32(n)
+							}
+							//log.Println("try recv", hr, n, l)
+							copy(ca.b, tmp[n:int(l)])
 							select {
-							case ca.c <- int(hr - 1):
+							case ca.c <- int(int(l) - n):
 							case <-session.quitChan:
 							}
 							break
+						} else if status == Fake {
 						} else {
 							session.DoAction("recv", status)
 						}
@@ -947,13 +993,21 @@ func (session *UDPMakeSession) loop() {
 							if hr > 0 {
 								status := tmp[0]
 								if status == Data {
+									n := 1
+									l := hr
+									if session.confuseSeed > 0 {
+										n = 3
+										l = (int32(tmp[1]) | (int32(tmp[2]) << 8)) + int32(n)
+									}
+									//log.Println("try recv", n, l)
 									waitRecvCache = nil
-									copy(ca.b, tmp[1:hr])
+									copy(ca.b, tmp[n:int(l)])
 									select {
-									case ca.c <- int(hr - 1):
+									case ca.c <- (int(l) - n):
 									case <-session.quitChan:
 									}
 									break
+								} else if status == Fake {
 								} else {
 									session.DoAction("recv", status)
 								}
@@ -1148,12 +1202,42 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 	if sendL == 0 || session.status != "ok" {
 		return 0, nil
 	}
-	data := make([]byte, sendL+1)
-	data[0] = Data
-	copy(data[1:], b)
+	var data []byte
+	if session.confuseSeed <= 0 {
+		data = make([]byte, sendL+1)
+		data[0] = Data
+		copy(data[1:], b)
+	} else {
+		remain := WriteBufferSize - sendL - 3
+		if remain > 0 && (WriteBufferSize/2-rand.Intn(session.confuseSeed) < 500 || rand.Intn(100) < 5) {
+			if remain > 1000 {
+				remain = 1000
+			}
+			remain = rand.Intn(remain / 2)
+		} else {
+			remain = 0
+		}
+		data = make([]byte, sendL+remain+3)
+		data[0] = Data
+		data[1] = byte(sendL & 0xff)
+		data[2] = byte((sendL >> 8) & 0xff)
+		copy(data[3:], b)
+		//log.Println("try send", len(data), sendL)
+		//copy(data[3+sendL:], b)
+	}
 	ok := session.DoWrite(data)
 	if !ok {
 		return 0, errors.New("closed")
+	}
+	if session.confuseSeed > 0 {
+		if rand.Intn(WriteBufferSize/2) > session.confuseSeed/2 {
+			n := rand.Intn(session.confuseSeed)
+			if n > 10 {
+				d := make([]byte, n)
+				d[0] = Fake
+				session.DoWrite(d)
+			}
+		}
 	}
 	return sendL, err
 }
