@@ -28,6 +28,7 @@ var keyFile = flag.String("key", "", "key file")
 
 var adminAddr = flag.String("admin", "", "admin addr")
 var bShowVersion = flag.Bool("version", false, "show version")
+var bReplaceReg = flag.Bool("replace", false, "if dup name registered, kick out the previous one, default is false")
 
 var db_user = flag.String("dbuser", "", "db user")
 var db_pass = flag.String("dbpass", "", "db password")
@@ -133,9 +134,7 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 				common.Write(conn, "0", "showandquit", "ip limit service num cannot overstep "+strconv.Itoa(user.MaxSameIPServers))
 				return
 			}
-			common.GetClientInfoByName(ServerName, func(server *common.ClientInfo) {
-				common.Write(conn, "0", "showandretry", "already have the ServerName!")
-			}, func() {
+			f := func() {
 				common.ServerName2Conn[ServerName] = conn
 				common.GetClientInfoByConn(conn, func(info *common.ClientInfo) {
 					info.ServerName = ServerName
@@ -146,7 +145,31 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 				}, func() {})
 				log.Println("client reg service success", conn.RemoteAddr().String(), user.UserName, ServerName)
 				common.Write(conn, "0", "show", "register service ok, user:"+user.UserName)
-			})
+			}
+			common.GetClientInfoByName(ServerName, func(server *common.ClientInfo) {
+				if *bReplaceReg {
+					_conn := server.Conn
+					close(server.Quit)
+					for conn, session := range server.ClientMap {
+						conn.Close()
+						common.RmId(server.ServerName, session.Id)
+					}
+					delete(common.ServerName2Conn, server.ServerName)
+					log.Println("force unregister service Name", server.ServerName)
+					if bUseDB {
+						user, _ := auth.GetUser(server.UserName)
+						if user != nil {
+							user.OnLogout()
+						}
+					}
+					delete(common.Conn2ClientInfo, _conn)
+					common.Write(_conn, "0", "showandquit", "some one kick you out")
+					_conn.Close()
+					f()
+				} else {
+					common.Write(conn, "0", "showandretry", "already have the ServerName!")
+				}
+			}, f)
 		} else if clientInfo.ClientType == "link" {
 			if clientInfo.Mode < 0 || clientInfo.Mode > 2 {
 				clientInfo.Mode = 0
