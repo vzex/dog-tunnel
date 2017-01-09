@@ -215,7 +215,7 @@ func (l *Listener) inner_loop() {
 					continue
 				}
 				sessionId := common.GetId("udp")
-				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan cache), quitChan: make(chan struct{}), readBuffer: make([]byte, ReadBufferSize), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), handShakeChanQuit: make(chan struct{}), listener: l, closeChan: make(chan struct{}), encodeBuffer: make([]byte, 7), checkCanWrite: make(chan (chan struct{})), xor: l.setting.Xor}
+				session = &UDPMakeSession{status: "init", overTime: time.Now().Unix() + 10, remote: from, sock: sock, recvChan: make(chan cache), quitChan: make(chan struct{}), readBuffer: make([]byte, ReadBufferSize*2), processBuffer: make([]byte, ReadBufferSize), timeout: 30, do: make(chan Action), do2: make(chan Action), id: sessionId, handShakeChan: make(chan string), handShakeChanQuit: make(chan struct{}), listener: l, closeChan: make(chan struct{}), encodeBuffer: make([]byte, 7), checkCanWrite: make(chan (chan struct{})), xor: l.setting.Xor}
 				if fec & ^(1<<7) != 0 {
 					er := session.SetFec((int(fec)>>8)&0xff, int(fec&^(1<<7)&0xff))
 					if er != nil {
@@ -308,7 +308,7 @@ func ListenWithSetting(addr string, setting *KcpSetting) (*Listener, error) {
 		return nil, _err
 	}
 
-	listener := &Listener{connChan: make(chan *UDPMakeSession), quitChan: make(chan struct{}), sock: sock, readBuffer: make([]byte, ReadBufferSize), sessions: make(map[string]*UDPMakeSession), setting: setting}
+	listener := &Listener{connChan: make(chan *UDPMakeSession), quitChan: make(chan struct{}), sock: sock, readBuffer: make([]byte, ReadBufferSize*2), sessions: make(map[string]*UDPMakeSession), setting: setting}
 	go listener.loop()
 	return listener, nil
 }
@@ -360,7 +360,7 @@ func DialTimeoutWithSetting(addr string, timeout int, setting *KcpSetting, ds, p
 		log.Println("dial addr fail", _err.Error())
 		return nil, _err
 	}
-	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize), do: make(chan Action), do2: make(chan Action), quitChan: make(chan struct{}), recvChan: make(chan cache), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan struct{}), encodeBuffer: make([]byte, 7), checkCanWrite: make(chan (chan struct{})), xor: setting.Xor}
+	session := &UDPMakeSession{readBuffer: make([]byte, ReadBufferSize*2), do: make(chan Action), do2: make(chan Action), quitChan: make(chan struct{}), recvChan: make(chan cache), processBuffer: make([]byte, ReadBufferSize), closeChan: make(chan struct{}), encodeBuffer: make([]byte, 7), checkCanWrite: make(chan (chan struct{})), xor: setting.Xor}
 	session.remote = udpAddr
 	session.sock = sock
 	session.status = "firstsyn"
