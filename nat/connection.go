@@ -24,11 +24,9 @@ const (
 var bDebug = flag.Bool("debug", false, "whether show nat pipe debug msg")
 var bCompress = flag.Bool("compress", false, "whether compress data, two sides should be same")
 
-var defaultQueueSize = 1
-
 const dataLimit = 4000
-const SendBuffSize = 2000
-const CacheBuffSize = SendBuffSize + 1000
+const SendBuffSize = 2000 //after kcp_send , 3k+, after compress, 3k+ * 1.5+
+const CacheBuffSize = SendBuffSize * 1.5
 
 func debug(args ...interface{}) {
 	if *bDebug {
@@ -107,7 +105,7 @@ func DefaultKcpSetting() *KcpSetting {
 
 func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 	sock.SetDeadline(time.Time{})
-	conn := &Conn{conn: sock, local: local, remote: remote, closed: false, quit: make(chan bool), tmp: make([]byte, CacheBuffSize*2), tmp2: make([]byte, CacheBuffSize), sendChan: make(chan string, 10), checkCanWrite: make(chan chan bool), readChan: make(chan cache), overTime: time.Now().Unix() + 30, fecWriteId: 0, fecSendC: 0}
+	conn := &Conn{conn: sock, local: local, remote: remote, closed: false, quit: make(chan bool), tmp: make([]byte, CacheBuffSize * 2), tmp2: make([]byte, CacheBuffSize), sendChan: make(chan string, 10), checkCanWrite: make(chan chan bool), readChan: make(chan cache), overTime: time.Now().Unix() + 30, fecWriteId: 0, fecSendC: 0}
 	debug("create", id)
 	conn.kcp = ikcp.Ikcp_create(uint32(id), conn)
 	conn.kcp.Output = udp_output
@@ -126,13 +124,7 @@ func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 						break
 					}
 					//log.Println("compress", len(b), len(enc))
-					if len(enc) > len(b) {
-						enc[len(enc)] = 0
-						conn.conn.WriteTo(b, conn.remote)
-					} else {
-						enc[len(enc)] = 1
-						conn.conn.WriteTo(enc, conn.remote)
-					}
+					conn.conn.WriteTo(enc, conn.remote)
 				case <-conn.quit:
 					return
 				}
@@ -186,8 +178,8 @@ func (c *Conn) onUpdate() {
 				}
 			}
 			var b []byte
-			if *bCompress && c.tmp[n-1] == 1 {
-				_b, _er := zappy.Decode(nil, c.tmp[:n-1])
+			if *bCompress {
+				_b, _er := zappy.Decode(nil, c.tmp[:n])
 				if _er != nil {
 					log.Println("decompress fail", _er.Error())
 					go c.Close()
@@ -222,8 +214,9 @@ func (c *Conn) onUpdate() {
 	processRecv := func() {
 		if waitRecvCache != nil {
 			ca := *waitRecvCache
+                        const buffSize = CacheBuffSize
 			for {
-				hr := ikcp.Ikcp_recv(c.kcp, c.tmp2, CacheBuffSize)
+				hr := ikcp.Ikcp_recv(c.kcp, c.tmp2, buffSize)
 
 				if hr > 0 {
 					action := c.tmp2[0]
@@ -283,7 +276,8 @@ out:
 			}
 		case cache := <-c.readChan:
 			for {
-				hr := ikcp.Ikcp_recv(c.kcp, c.tmp2, CacheBuffSize)
+                                const buffSize = CacheBuffSize
+				hr := ikcp.Ikcp_recv(c.kcp, c.tmp2, buffSize)
 				if hr > 0 {
 					action := c.tmp2[0]
 					if action == Data {
@@ -466,7 +460,9 @@ func (c *Conn) Read(b []byte) (int, error) {
 
 func (c *Conn) writeTo(b []byte) {
 	if *bCompress {
-		c.compressSendChan <- b
+                _b := make([]byte, len(b))
+                copy(_b, b)
+		c.compressSendChan <- _b
 	} else {
 		c.conn.WriteTo(b, c.remote)
 	}
