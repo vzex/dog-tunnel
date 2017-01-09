@@ -107,7 +107,7 @@ func DefaultKcpSetting() *KcpSetting {
 
 func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 	sock.SetDeadline(time.Time{})
-	conn := &Conn{conn: sock, local: local, remote: remote, closed: false, quit: make(chan bool), tmp: make([]byte, CacheBuffSize), tmp2: make([]byte, CacheBuffSize), sendChan: make(chan string, 10), checkCanWrite: make(chan chan bool), readChan: make(chan cache), overTime: time.Now().Unix() + 30, fecWriteId: 0, fecSendC: 0}
+	conn := &Conn{conn: sock, local: local, remote: remote, closed: false, quit: make(chan bool), tmp: make([]byte, CacheBuffSize*2), tmp2: make([]byte, CacheBuffSize), sendChan: make(chan string, 10), checkCanWrite: make(chan chan bool), readChan: make(chan cache), overTime: time.Now().Unix() + 30, fecWriteId: 0, fecSendC: 0}
 	debug("create", id)
 	conn.kcp = ikcp.Ikcp_create(uint32(id), conn)
 	conn.kcp.Output = udp_output
@@ -126,7 +126,13 @@ func newConn(sock *net.UDPConn, local, remote net.Addr, id int) *Conn {
 						break
 					}
 					//log.Println("compress", len(b), len(enc))
-					conn.conn.WriteTo(enc, conn.remote)
+					if len(enc) > len(b) {
+						enc[len(enc)] = 0
+						conn.conn.WriteTo(b, conn.remote)
+					} else {
+						enc[len(enc)] = 1
+						conn.conn.WriteTo(enc, conn.remote)
+					}
 				case <-conn.quit:
 					return
 				}
@@ -180,8 +186,8 @@ func (c *Conn) onUpdate() {
 				}
 			}
 			var b []byte
-			if *bCompress {
-				_b, _er := zappy.Decode(nil, c.tmp[:n])
+			if *bCompress && c.tmp[n-1] == 1 {
+				_b, _er := zappy.Decode(nil, c.tmp[:n-1])
 				if _er != nil {
 					log.Println("decompress fail", _er.Error())
 					go c.Close()
