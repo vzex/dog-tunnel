@@ -25,7 +25,7 @@ var bDebug = flag.Bool("debug", false, "whether show nat pipe debug msg")
 var bCompress = flag.Bool("compress", false, "whether compress data, two sides should be same")
 
 const dataLimit = 4000
-const SendBuffSize = 2000 //after kcp_send , 3k+, after compress, 3k+ * 1.5+
+const SendBuffSize = 2000 //after kcp_send , 3k+, after compress, 3k+ * 1.5+ ,,this size is limited by bufio.Scanner
 const CacheBuffSize = SendBuffSize * 1.5
 
 func debug(args ...interface{}) {
