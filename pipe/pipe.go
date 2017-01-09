@@ -14,12 +14,10 @@ import (
 import "github.com/klauspost/reedsolomon"
 import "github.com/cznic/zappy"
 
-const WriteBufferSize = 5000 //udp writer will add some data for checksum or encrypt
-const ReadBufferSize = 7000  //so reader must be larger
+const WriteBufferSize = 5000               //udp writer will add some data for checksum or encrypt
+const ReadBufferSize = WriteBufferSize * 2 //so reader must be larger
 
-const WriteBufferSizeFake = WriteBufferSize * 0.75
-
-const dataLimit = 4000
+const dataLimit = WriteBufferSize
 
 const mainV = 0
 const subV = 1
