@@ -227,7 +227,7 @@ func (l *Listener) inner_loop() {
 					}
 				}
 				if int(fec)&(1<<7) != 0 {
-					session.compressCache = make([]byte, ReadBufferSize*1.5)
+					session.compressCache = make([]byte, zappy.MaxEncodedLen(ReadBufferSize))
 					session.compressSendChan = make(chan []byte, 100)
 					go func() {
 						for {
@@ -379,7 +379,7 @@ func DialTimeoutWithSetting(addr string, timeout int, setting *KcpSetting, ds, p
 		}
 	}
 	if comp {
-		session.compressCache = make([]byte, ReadBufferSize*1.5)
+		session.compressCache = make([]byte, zappy.MaxEncodedLen(ReadBufferSize))
 		session.compressSendChan = make(chan []byte, 100)
 		go func() {
 			for {
