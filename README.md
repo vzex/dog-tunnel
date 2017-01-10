@@ -1,43 +1,24 @@
-# Dog Tunnel
+# dtunnel_lite
 
-## Introduction
-This tunnel is a lite version if dog-tunnel, and actions without a middle server, has no ability of udp traversal, but simple and faster
-### Example
-the server side should have a public ip , such as xxx.xxx.xxx.xxx, please replace it with your own ip
-first, start a server
-server: ./dtunnel_lite -v -service 127.0.0.1:1234 -dnscache 10
+## 介绍
+lite版本，非p2p版本的狗洞，没有打洞功能，单纯的c/s结构，提供高效的端口映射和socks5服务，可转发tcp或者udp端口，支持透明路由模式
+基于kcp的网络传输协议
 
-then start a client, you can seed the example below:
-socks5 example:
-client: ./dtunnel_lite -v -service xxx.xxx.xxx.xxx:1234 -local :8787
+## 安装
+安装依赖
 
-Then you can connect to socks5 proxy with 127.0.0.1:8787
+go get github.com/klauspost/reedsolomon
 
-Here is some useful scripts:
-```
-# server side dtunnel_lite
+go get github.com/cznic/zappy
 
-#!/bin/sh
-killall -9 dtunnel_lite
-sleep 2
-nice -n -20 /bin/dtunnel_lite -service 0.0.0.0:18080 -auth asecuritypassword &
+编译主程序
 
+go get -u -d github.com/vzex/dog-tunnel && cd $GOPATH/src/github.com/vzex/dog-tunnel/ && git checkout udpVersion && make
 
-# client side dtunnel_lite
+(windows用户请自行调整目录)
+## 用法
+请参考HowToUse.txt
 
-
-#!/bin/sh
-killall -9 dtunnel_lite
-dtunnel_lite -service this.is.your.serverip:18080 -local :8070 -auth asecuritypassword &
-```
-
-ssh port forward example:
-client: ./dtunnel_lite -v -service 127.0.0.1:1234 -local :8787 -action :22
-
-It's better to add the -encrypt arg for privacy in client
-you can add "-auth" on both sides for authorize
-
-The default mode is udp mode, and is faster in the poor network than tcp mode, you can also use tcp mode with "-tcp" on both sides.
 ## License
 
 [MIT License](LICENSE)
