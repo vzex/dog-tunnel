@@ -366,7 +366,7 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 
 func getKcpSetting() *nat.KcpSetting {
 	setting := nat.DefaultKcpSetting()
-	bSetResend := false
+	//bSetResend := false
 	if *kcpSettings != "" {
 		arr := strings.Split(*kcpSettings, ";")
 		for _, v := range arr {
@@ -383,7 +383,7 @@ func getKcpSetting() *nat.KcpSetting {
 					setting.Nodelay = val
 				case "resend":
 					setting.Resend = val
-					bSetResend = true
+					//bSetResend = true
 				case "nc":
 					setting.Nc = val
 				case "snd":
@@ -397,12 +397,13 @@ func getKcpSetting() *nat.KcpSetting {
 		}
 	}
 	//setting.Xor = *xorData
-	if *dataShards > 0 && *parityShards > 0 {
-		if !bSetResend {
-			setting.Resend = 0
-			println("resend default to 0 in fec mode")
-		}
-	}
+	/*
+		if *dataShards > 0 && *parityShards > 0 {
+			if !bSetResend {
+				setting.Resend = 0
+				println("resend default to 0 in fec mode")
+			}
+		}*/
 	return setting
 }
 
