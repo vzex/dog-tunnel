@@ -463,7 +463,7 @@ func Ikcp_update_ack(kcp *Ikcpcb, rtt int32) {
 			kcp.rx_srtt = 1
 		}
 	}
-	rto = int(kcp.rx_srtt + _imax_(1, 4*kcp.rx_rttval))
+	rto = int(kcp.rx_srtt + _imax_(kcp.interval, 4*kcp.rx_rttval))
 	kcp.rx_rto = _ibound_(kcp.rx_minrto, uint32(rto), IKCP_RTO_MAX)
 }
 
@@ -495,7 +495,23 @@ func ikcp_parse_ack(kcp *Ikcpcb, sn uint32) {
 			kcp.snd_buf.Remove(p)
 			kcp.nsnd_buf--
 			break
-		} else {
+		}
+		if _itimediff(sn, seg.sn) < 0 {
+			break
+		}
+	}
+}
+
+func ikcp_parse_fastack(kcp *Ikcpcb, sn uint32) {
+	if _itimediff(sn, kcp.snd_una) < 0 || _itimediff(sn, kcp.snd_nxt) >= 0 {
+		return
+	}
+
+	for p := kcp.snd_buf.Front(); p != nil; p = p.Next() {
+		seg := p.Value.(*IKCPSEG)
+		if _itimediff(sn, seg.sn) < 0 {
+			break
+		} else if sn != seg.sn {
 			seg.fastack++
 		}
 	}
@@ -610,6 +626,8 @@ func ikcp_parse_data(kcp *Ikcpcb, newseg *IKCPSEG) {
 //---------------------------------------------------------------------
 func Ikcp_input(kcp *Ikcpcb, data []byte, size int) int {
 	una := kcp.snd_una
+	var maxack uint32 = 0
+	flag := 0
 	if ikcp_canlog(kcp, IKCP_LOG_INPUT) != 0 {
 		Ikcp_log(kcp, IKCP_LOG_INPUT, "[RI] %d bytes", size)
 	}
@@ -662,6 +680,14 @@ func Ikcp_input(kcp *Ikcpcb, data []byte, size int) int {
 			}
 			ikcp_parse_ack(kcp, sn)
 			ikcp_shrink_buf(kcp)
+			if flag == 0 {
+				flag = 1
+				maxack = sn
+			} else {
+				if _itimediff(sn, maxack) > 0 {
+					maxack = sn
+				}
+			}
 			/*
 			   log.Printf(
 			   "input ack: sn=%lu rtt=%ld rto=%ld", sn,
@@ -710,6 +736,10 @@ func Ikcp_input(kcp *Ikcpcb, data []byte, size int) int {
 
 		data = data[_len:]
 		size -= int(_len)
+	}
+
+	if flag != 0 {
+		ikcp_parse_fastack(kcp, maxack)
 	}
 
 	if _itimediff(kcp.snd_una, una) > 0 {
