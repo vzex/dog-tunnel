@@ -2,7 +2,6 @@ package ikcp
 
 import "container/list"
 import "encoding/binary"
-import _ "fmt"
 
 //=====================================================================
 //
@@ -464,7 +463,7 @@ func Ikcp_update_ack(kcp *Ikcpcb, rtt int32) {
 			kcp.rx_srtt = 1
 		}
 	}
-	rto = int(kcp.rx_srtt + _imax_(1, 4*kcp.rx_rttval))
+	rto = int(kcp.rx_srtt + _imax_(kcp.interval, 4*kcp.rx_rttval))
 	kcp.rx_rto = _ibound_(kcp.rx_minrto, uint32(rto), IKCP_RTO_MAX)
 }
 
@@ -493,11 +492,26 @@ func ikcp_parse_ack(kcp *Ikcpcb, sn uint32) {
 	for p := kcp.snd_buf.Front(); p != nil; p = p.Next() {
 		seg := p.Value.(*IKCPSEG)
 		if sn == seg.sn {
-			//                        //println("!!!!!!!")
 			kcp.snd_buf.Remove(p)
 			kcp.nsnd_buf--
 			break
-		} else {
+		}
+		if _itimediff(sn, seg.sn) < 0 {
+			break
+		}
+	}
+}
+
+func ikcp_parse_fastack(kcp *Ikcpcb, sn uint32) {
+	if _itimediff(sn, kcp.snd_una) < 0 || _itimediff(sn, kcp.snd_nxt) >= 0 {
+		return
+	}
+
+	for p := kcp.snd_buf.Front(); p != nil; p = p.Next() {
+		seg := p.Value.(*IKCPSEG)
+		if _itimediff(sn, seg.sn) < 0 {
+			break
+		} else if sn != seg.sn {
 			seg.fastack++
 		}
 	}
@@ -604,7 +618,7 @@ func ikcp_parse_data(kcp *Ikcpcb, newseg *IKCPSEG) {
 			break
 		}
 	}
-	////println("inputok!!!", kcp.nrcv_buf, kcp.nrcv_que)
+	//println("inputok!!!", kcp.nrcv_buf, kcp.nrcv_que, repeat, kcp.rcv_nxt, sn)
 }
 
 //---------------------------------------------------------------------
@@ -612,6 +626,8 @@ func ikcp_parse_data(kcp *Ikcpcb, newseg *IKCPSEG) {
 //---------------------------------------------------------------------
 func Ikcp_input(kcp *Ikcpcb, data []byte, size int) int {
 	una := kcp.snd_una
+	var maxack uint32 = 0
+	flag := 0
 	if ikcp_canlog(kcp, IKCP_LOG_INPUT) != 0 {
 		Ikcp_log(kcp, IKCP_LOG_INPUT, "[RI] %d bytes", size)
 	}
@@ -664,17 +680,23 @@ func Ikcp_input(kcp *Ikcpcb, data []byte, size int) int {
 			}
 			ikcp_parse_ack(kcp, sn)
 			ikcp_shrink_buf(kcp)
-			if ikcp_canlog(kcp, IKCP_LOG_IN_ACK) != 0 {
-				Ikcp_log(kcp, IKCP_LOG_IN_DATA,
-					"input ack: sn=%lu rtt=%ld rto=%ld", sn,
-					uint32(_itimediff(kcp.current, ts)),
-					uint32(kcp.rx_rto))
+			if flag == 0 {
+				flag = 1
+				maxack = sn
+			} else {
+				if _itimediff(sn, maxack) > 0 {
+					maxack = sn
+				}
 			}
+			/*
+			   log.Printf(
+			   "input ack: sn=%lu rtt=%ld rto=%ld", sn,
+			   uint32(_itimediff(kcp.current, ts)),
+			   uint32(kcp.rx_rto))*/
 		} else if cmd == uint8(IKCP_CMD_PUSH) {
-			if ikcp_canlog(kcp, IKCP_LOG_IN_DATA) != 0 {
-				Ikcp_log(kcp, IKCP_LOG_IN_DATA,
-					"input psh: sn=%lu ts=%lu", sn, ts)
-			}
+			/*
+			   log.Printf(
+			   "input psh: sn=%lu ts=%lu", sn, ts)*/
 			if _itimediff(sn, kcp.rcv_nxt+kcp.rcv_wnd) < 0 {
 				ikcp_ack_push(kcp, sn, ts)
 				if _itimediff(sn, kcp.rcv_nxt) >= 0 {
@@ -714,6 +736,10 @@ func Ikcp_input(kcp *Ikcpcb, data []byte, size int) int {
 
 		data = data[_len:]
 		size -= int(_len)
+	}
+
+	if flag != 0 {
+		ikcp_parse_fastack(kcp, maxack)
 	}
 
 	if _itimediff(kcp.snd_una, una) > 0 {
@@ -796,7 +822,7 @@ func Ikcp_flush(kcp *Ikcpcb) {
 	count = int32(kcp.ackcount)
 	for i = 0; i < count; i++ {
 		//size = int32(ptr - buffer)
-		if size > int32(kcp.mtu) {
+		if size+int32(IKCP_OVERHEAD) > int32(kcp.mtu) {
 			ikcp_output(kcp, buffer, size)
 			ptr = buffer
 			size = 0
@@ -834,7 +860,7 @@ func Ikcp_flush(kcp *Ikcpcb) {
 	// flush window probing commands
 	if (kcp.probe & IKCP_ASK_SEND) != 0 {
 		seg.cmd = IKCP_CMD_WASK
-		if size > int32(kcp.mtu) {
+		if size+int32(IKCP_OVERHEAD) > int32(kcp.mtu) {
 			ikcp_output(kcp, buffer, size)
 			ptr = buffer
 			size = 0
@@ -846,7 +872,7 @@ func Ikcp_flush(kcp *Ikcpcb) {
 	// flush window probing commands
 	if (kcp.probe & IKCP_ASK_TELL) != 0 {
 		seg.cmd = IKCP_CMD_WINS
-		if size > int32(kcp.mtu) {
+		if size+int32(IKCP_OVERHEAD) > int32(kcp.mtu) {
 			ikcp_output(kcp, buffer, size)
 			ptr = buffer
 			size = 0
@@ -865,11 +891,9 @@ func Ikcp_flush(kcp *Ikcpcb) {
 
 	// move data from snd_queue to snd_buf
 	////println("check",kcp.snd_queue.Len())
-	t := 0
 	for p := kcp.snd_queue.Front(); p != nil; {
 		////println("debug check:", t, p.Next(), kcp.snd_nxt, kcp.snd_una, cwnd, _itimediff(kcp.snd_nxt, kcp.snd_una + cwnd))
 		////fmt.Printf("timediff %d,%d,%d,%d\n", kcp.snd_nxt, kcp.snd_una, cwnd, _itimediff(kcp.snd_nxt, kcp.snd_una + cwnd));
-		t++
 		if _itimediff(kcp.snd_nxt, kcp.snd_una+cwnd) >= 0 {
 			//if kcp.user[0] == 0 {
 			////fmt.Println("=======", kcp.snd_nxt, kcp.snd_una, cwnd)
@@ -910,11 +934,9 @@ func Ikcp_flush(kcp *Ikcpcb) {
 		rtomin = 0
 	}
 
-	a := 0
 	// flush data segments
 	for p := kcp.snd_buf.Front(); p != nil; p = p.Next() {
 		////println("debug loop", a, kcp.snd_buf.Len())
-		a++
 		segment := p.Value.(*IKCPSEG)
 		needsend := 0
 		if segment.xmit == 0 {
@@ -949,7 +971,7 @@ func Ikcp_flush(kcp *Ikcpcb) {
 			need = int32(IKCP_OVERHEAD + segment._len)
 
 			////fmt.Printf("vzex:need send%d, %d,%d,%d\n", kcp.nsnd_buf, size, need, kcp.mtu)
-			if size+need >= int32(kcp.mtu) {
+			if size+need > int32(kcp.mtu) {
 				//      //fmt.Printf("trigger!\n");
 				ikcp_output(kcp, buffer, size)
 				ptr = buffer
