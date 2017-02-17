@@ -32,6 +32,12 @@ tar zcvf dtunnel_win64_$1_lite.tgz dtunnel_lite.exe
 echo "build linux_arm"
 GOOS=linux GOARCH=arm make
 tar zcvf dtunnel_linux_arm_$1_lite.tgz dtunnel_lite
+echo "build linux_mips"
+GOOS=linux GOARCH=mips make
+tar zcvf dtunnel_linux_mips_$1_lite.tgz dtunnel_lite
+echo "build linux_mipsle"
+GOOS=linux GOARCH=mipsle make
+tar zcvf dtunnel_linux_mipsle_$1_lite.tgz dtunnel_lite
 rm -f dtunnel_lite dtunnel_lite.exe
 echo "Build Over"
 ls -l dtunnel_*$1_lite.tgz
