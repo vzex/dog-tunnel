@@ -1108,7 +1108,7 @@ func (sc *Client) MultiListen() bool {
 		}
 		go func() {
 			quit := false
-			ping := time.NewTicker(time.Second * 5)
+			ping := time.NewTicker(time.Second)
 			go func() {
 			out:
 				for {
@@ -1123,7 +1123,6 @@ func (sc *Client) MultiListen() bool {
 					}
 				}
 			}()
-			ping.Stop()
 			for {
 				conn, err := g_LocalConn.Accept()
 				if err != nil {
@@ -1145,6 +1144,7 @@ func (sc *Client) MultiListen() bool {
 				go handleLocalServerResponse(sc, sessionId)
 			}
 			quit = true
+			ping.Stop()
 		}()
 		mode := "p2p mode"
 		if !sc.bUdp {
