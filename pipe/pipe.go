@@ -187,7 +187,7 @@ func (l *Listener) inner_loop() {
 			l.sessionsLock.RUnlock()
 			if bHave {
 				if session.status == "ok" {
-					if session.remote.String() == from.String() && n >= int(ikcp.IKCP_OVERHEAD) {
+					if session.remote.String() == from.String() && (n >= int(ikcp.IKCP_OVERHEAD) || session.compressCache != nil) {
 						var buf []byte
 						if n <= 7 || session.compressCache == nil {
 							buf = make([]byte, n)
@@ -196,7 +196,9 @@ func (l *Listener) inner_loop() {
 							_b, _er := zappy.Decode(nil, l.readBuffer[:n])
 							if _er != nil {
 								log.Println("decompress fail", _er.Error())
-								go session.Close()
+								//go session.Close()
+								//don't close pipe, just drop this data
+								continue
 							}
 							//log.Println("decompress", len(_b), n)
 							buf = _b
@@ -696,7 +698,8 @@ func (session *UDPMakeSession) loop() {
 					}
 				}
 				if session.remote.String() == from.String() {
-					if n >= int(ikcp.IKCP_OVERHEAD) || n <= 7 {
+					//log.Println("===", n, len(session.compressCache))
+					if n >= int(ikcp.IKCP_OVERHEAD) || n <= 7 || session.compressCache != nil {
 						var buf []byte
 						if n <= 7 || session.compressCache == nil {
 							buf = make([]byte, n)
@@ -705,7 +708,9 @@ func (session *UDPMakeSession) loop() {
 							_b, _er := zappy.Decode(nil, session.readBuffer[:n])
 							if _er != nil {
 								log.Println("decompress fail", _er.Error())
-								go session.Close()
+								//go session.Close()
+								//don't close pipe, just drop data
+								continue
 							}
 							//log.Println("decompress", len(_b), n)
 							buf = _b
