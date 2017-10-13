@@ -12,7 +12,7 @@ import (
 	"time"
 )
 import "github.com/klauspost/reedsolomon"
-import "github.com/cznic/zappy"
+import "github.com/vzex/zappy"
 
 const WriteBufferSize = 5000               //udp writer will add some data for checksum or encrypt
 const ReadBufferSize = WriteBufferSize * 2 //so reader must be larger
