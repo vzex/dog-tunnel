@@ -2,7 +2,7 @@ package nat
 
 import "github.com/vzex/dog-tunnel/ikcp"
 import "github.com/klauspost/reedsolomon"
-import "github.com/cznic/zappy"
+import "github.com/vzex/zappy"
 
 import (
 	"errors"
