@@ -52,6 +52,8 @@ const (
 	eTunnel_open
 	eTunnel_msg_s_head
 	eInit_smartN
+	eTunnel_msg_c_udp_sock
+	eTunnel_msg_s_udp_sock
 )
 
 //var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
@@ -291,7 +293,7 @@ func getDecodeFunc(aesBlock cipher.Block) func([]byte) []byte {
 }
 
 func CreateMainClient(id string) *Client {
-	client := &Client{id: id, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan struct{}), monitorTbl: make(map[int]*smartSession), hostWayTbl: make(map[string]*hostWay)}
+	client := &Client{id: id, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan struct{}), monitorTbl: make(map[int]*smartSession), hostWayTbl: make(map[string]*hostWay), udpAddr2SessionId: make(map[string]int)}
 	client.smartN = *smartCount
 	g_ClientMapLock.Lock()
 	g_ClientMap[id] = client
@@ -444,7 +446,7 @@ func Listen(bIsTcp bool, addr string) bool {
 		client, have := g_ClientMap[id]
 		g_ClientMapLock.RUnlock()
 		if !have {
-			client = &Client{id: id, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan struct{}), monitorTbl: make(map[int]*smartSession), hostWayTbl: make(map[string]*hostWay)}
+			client = &Client{id: id, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan struct{}), monitorTbl: make(map[int]*smartSession), hostWayTbl: make(map[string]*hostWay), udpAddr2SessionId: make(map[string]int)}
 			g_ClientMapLock.Lock()
 			g_ClientMap[id] = client
 			g_ClientMapLock.Unlock()
@@ -903,6 +905,8 @@ type clientSession struct {
 	headSendN    int32
 	headFailN    int32
 	closeN       int32
+	udpAddr string
+	realUdpAddr string
 }
 
 func (session *clientSession) processSockProxy(content string, callback func([]byte, string, reqMsg)) {
@@ -926,9 +930,7 @@ func (session *clientSession) processSockProxy(content string, callback func([]b
 			return
 		}
 		var send = []uint8{5, 0}
-		go func() {
-			session.localConn.Write(send)
-		}()
+		session.localConn.Write(send)
 		session.status = "hello"
 		session.recvMsg = string(bytes[session.extra:])
 		session.extra = 0
@@ -952,21 +954,45 @@ type ansMsg struct {
 	rep  uint8
 	rsv  uint8
 	atyp uint8
-	buf  [300]uint8
+	buf  [10]uint8
 	mlen uint16
 }
 
-func (msg *ansMsg) gen(req *reqMsg, rep uint8) {
+func (msg *ansMsg) gen(req *reqMsg, rep uint8, addr string) {
 	msg.ver = 5
 	msg.rep = rep //rfc1928
 	msg.rsv = 0
 	msg.atyp = 1 //req.atyp
 
 	msg.buf[0], msg.buf[1], msg.buf[2], msg.buf[3] = msg.ver, msg.rep, msg.rsv, msg.atyp
-	for i := 5; i < 11; i++ {
-		msg.buf[i] = 0
-	}
 	msg.mlen = 10
+	if addr != "" {
+		arr := strings.Split(addr, ":")
+		var ip string
+		var port int
+		switch len(arr) {
+		case 0, 1:
+			break
+		case 2:
+			ip = arr[0]
+			port, _ = strconv.Atoi(arr[1])
+			if ip == "" {
+				ip = "127.0.0.1"
+			}
+			_ip := net.ParseIP(ip).To4()
+			for i := 0; i < 4; i++ {
+				msg.buf[4+i] = _ip[i]
+			}
+			msg.buf[9] = byte(port)
+			msg.buf[8] = byte(port >> 8)
+			return
+		default:
+		}
+	} else {
+		for i := 5; i < 10; i++ {
+			msg.buf[i] = 0
+		}
+	}
 }
 
 type reqMsg struct {
@@ -1105,6 +1131,9 @@ type Client struct {
 	hostWayTbl  map[string]*hostWay
 	hostWayLock sync.RWMutex
 
+        udpAddrMapLock sync.RWMutex
+        udpAddr2SessionId map[string]int
+
 	smartN int
 }
 
@@ -1130,6 +1159,12 @@ func (sc *Client) removeSession(sessionId int) bool {
 	common.RmId("session", sessionId)
 	session, bHave := sc.sessions[sessionId]
 	if bHave {
+		addr := session.udpAddr
+		if addr != "" {
+			sc.udpAddrMapLock.Lock()
+			delete(sc.udpAddr2SessionId, addr)
+			sc.udpAddrMapLock.Unlock()
+		}
 		delete(sc.sessions, sessionId)
 		session.connLock.RLock()
 		if session.localConn != nil {
@@ -1190,6 +1225,19 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 	case eTunnel_error:
 		log.Println("tunnel error", content, sessionId)
 		go sc.removeSession(sessionId)
+	case eTunnel_msg_s_udp_sock:
+		log.Println("recv from remote udp", sessionId, []byte(content))
+		if session == nil {return}
+		go func() {
+			c := make([]byte, len(content) + 10)
+			var ans ansMsg
+			ans.gen(nil, 0, sc.listenerUdp.LocalAddr().String())
+			ans.buf[0] = 0
+			copy(c[:10], ans.buf[:10])
+			copy(c[10:], []byte(content))
+			_addr, _ := net.ResolveUDPAddr("", session.realUdpAddr) //todo
+			sc.listenerUdp.WriteTo(c, _addr)
+		}()
 	case eShowandquit:
 		println(content)
 		sc.Quit()
@@ -1367,6 +1415,45 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		aesKey := "asd4" + tail
 		aesBlock, _ := aes.NewCipher([]byte(aesKey))
 		sc.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
+	case eTunnel_msg_c_udp_sock:
+		if session == nil {return}
+		if session.localUdpConn == nil {return}
+                buf := []byte(content)
+                _, atyp := buf[2], buf[3]
+
+                buf = buf[4:]
+                size := len(buf)
+                var url string
+		var dst_addr []byte
+                switch atyp {
+		case 1: //ip v4
+                        dst_addr = make([]byte, 4)
+                        copy(dst_addr[:4], buf[:4])
+                        buf = buf[4:]
+                        size -= 4
+                case 3:
+                        l:=int(buf[0])
+                        dst_addr = buf[1:l+1]
+                        buf = buf[l+1:]
+                        size -= l+1
+                }
+                dst_port := make([]byte, 2)
+                copy(dst_port[:], buf[:2])
+                dst_port2 := (uint16(dst_port[0]) << 8) + uint16(dst_port[1])
+                size -= 2
+		switch atyp {
+		case 1:
+			url = fmt.Sprintf("%d.%d.%d.%d:%d", dst_addr[0], dst_addr[1], dst_addr[2], dst_addr[3], dst_port2)
+		case 3:
+			url = fmt.Sprintf("%s:%d", string(dst_addr), dst_port2)
+		}
+
+                data := buf[:size]
+		go func() {
+			_addr, _ := net.ResolveUDPAddr("", url) //todo
+			a, b := session.localUdpConn.WriteTo(data, _addr)
+			log.Println("write remote sock udp", _addr, len(data), a, b)
+		}()
 	case eTunnel_msg_c_udp:
 		if session != nil && session.localUdpConn != nil {
 			//log.Println("tunnel", (content), sessionId)
@@ -1486,6 +1573,31 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
 					return
 				}
+				if hello.cmd == 3 {
+					log.Println("fetch udp head")
+					go func() {
+						sock, _err := net.ListenUDP("udp", &net.UDPAddr{})
+						if _err != nil {
+							log.Println("cannot listenerUdp2 addr", _err.Error())
+							return
+						}
+						session.localUdpConn = sock
+						arr := make([]byte, WriteBufferSize)
+						for {
+							n, _, err := sock.ReadFromUDP(arr)
+							log.Println("server udp read from", n, err, sessionId)
+							if err != nil {
+								break
+							} else {
+								if common.WriteCrypt(pipe, sessionId, eTunnel_msg_s_udp_sock, arr[:n], sc.encode) != nil {
+									break
+								}
+							}
+						}
+						session.localUdpConn = nil
+					}()
+					return
+				}
 				var ansmsg ansMsg
 				url := hello.url
 				var s_conn net.Conn
@@ -1508,7 +1620,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				}
 				if err != nil {
 					log.Println("connect to local server fail:", err.Error(), url)
-					ansmsg.gen(&hello, 4)
+					ansmsg.gen(&hello, 4, "")
 					go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s_head, ansmsg.buf[:ansmsg.mlen], sc.encode)
 					sc.removeSession(sessionId)
 				} else {
@@ -1526,7 +1638,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					session.cacheLock.Unlock()
 
 					go session.handleLocalPortResponse(sc, sessionId, hello.url)
-					ansmsg.gen(&hello, 0)
+					ansmsg.gen(&hello, 0, *localAddr)
 					go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s_head, ansmsg.buf[:ansmsg.mlen], sc.encode)
 					timeNow.RLock()
 					pinfo.Add(int64(ansmsg.mlen), timeNow.Unix())
@@ -1695,6 +1807,102 @@ func (sc *Client) MultiListen() bool {
 			sc.pipesLock.RUnlock()
 			return false
 		}
+		udpAddr, err := net.ResolveUDPAddr("udp", sc.reverseAddr)
+		if err != nil {
+			log.Println("cannot listen udp addr", err.Error())
+			return false
+		}
+		go func() {
+                        sock, _err := net.ListenUDP("udp", udpAddr)
+                        if _err != nil {
+                                log.Println("cannot listenerUdp2 addr", _err.Error())
+                                return
+                        }
+			sc.listenerUdp = sock
+			var tmp = make([]byte, WriteBufferSize)
+			for {
+				n, addr, err := sock.ReadFromUDP(tmp)
+				if err != nil {
+					log.Println("udp break", err)
+					break
+				}
+                                sc.udpAddrMapLock.RLock()
+                                _addr := addr.String()
+				_oriAddr := _addr
+                                sid, have := sc.udpAddr2SessionId[_addr]
+                                if !have {
+                                        addr.IP = net.IPv4(0, 0, 0, 0)
+                                        _addr = addr.String()
+                                        sid, have = sc.udpAddr2SessionId[_addr]
+                                        if !have {
+						log.Println("drop data for", _addr)
+                                                continue
+                                        }
+                                }
+				session := sc.getSession(sid)
+				if session == nil {
+					log.Println("no session, drop data for", _addr, sid)
+					continue
+				}
+
+                                sc.udpAddrMapLock.RUnlock()
+                                buf := tmp
+				log.Println("read from socks5", n)
+                                frag, atyp := buf[2], buf[3]
+                                //println("test", msg.ver, msg.cmd, msg.rsv, msg.atyp)
+
+
+                                buf = buf[4:]
+                                size := n - 4
+
+
+
+				var url string
+				var dst_addr []byte
+				switch atyp {
+					case 1: //ip v4
+					dst_addr = make([]byte, 4)
+					copy(dst_addr[:4], buf[:4])
+					buf = buf[4:]
+					size -= 4
+				case 3:
+					l:=int(buf[0])
+					dst_addr = buf[1:l+1]
+					buf = buf[l+1:]
+					size -= l+1
+				}
+				dst_port := make([]byte, 2)
+				copy(dst_port[:], buf[:2])
+				dst_port2 := (uint16(dst_port[0]) << 8) + uint16(dst_port[1])
+				size -= 2
+				switch atyp {
+				case 1:
+					url = fmt.Sprintf("%d.%d.%d.%d:%d", dst_addr[0], dst_addr[1], dst_addr[2], dst_addr[3], dst_port2)
+				case 3:
+					url = fmt.Sprintf("%s:%d", string(dst_addr), dst_port2)
+				}
+
+                                log.Println("parse head", frag, atyp, url, dst_port2, size, addr)
+				if err != nil {
+					e, ok := err.(net.Error)
+					if !ok || !e.Timeout() {
+						log.Println("udp client over", e.Error())
+						break
+					}
+				}
+				pipe := sc.getOnePipe()
+				if pipe == nil {
+					log.Println("cannot get pipe for client, wait for recover...")
+					time.Sleep(time.Second)
+					continue
+				}
+				if common.WriteCrypt(pipe.conn, sid, eTunnel_msg_c_udp_sock, tmp[:n], sc.encode) != nil {
+					break
+				}
+				session.realUdpAddr = _oriAddr
+			}
+			sc.listenerUdp = nil
+		}()
 		println("client service start success,please connect", sc.reverseAddr)
 		func() {
 			for {
@@ -1865,7 +2073,7 @@ func (st *smartSession) start(hello reqMsg) {
 	if err != nil {
 		log.Println("smart connect to local server fail:", err.Error(), url)
 
-		ansmsg.gen(&hello, 4)
+		ansmsg.gen(&hello, 4, "")
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_msg_s_head, string(ansmsg.buf[:ansmsg.mlen]), pipe)
 	} else {
 		st.cacheLock.Lock()
@@ -1874,7 +2082,7 @@ func (st *smartSession) start(hello reqMsg) {
 			s_conn.Write([]byte(st.cacheMsg))
 		}
 		st.cacheLock.Unlock()
-		ansmsg.gen(&hello, 0)
+		ansmsg.gen(&hello, 0, *localAddr)
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_msg_s_head, string(ansmsg.buf[:ansmsg.mlen]), pipe)
 		go func() {
 			reader := bufio.NewReader(s_conn)
@@ -2128,6 +2336,21 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 		}
 		if client.action == "socks5" && !bParsed {
 			session.processSockProxy(string(arr[0:size]), func(head []byte, _host string, hello reqMsg) {
+				if hello.cmd == 3 {
+					log.Println("fetch udp head2", _host)
+					var ansmsg ansMsg
+					ansmsg.gen(&hello, 0, *localAddr)
+					session.localConn.Write(ansmsg.buf[:ansmsg.mlen])
+                                        srcAddr:= hello.url
+                                        log.Println("srcAddr", srcAddr, sessionId)
+					client.udpAddrMapLock.Lock()
+                                        client.udpAddr2SessionId[srcAddr] = sessionId
+					client.udpAddrMapLock.Unlock()
+					session.udpAddr = srcAddr
+                                        bParsed = true
+					common.WriteCrypt(pipe, sessionId, eTunnel_open, head, client.encode)
+					return
+				}
 				host = _host
 				way = client.getHostWay(host)
 				if *bSrc {
