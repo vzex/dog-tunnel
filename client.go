@@ -1203,9 +1203,8 @@ func (sc *Client) createSession(sessionId int, session *clientSession) int {
 			old.localUdpConn = nil
 		}
 		old.udpConnLock.Unlock()
-	} else {
-		sc.sessions[sessionId] = session
 	}
+	sc.sessions[sessionId] = session
 	return sessionId
 }
 
@@ -1543,7 +1542,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 								}
 							}
 						}
-						sc.removeSession(sessionId)
 						common.WriteCrypt(pinfo.conn, sessionId, eTunnel_close_s, []byte{}, sc.encode)
 					}()
 				}()
