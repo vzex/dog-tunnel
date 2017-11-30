@@ -893,6 +893,7 @@ type clientSession struct {
 	localUdpConn *net.UDPConn
 	localUdpAddr *net.UDPAddr
 	connLock     sync.RWMutex
+	udpConnLock  sync.RWMutex
 	status       string
 	recvMsg      string
 	extra        uint8
@@ -905,8 +906,8 @@ type clientSession struct {
 	headSendN    int32
 	headFailN    int32
 	closeN       int32
-	udpAddr string
-	realUdpAddr string
+	udpAddr      string
+	realUdpAddr  string
 }
 
 func (session *clientSession) processSockProxy(content string, callback func([]byte, string, reqMsg)) {
@@ -1131,8 +1132,8 @@ type Client struct {
 	hostWayTbl  map[string]*hostWay
 	hostWayLock sync.RWMutex
 
-        udpAddrMapLock sync.RWMutex
-        udpAddr2SessionId map[string]int
+	udpAddrMapLock    sync.RWMutex
+	udpAddr2SessionId map[string]int
 
 	smartN int
 }
@@ -1166,14 +1167,18 @@ func (sc *Client) removeSession(sessionId int) bool {
 			sc.udpAddrMapLock.Unlock()
 		}
 		delete(sc.sessions, sessionId)
-		session.connLock.RLock()
+		session.connLock.Lock()
 		if session.localConn != nil {
 			session.localConn.Close()
+			session.localConn = nil
 		}
-		session.connLock.RUnlock()
+		session.connLock.Unlock()
+		session.udpConnLock.Lock()
 		if session.localUdpConn != nil {
 			session.localUdpConn.Close()
+			session.localUdpConn = nil
 		}
+		session.udpConnLock.Unlock()
 	}
 	return bHave
 }
@@ -1186,11 +1191,18 @@ func (sc *Client) createSession(sessionId int, session *clientSession) int {
 	defer sc.sessionLock.Unlock()
 	old, bHave := sc.sessions[sessionId]
 	if bHave {
-		old.connLock.RLock()
+		old.connLock.Lock()
 		if old.localConn != nil {
 			old.localConn.Close()
+			old.localConn = nil
 		}
-		old.connLock.RUnlock()
+		old.connLock.Unlock()
+		old.udpConnLock.Lock()
+		if old.localUdpConn != nil {
+			old.localUdpConn.Close()
+			old.localUdpConn = nil
+		}
+		old.udpConnLock.Unlock()
 	} else {
 		sc.sessions[sessionId] = session
 	}
@@ -1227,9 +1239,11 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		go sc.removeSession(sessionId)
 	case eTunnel_msg_s_udp_sock:
 		log.Println("recv from remote udp", sessionId, []byte(content))
-		if session == nil {return}
+		if session == nil {
+			return
+		}
 		go func() {
-			c := make([]byte, len(content) + 10)
+			c := make([]byte, len(content)+10)
 			var ans ansMsg
 			ans.gen(nil, 0, sc.listenerUdp.LocalAddr().String())
 			ans.buf[0] = 0
@@ -1416,31 +1430,35 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		aesBlock, _ := aes.NewCipher([]byte(aesKey))
 		sc.SetCrypt(getEncodeFunc(aesBlock), getDecodeFunc(aesBlock))
 	case eTunnel_msg_c_udp_sock:
-		if session == nil {return}
-		if session.localUdpConn == nil {return}
-                buf := []byte(content)
-                _, atyp := buf[2], buf[3]
+		if session == nil {
+			return
+		}
+		if session.localUdpConn == nil {
+			return
+		}
+		buf := []byte(content)
+		_, atyp := buf[2], buf[3]
 
-                buf = buf[4:]
-                size := len(buf)
-                var url string
+		buf = buf[4:]
+		size := len(buf)
+		var url string
 		var dst_addr []byte
-                switch atyp {
+		switch atyp {
 		case 1: //ip v4
-                        dst_addr = make([]byte, 4)
-                        copy(dst_addr[:4], buf[:4])
-                        buf = buf[4:]
-                        size -= 4
-                case 3:
-                        l:=int(buf[0])
-                        dst_addr = buf[1:l+1]
-                        buf = buf[l+1:]
-                        size -= l+1
-                }
-                dst_port := make([]byte, 2)
-                copy(dst_port[:], buf[:2])
-                dst_port2 := (uint16(dst_port[0]) << 8) + uint16(dst_port[1])
-                size -= 2
+			dst_addr = make([]byte, 4)
+			copy(dst_addr[:4], buf[:4])
+			buf = buf[4:]
+			size -= 4
+		case 3:
+			l := int(buf[0])
+			dst_addr = buf[1 : l+1]
+			buf = buf[l+1:]
+			size -= l + 1
+		}
+		dst_port := make([]byte, 2)
+		copy(dst_port[:], buf[:2])
+		dst_port2 := (uint16(dst_port[0]) << 8) + uint16(dst_port[1])
+		size -= 2
 		switch atyp {
 		case 1:
 			url = fmt.Sprintf("%d.%d.%d.%d:%d", dst_addr[0], dst_addr[1], dst_addr[2], dst_addr[3], dst_port2)
@@ -1448,7 +1466,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 			url = fmt.Sprintf("%s:%d", string(dst_addr), dst_port2)
 		}
 
-                data := buf[:size]
+		data := buf[:size]
 		go func() {
 			_addr, _ := net.ResolveUDPAddr("", url) //todo
 			a, b := session.localUdpConn.WriteTo(data, _addr)
@@ -1496,14 +1514,15 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 						go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
 						return
 					}
-					timeNow.RLock()
 					udpAddr, err := net.ResolveUDPAddr("udp", sc.action)
 					if err != nil {
 						log.Println("resolve addr fail", err.Error())
 						msg := err.Error()
 						go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
+						sock.Close()
 						return
 					}
+					timeNow.RLock()
 
 					session := &clientSession{pipe: pinfo, localUdpConn: sock, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second), localUdpAddr: udpAddr}
 					timeNow.RUnlock()
@@ -1594,6 +1613,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 								}
 							}
 						}
+						sock.Close()
 						session.localUdpConn = nil
 					}()
 					return
@@ -1670,13 +1690,13 @@ out:
 						log.Println("try close timeout session connection", session.localConn.RemoteAddr(), id)
 						session.localConn.Close()
 					}
+					session.connLock.RUnlock()
 					if session.localUdpAddr != nil {
 						log.Println("try close timeout udp session connection", session.localUdpAddr.String(), id)
 						//delete(sc.sessions, id)
 						common.WriteCrypt(session.pipe.conn, id, eTunnel_close, []byte{}, sc.encode)
 						sc.removeSession(id)
 					}
-					session.connLock.RUnlock()
 				}
 			}
 		case <-sc.quit:
@@ -1715,10 +1735,12 @@ func (sc *Client) _Quit() {
 		if session.localConn != nil {
 			session.localConn.Close()
 		}
+		session.connLock.RUnlock()
+		session.udpConnLock.RLock()
 		if session.localUdpConn != nil {
 			session.localUdpConn.Close()
 		}
-		session.connLock.RUnlock()
+		session.udpConnLock.RUnlock()
 	}
 	log.Println("client quit", sc.id)
 	g_ClientMapLock.Lock()
@@ -1813,11 +1835,11 @@ func (sc *Client) MultiListen() bool {
 			return false
 		}
 		go func() {
-                        sock, _err := net.ListenUDP("udp", udpAddr)
-                        if _err != nil {
-                                log.Println("cannot listenerUdp2 addr", _err.Error())
-                                return
-                        }
+			sock, _err := net.ListenUDP("udp", udpAddr)
+			if _err != nil {
+				log.Println("cannot listenerUdp2 addr", _err.Error())
+				return
+			}
 			sc.listenerUdp = sock
 			var tmp = make([]byte, WriteBufferSize)
 			for {
@@ -1826,50 +1848,47 @@ func (sc *Client) MultiListen() bool {
 					log.Println("udp break", err)
 					break
 				}
-                                sc.udpAddrMapLock.RLock()
-                                _addr := addr.String()
+				sc.udpAddrMapLock.RLock()
+				_addr := addr.String()
 				_oriAddr := _addr
-                                sid, have := sc.udpAddr2SessionId[_addr]
-                                if !have {
-                                        addr.IP = net.IPv4(0, 0, 0, 0)
-                                        _addr = addr.String()
-                                        sid, have = sc.udpAddr2SessionId[_addr]
-                                        if !have {
+				sid, have := sc.udpAddr2SessionId[_addr]
+				if !have {
+					addr.IP = net.IPv4(0, 0, 0, 0)
+					_addr = addr.String()
+					sid, have = sc.udpAddr2SessionId[_addr]
+					if !have {
 						log.Println("drop data for", _addr)
-                                                continue
-                                        }
-                                }
+						continue
+					}
+				}
 				session := sc.getSession(sid)
 				if session == nil {
 					log.Println("no session, drop data for", _addr, sid)
 					continue
 				}
 
-                                sc.udpAddrMapLock.RUnlock()
-                                buf := tmp
+				sc.udpAddrMapLock.RUnlock()
+				buf := tmp
 				log.Println("read from socks5", n)
-                                frag, atyp := buf[2], buf[3]
-                                //println("test", msg.ver, msg.cmd, msg.rsv, msg.atyp)
+				frag, atyp := buf[2], buf[3]
+				//println("test", msg.ver, msg.cmd, msg.rsv, msg.atyp)
 
-
-                                buf = buf[4:]
-                                size := n - 4
-
-
+				buf = buf[4:]
+				size := n - 4
 
 				var url string
 				var dst_addr []byte
 				switch atyp {
-					case 1: //ip v4
+				case 1: //ip v4
 					dst_addr = make([]byte, 4)
 					copy(dst_addr[:4], buf[:4])
 					buf = buf[4:]
 					size -= 4
 				case 3:
-					l:=int(buf[0])
-					dst_addr = buf[1:l+1]
+					l := int(buf[0])
+					dst_addr = buf[1 : l+1]
 					buf = buf[l+1:]
-					size -= l+1
+					size -= l + 1
 				}
 				dst_port := make([]byte, 2)
 				copy(dst_port[:], buf[:2])
@@ -1882,7 +1901,7 @@ func (sc *Client) MultiListen() bool {
 					url = fmt.Sprintf("%s:%d", string(dst_addr), dst_port2)
 				}
 
-                                log.Println("parse head", frag, atyp, url, dst_port2, size, addr)
+				log.Println("parse head", frag, atyp, url, dst_port2, size, addr)
 				if err != nil {
 					e, ok := err.(net.Error)
 					if !ok || !e.Timeout() {
@@ -2341,13 +2360,13 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 					var ansmsg ansMsg
 					ansmsg.gen(&hello, 0, *localAddr)
 					session.localConn.Write(ansmsg.buf[:ansmsg.mlen])
-                                        srcAddr:= hello.url
-                                        log.Println("srcAddr", srcAddr, sessionId)
+					srcAddr := hello.url
+					log.Println("srcAddr", srcAddr, sessionId)
 					client.udpAddrMapLock.Lock()
-                                        client.udpAddr2SessionId[srcAddr] = sessionId
+					client.udpAddr2SessionId[srcAddr] = sessionId
 					client.udpAddrMapLock.Unlock()
 					session.udpAddr = srcAddr
-                                        bParsed = true
+					bParsed = true
 					common.WriteCrypt(pipe, sessionId, eTunnel_open, head, client.encode)
 					return
 				}
