@@ -78,8 +78,7 @@ func _xor(s []byte, xor string) []byte {
 		return s
 	}
 	r := make([]byte, n)
-	r[0] = s[0]
-	for i := 1; i < n; i++ {
+	for i := 0; i < n; i++ {
 		r[i] = s[i] ^ encodingData[i%encodingLen]
 	}
 	return r
@@ -811,6 +810,7 @@ func (session *UDPMakeSession) loop() {
 				for {
 					hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
 					if hr > 0 {
+						tmp = _xor(tmp, session.xor)
 						status := tmp[0]
 						if status == Data {
 							n := 1
@@ -965,6 +965,7 @@ func (session *UDPMakeSession) loop() {
 						for {
 							hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
 							if hr > 0 {
+								tmp = _xor(tmp, session.xor)
 								status := tmp[0]
 								if status == Data {
 									n := 1
@@ -1199,7 +1200,7 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 		//log.Println("try send", len(data), sendL)
 		//copy(data[3+sendL:], b)
 	}
-	ok := session.DoWrite(data)
+	ok := session.DoWrite(_xor(data, session.xor))
 	if !ok {
 		return 0, errors.New("closed")
 	}
@@ -1209,7 +1210,7 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 			if n > 10 {
 				d := make([]byte, n)
 				d[0] = Fake
-				session.DoWrite(d)
+				session.DoWrite(_xor(d, session.xor))
 			}
 		}
 	}
