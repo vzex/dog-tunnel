@@ -1542,7 +1542,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 								}
 							}
 						}
-						common.WriteCrypt(pinfo.conn, sessionId, eTunnel_close_s, []byte{}, sc.encode)
 					}()
 				}()
 				return
@@ -1827,99 +1826,101 @@ func (sc *Client) MultiListen() bool {
 			sc.pipesLock.RUnlock()
 			return false
 		}
-		udpAddr, err := net.ResolveUDPAddr("udp", sc.reverseAddr)
-		if err != nil {
-			log.Println("cannot listen udp addr", err.Error())
-			return false
-		}
-		go func() {
-			sock, _err := net.ListenUDP("udp", udpAddr)
-			if _err != nil {
-				log.Println("cannot listenerUdp2 addr", _err.Error())
-				return
+		if sc.action == "socks5" {
+			udpAddr, err := net.ResolveUDPAddr("udp", sc.reverseAddr)
+			if err != nil {
+				log.Println("cannot listen udp addr", err.Error())
+				return false
 			}
-			sc.listenerUdp = sock
-			var tmp = make([]byte, WriteBufferSize)
-			for {
-				n, addr, err := sock.ReadFromUDP(tmp)
-				if err != nil {
-					log.Println("udp break", err)
-					break
+			go func() {
+				sock, _err := net.ListenUDP("udp", udpAddr)
+				if _err != nil {
+					log.Println("cannot listenerUdp2 addr", _err.Error())
+					return
 				}
-				sc.udpAddrMapLock.RLock()
-				_addr := addr.String()
-				_oriAddr := _addr
-				sid, have := sc.udpAddr2SessionId[_addr]
-				if !have {
-					addr.IP = net.IPv4(0, 0, 0, 0)
-					_addr = addr.String()
-					sid, have = sc.udpAddr2SessionId[_addr]
-					if !have {
-						log.Println("drop data for", _addr)
-						continue
-					}
-				}
-				session := sc.getSession(sid)
-				if session == nil {
-					log.Println("no session, drop data for", _addr, sid)
-					continue
-				}
-
-				sc.udpAddrMapLock.RUnlock()
-				buf := tmp
-				log.Println("read from socks5", n)
-				frag, atyp := buf[2], buf[3]
-				//println("test", msg.ver, msg.cmd, msg.rsv, msg.atyp)
-
-				buf = buf[4:]
-				size := n - 4
-
-				var url string
-				var dst_addr []byte
-				switch atyp {
-				case 1: //ip v4
-					dst_addr = make([]byte, 4)
-					copy(dst_addr[:4], buf[:4])
-					buf = buf[4:]
-					size -= 4
-				case 3:
-					l := int(buf[0])
-					dst_addr = buf[1 : l+1]
-					buf = buf[l+1:]
-					size -= l + 1
-				}
-				dst_port := make([]byte, 2)
-				copy(dst_port[:], buf[:2])
-				dst_port2 := (uint16(dst_port[0]) << 8) + uint16(dst_port[1])
-				size -= 2
-				switch atyp {
-				case 1:
-					url = fmt.Sprintf("%d.%d.%d.%d:%d", dst_addr[0], dst_addr[1], dst_addr[2], dst_addr[3], dst_port2)
-				case 3:
-					url = fmt.Sprintf("%s:%d", string(dst_addr), dst_port2)
-				}
-
-				log.Println("parse head", frag, atyp, url, dst_port2, size, addr)
-				if err != nil {
-					e, ok := err.(net.Error)
-					if !ok || !e.Timeout() {
-						log.Println("udp client over", e.Error())
+				sc.listenerUdp = sock
+				var tmp = make([]byte, WriteBufferSize)
+				for {
+					n, addr, err := sock.ReadFromUDP(tmp)
+					if err != nil {
+						log.Println("udp break", err)
 						break
 					}
+					sc.udpAddrMapLock.RLock()
+					_addr := addr.String()
+					_oriAddr := _addr
+					sid, have := sc.udpAddr2SessionId[_addr]
+					if !have {
+						addr.IP = net.IPv4(0, 0, 0, 0)
+						_addr = addr.String()
+						sid, have = sc.udpAddr2SessionId[_addr]
+						if !have {
+							log.Println("drop data for", _addr)
+							continue
+						}
+					}
+					session := sc.getSession(sid)
+					if session == nil {
+						log.Println("no session, drop data for", _addr, sid)
+						continue
+					}
+
+					sc.udpAddrMapLock.RUnlock()
+					buf := tmp
+					log.Println("read from socks5", n)
+					frag, atyp := buf[2], buf[3]
+					//println("test", msg.ver, msg.cmd, msg.rsv, msg.atyp)
+
+					buf = buf[4:]
+					size := n - 4
+
+					var url string
+					var dst_addr []byte
+					switch atyp {
+						case 1: //ip v4
+						dst_addr = make([]byte, 4)
+						copy(dst_addr[:4], buf[:4])
+						buf = buf[4:]
+						size -= 4
+					case 3:
+						l := int(buf[0])
+						dst_addr = buf[1 : l+1]
+						buf = buf[l+1:]
+						size -= l + 1
+					}
+					dst_port := make([]byte, 2)
+					copy(dst_port[:], buf[:2])
+					dst_port2 := (uint16(dst_port[0]) << 8) + uint16(dst_port[1])
+					size -= 2
+					switch atyp {
+					case 1:
+						url = fmt.Sprintf("%d.%d.%d.%d:%d", dst_addr[0], dst_addr[1], dst_addr[2], dst_addr[3], dst_port2)
+					case 3:
+						url = fmt.Sprintf("%s:%d", string(dst_addr), dst_port2)
+					}
+
+					log.Println("parse head", frag, atyp, url, dst_port2, size, addr)
+					if err != nil {
+						e, ok := err.(net.Error)
+						if !ok || !e.Timeout() {
+							log.Println("udp client over", e.Error())
+							break
+						}
+					}
+					pipe := sc.getOnePipe()
+					if pipe == nil {
+						log.Println("cannot get pipe for client, wait for recover...")
+						time.Sleep(time.Second)
+						continue
+					}
+					if common.WriteCrypt(pipe.conn, sid, eTunnel_msg_c_udp_sock, tmp[:n], sc.encode) != nil {
+						break
+					}
+					session.realUdpAddr = _oriAddr
 				}
-				pipe := sc.getOnePipe()
-				if pipe == nil {
-					log.Println("cannot get pipe for client, wait for recover...")
-					time.Sleep(time.Second)
-					continue
-				}
-				if common.WriteCrypt(pipe.conn, sid, eTunnel_msg_c_udp_sock, tmp[:n], sc.encode) != nil {
-					break
-				}
-				session.realUdpAddr = _oriAddr
-			}
-			sc.listenerUdp = nil
-		}()
+				sc.listenerUdp = nil
+			}()
+		}
 		println("client service start success,please connect", sc.reverseAddr)
 		func() {
 			for {

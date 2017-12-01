@@ -78,7 +78,8 @@ func _xor(s []byte, xor string) []byte {
 		return s
 	}
 	r := make([]byte, n)
-	for i := 0; i < n; i++ {
+	r[0] = s[0]
+	for i := 1; i < n; i++ {
 		r[i] = s[i] ^ encodingData[i%encodingLen]
 	}
 	return r
