@@ -77,10 +77,11 @@ func _xor(s []byte, xor string) []byte {
 	if n == 0 {
 		return s
 	}
+	r := make([]byte, n)
 	for i := 0; i < n; i++ {
-		s[i] = s[i] ^ encodingData[i%encodingLen]
+		r[i] = s[i] ^ encodingData[i%encodingLen]
 	}
-	return s
+	return r
 }
 
 func makeEncode(buf []byte, status byte, arg int, arg2 int16, xor string) []byte {
