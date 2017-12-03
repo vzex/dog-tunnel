@@ -2362,7 +2362,7 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 				if hello.cmd == 3 {
 					log.Println("fetch udp head2", _host)
 					var ansmsg ansMsg
-					ansmsg.gen(&hello, 0, *localAddr)
+					ansmsg.gen(&hello, 0, client.reverseAddr)
 					session.localConn.Write(ansmsg.buf[:ansmsg.mlen])
 					srcAddr := hello.url
 					log.Println("srcAddr", srcAddr, sessionId)
