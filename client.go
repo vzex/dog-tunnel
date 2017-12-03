@@ -1855,8 +1855,13 @@ func (sc *Client) MultiListen() bool {
 						_addr = addr.String()
 						sid, have = sc.udpAddr2SessionId[_addr]
 						if !have {
-							log.Println("drop data for", _addr)
-							continue
+							addr.Port = 0
+							_addr = addr.String()
+							sid, have = sc.udpAddr2SessionId[_addr]
+							if !have {
+								log.Println("drop data for", _addr, _oriAddr)
+								continue
+							}
 						}
 					}
 					session := sc.getSession(sid)
