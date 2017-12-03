@@ -888,26 +888,27 @@ func main() {
 }
 
 type clientSession struct {
-	pipe         *pipeInfo
-	localConn    net.Conn
-	localUdpConn *net.UDPConn
-	localUdpAddr *net.UDPAddr
-	connLock     sync.RWMutex
-	udpConnLock  sync.RWMutex
-	status       string
-	recvMsg      string
-	extra        uint8
-	dieT         time.Time
-	hash         string
-	decide       decideStatus
-	decideLock   sync.RWMutex
-	cacheMsg     string
-	cacheLock    sync.RWMutex
-	headSendN    int32
-	headFailN    int32
-	closeN       int32
-	udpAddr      string
-	realUdpAddr  string
+	pipe            *pipeInfo
+	localConn       net.Conn
+	localUdpConn    *net.UDPConn
+	localUdpAddr    *net.UDPAddr
+	connLock        sync.RWMutex
+	udpConnLock     sync.RWMutex
+	status          string
+	recvMsg         string
+	extra           uint8
+	dieT            time.Time
+	hash            string
+	decide          decideStatus
+	decideLock      sync.RWMutex
+	cacheMsg        string
+	cacheLock       sync.RWMutex
+	headSendN       int32
+	headFailN       int32
+	closeN          int32
+	udpAddr         string
+	realUdpAddr     string
+	responceUdpAddr []byte
 }
 
 func (session *clientSession) processSockProxy(content string, callback func([]byte, string, reqMsg)) {
@@ -955,18 +956,28 @@ type ansMsg struct {
 	rep  uint8
 	rsv  uint8
 	atyp uint8
-	buf  [10]uint8
+	buf  []uint8
 	mlen uint16
 }
 
+func (msg *ansMsg) gen_withbytes(req *reqMsg, rep uint8, addr []byte) {
+	msg.mlen = uint16(3 + len(addr))
+	msg.buf = make([]byte, msg.mlen)
+
+	msg.buf[0], msg.buf[1], msg.buf[2] = 0, 0, 0
+	for i := 0; i < len(addr); i++ {
+		msg.buf[i+3] = addr[i]
+	}
+}
 func (msg *ansMsg) gen(req *reqMsg, rep uint8, addr string) {
 	msg.ver = 5
 	msg.rep = rep //rfc1928
 	msg.rsv = 0
 	msg.atyp = 1 //req.atyp
 
-	msg.buf[0], msg.buf[1], msg.buf[2], msg.buf[3] = msg.ver, msg.rep, msg.rsv, msg.atyp
 	msg.mlen = 10
+	msg.buf = make([]byte, msg.mlen)
+	msg.buf[0], msg.buf[1], msg.buf[2], msg.buf[3] = msg.ver, msg.rep, msg.rsv, msg.atyp
 	if addr != "" {
 		arr := strings.Split(addr, ":")
 		var ip string
@@ -990,7 +1001,7 @@ func (msg *ansMsg) gen(req *reqMsg, rep uint8, addr string) {
 		default:
 		}
 	} else {
-		for i := 5; i < 10; i++ {
+		for i := 4; i < 10; i++ {
 			msg.buf[i] = 0
 		}
 	}
@@ -1242,12 +1253,11 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 			return
 		}
 		go func() {
-			c := make([]byte, len(content)+10)
 			var ans ansMsg
-			ans.gen(nil, 0, sc.listenerUdp.LocalAddr().String())
-			ans.buf[0] = 0
-			copy(c[:10], ans.buf[:10])
-			copy(c[10:], []byte(content))
+			ans.gen_withbytes(nil, 0, session.responceUdpAddr)
+			c := make([]byte, len(content)+int(ans.mlen))
+			copy(c[:ans.mlen], ans.buf[:ans.mlen])
+			copy(c[ans.mlen:], []byte(content))
 			_addr, _ := net.ResolveUDPAddr("", session.realUdpAddr) //todo
 			sc.listenerUdp.WriteTo(c, _addr)
 		}()
@@ -1469,7 +1479,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		go func() {
 			_addr, _ := net.ResolveUDPAddr("", url) //todo
 			a, b := session.localUdpConn.WriteTo(data, _addr)
-			log.Println("write remote sock udp", _addr, len(data), a, b)
+			log.Println("write remote sock udp", url, _addr, len(data), a, b)
 		}()
 	case eTunnel_msg_c_udp:
 		if session != nil && session.localUdpConn != nil {
@@ -1874,6 +1884,7 @@ func (sc *Client) MultiListen() bool {
 					buf := tmp
 					log.Println("read from socks5", n)
 					frag, atyp := buf[2], buf[3]
+					_buf := buf[3:]
 					//println("test", msg.ver, msg.cmd, msg.rsv, msg.atyp)
 
 					buf = buf[4:]
@@ -1881,17 +1892,20 @@ func (sc *Client) MultiListen() bool {
 
 					var url string
 					var dst_addr []byte
+					session.responceUdpAddr = []byte{1, 0, 0, 0, 0, 0, 0}
 					switch atyp {
-						case 1: //ip v4
+					case 1: //ip v4
 						dst_addr = make([]byte, 4)
 						copy(dst_addr[:4], buf[:4])
 						buf = buf[4:]
 						size -= 4
+						session.responceUdpAddr = _buf[:7]
 					case 3:
 						l := int(buf[0])
 						dst_addr = buf[1 : l+1]
 						buf = buf[l+1:]
 						size -= l + 1
+						session.responceUdpAddr = _buf[:l+1+2+1]
 					}
 					dst_port := make([]byte, 2)
 					copy(dst_port[:], buf[:2])
