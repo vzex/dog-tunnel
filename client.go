@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	_ "crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/vzex/dog-tunnel/common"
@@ -186,7 +187,7 @@ type _time struct {
 var timeNow _time
 
 type dnsInfo struct {
-	Ip                  string
+	Ip                  net.IP
 	Status              string
 	Queue               []*dnsQueryReq
 	overTime, cacheTime int64
@@ -574,24 +575,20 @@ var checkDnsRes chan *dnsQueryBack
 var checkRealAddrChan chan *queryRealAddrInfo
 
 type dnsQueryReq struct {
-	c       chan *dnsQueryRes
-	host    string
-	port    int
-	reqtype string
-	url     string
+	c    chan *dnsQueryRes
+	host string
 }
 
 type dnsQueryBack struct {
 	host   string
 	status string
-	conn   net.Conn
+	ip     net.IP
 	err    error
 }
 
 type dnsQueryRes struct {
-	conn net.Conn
-	err  error
-	ip   string
+	err error
+	ip  net.IP
 }
 
 type queryRealAddrInfo struct {
@@ -620,14 +617,17 @@ func dnsLoop() {
 				go func() {
 					back := &dnsQueryBack{host: info.host}
 					//log.Println("try dial", info.url)
-					s_conn, err := net.DialTimeout(info.reqtype, info.url, 30*time.Second)
+					ip, err := net.LookupIP(info.host)
 					//log.Println("try dial", info.url, "ok")
 					if err != nil {
 						back.status = "queryfail"
 						back.err = err
-					} else {
+					} else if len(ip) > 0 {
 						back.status = "queryok"
-						back.conn = s_conn
+						back.ip = ip[0]
+					} else {
+						back.status = "queryfail"
+						back.err = errors.New("empty ip")
 					}
 					checkDnsRes <- back
 				}()
@@ -664,16 +664,14 @@ func dnsLoop() {
 					cache.DelCache(info.host)
 				case "queryok":
 					log.Println("add host", info.host, "to dns cache")
-					_cacheInfo.Ip, _, _ = net.SplitHostPort(info.conn.RemoteAddr().String())
+					_cacheInfo.Ip = info.ip
 					_cacheInfo.SetCacheTime(-1)
 					debug("process the queue of host", info.host, len(_cacheInfo.Queue))
-					conn := info.conn
 					for _, _info := range _cacheInfo.Queue {
 						c := _info.c
 						go func() {
-							c <- &dnsQueryRes{ip: _cacheInfo.Ip, conn: conn}
+							c <- &dnsQueryRes{ip: _cacheInfo.Ip}
 						}()
-						conn = nil
 					}
 					_cacheInfo.Queue = []*dnsQueryReq{}
 				}
@@ -907,7 +905,7 @@ type clientSession struct {
 	headFailN       int32
 	closeN          int32
 	udpAddr         string
-	realUdpAddr     string
+	realUdpAddr     *net.UDPAddr
 	responceUdpAddr []byte
 }
 
@@ -1248,7 +1246,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		log.Println("tunnel error", content, sessionId)
 		go sc.removeSession(sessionId)
 	case eTunnel_msg_s_udp_sock:
-		log.Println("recv from remote udp", sessionId, []byte(content))
+		//log.Println("recv from remote udp", sessionId, []byte(content))
 		if session == nil {
 			return
 		}
@@ -1258,8 +1256,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 			c := make([]byte, len(content)+int(ans.mlen))
 			copy(c[:ans.mlen], ans.buf[:ans.mlen])
 			copy(c[ans.mlen:], []byte(content))
-			_addr, _ := net.ResolveUDPAddr("", session.realUdpAddr) //todo
-			sc.listenerUdp.WriteTo(c, _addr)
+			sc.listenerUdp.WriteToUDP(c, session.realUdpAddr)
 		}()
 	case eShowandquit:
 		println(content)
@@ -1450,7 +1447,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 
 		buf = buf[4:]
 		size := len(buf)
-		var url string
+		var host string
 		var dst_addr []byte
 		switch atyp {
 		case 1: //ip v4
@@ -1470,16 +1467,27 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 		size -= 2
 		switch atyp {
 		case 1:
-			url = fmt.Sprintf("%d.%d.%d.%d:%d", dst_addr[0], dst_addr[1], dst_addr[2], dst_addr[3], dst_port2)
+			host = fmt.Sprintf("%d.%d.%d.%d", dst_addr[0], dst_addr[1], dst_addr[2], dst_addr[3])
 		case 3:
-			url = fmt.Sprintf("%s:%d", string(dst_addr), dst_port2)
+			host = string(dst_addr)
 		}
 
 		data := buf[:size]
 		go func() {
-			_addr, _ := net.ResolveUDPAddr("", url) //todo
-			a, b := session.localUdpConn.WriteTo(data, _addr)
-			log.Println("write remote sock udp", url, _addr, len(data), a, b)
+			var _addr *net.UDPAddr
+			if *dnsCacheNum > 0 && atyp == 3 {
+				_addr = &net.UDPAddr{}
+				resChan := make(chan *dnsQueryRes)
+				checkDns <- &dnsQueryReq{c: resChan, host: host}
+				res := <-resChan
+				_addr.IP = res.ip
+				_addr.Port = int(dst_port2)
+			} else {
+				url := net.JoinHostPort(host, fmt.Sprintf("%d", dst_port2))
+				_addr, _ = net.ResolveUDPAddr("", url)
+			}
+			session.localUdpConn.WriteTo(data, _addr)
+			//log.Println("write remote sock udp", _addr.String(), len(data), a, b)
 		}()
 	case eTunnel_msg_c_udp:
 		if session != nil && session.localUdpConn != nil {
@@ -1600,7 +1608,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					return
 				}
 				if hello.cmd == 3 {
-					log.Println("fetch udp head")
+					//log.Println("fetch udp head")
 					go func() {
 						sock, _err := net.ListenUDP("udp", &net.UDPAddr{})
 						if _err != nil {
@@ -1611,7 +1619,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 						arr := make([]byte, WriteBufferSize)
 						for {
 							n, _, err := sock.ReadFromUDP(arr)
-							log.Println("server udp read from", n, err, sessionId)
+							//log.Println("server udp read from", n, err, sessionId)
 							if err != nil {
 								break
 							} else {
@@ -1632,15 +1640,12 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				if *dnsCacheNum > 0 && hello.atyp == 3 {
 					host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
 					resChan := make(chan *dnsQueryRes)
-					checkDns <- &dnsQueryReq{c: resChan, host: host, port: int(hello.dst_port2), reqtype: hello.reqtype, url: url}
+					checkDns <- &dnsQueryReq{c: resChan, host: host}
 					res := <-resChan
-					s_conn = res.conn
 					err = res.err
-					if res.ip != "" {
-						url = net.JoinHostPort(res.ip, fmt.Sprintf("%d", hello.dst_port2))
-					}
+					url = net.JoinHostPort(res.ip.String(), fmt.Sprintf("%d", hello.dst_port2))
 				}
-				if s_conn == nil && err == nil {
+				if err == nil {
 					//log.Println("try dial", url)
 					s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
 					//log.Println("try dial", url, "ok")
@@ -1858,7 +1863,7 @@ func (sc *Client) MultiListen() bool {
 					}
 					sc.udpAddrMapLock.RLock()
 					_addr := addr.String()
-					_oriAddr := _addr
+					_oriAddr := &net.UDPAddr{IP: addr.IP, Port: addr.Port}
 					sid, have := sc.udpAddr2SessionId[_addr]
 					if !have {
 						addr.IP = net.IPv4(0, 0, 0, 0)
@@ -1882,43 +1887,24 @@ func (sc *Client) MultiListen() bool {
 
 					sc.udpAddrMapLock.RUnlock()
 					buf := tmp
-					log.Println("read from socks5", n)
+					//log.Println("read from socks5", n)
 					frag, atyp := buf[2], buf[3]
+					_ = frag
 					_buf := buf[3:]
 					//println("test", msg.ver, msg.cmd, msg.rsv, msg.atyp)
 
 					buf = buf[4:]
-					size := n - 4
 
-					var url string
-					var dst_addr []byte
 					session.responceUdpAddr = []byte{1, 0, 0, 0, 0, 0, 0}
 					switch atyp {
 					case 1: //ip v4
-						dst_addr = make([]byte, 4)
-						copy(dst_addr[:4], buf[:4])
-						buf = buf[4:]
-						size -= 4
 						session.responceUdpAddr = _buf[:7]
 					case 3:
 						l := int(buf[0])
-						dst_addr = buf[1 : l+1]
-						buf = buf[l+1:]
-						size -= l + 1
 						session.responceUdpAddr = _buf[:l+1+2+1]
 					}
-					dst_port := make([]byte, 2)
-					copy(dst_port[:], buf[:2])
-					dst_port2 := (uint16(dst_port[0]) << 8) + uint16(dst_port[1])
-					size -= 2
-					switch atyp {
-					case 1:
-						url = fmt.Sprintf("%d.%d.%d.%d:%d", dst_addr[0], dst_addr[1], dst_addr[2], dst_addr[3], dst_port2)
-					case 3:
-						url = fmt.Sprintf("%s:%d", string(dst_addr), dst_port2)
-					}
 
-					log.Println("parse head", frag, atyp, url, dst_port2, size, addr)
+					//log.Println("parse head", frag, atyp, url, dst_port2, size, addr)
 					if err != nil {
 						e, ok := err.(net.Error)
 						if !ok || !e.Timeout() {
@@ -2090,15 +2076,12 @@ func (st *smartSession) start(hello reqMsg) {
 	if *dnsCacheNum > 0 && hello.atyp == 3 {
 		host := string(hello.dst_addr[1 : 1+hello.dst_addr[0]])
 		resChan := make(chan *dnsQueryRes)
-		checkDns <- &dnsQueryReq{c: resChan, host: host, port: int(hello.dst_port2), reqtype: hello.reqtype, url: url}
+		checkDns <- &dnsQueryReq{c: resChan, host: host}
 		res := <-resChan
-		s_conn = res.conn
 		err = res.err
-		if res.ip != "" {
-			url = net.JoinHostPort(res.ip, fmt.Sprintf("%d", hello.dst_port2))
-		}
+		url = net.JoinHostPort(res.ip.String(), fmt.Sprintf("%d", hello.dst_port2))
 	}
-	if s_conn == nil && err == nil {
+	if err == nil {
 		s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
 	}
 	var pipe *pipeInfo
@@ -2374,12 +2357,11 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 		if client.action == "socks5" && !bParsed {
 			session.processSockProxy(string(arr[0:size]), func(head []byte, _host string, hello reqMsg) {
 				if hello.cmd == 3 {
-					log.Println("fetch udp head2", _host)
+					//log.Println("fetch udp head2", _host)
 					var ansmsg ansMsg
 					ansmsg.gen(&hello, 0, client.reverseAddr)
 					session.localConn.Write(ansmsg.buf[:ansmsg.mlen])
 					srcAddr := hello.url
-					log.Println("srcAddr", srcAddr, sessionId)
 					client.udpAddrMapLock.Lock()
 					client.udpAddr2SessionId[srcAddr] = sessionId
 					client.udpAddrMapLock.Unlock()
