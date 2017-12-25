@@ -1875,17 +1875,18 @@ func (sc *Client) MultiListen() bool {
 							sid, have = sc.udpAddr2SessionId[_addr]
 							if !have {
 								log.Println("drop data for", _addr, _oriAddr)
+								sc.udpAddrMapLock.RUnlock()
 								continue
 							}
 						}
 					}
+					sc.udpAddrMapLock.RUnlock()
 					session := sc.getSession(sid)
 					if session == nil {
 						log.Println("no session, drop data for", _addr, sid)
 						continue
 					}
 
-					sc.udpAddrMapLock.RUnlock()
 					buf := tmp
 					//log.Println("read from socks5", n)
 					frag, atyp := buf[2], buf[3]
