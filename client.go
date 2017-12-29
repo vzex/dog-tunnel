@@ -1124,7 +1124,7 @@ type Client struct {
 	sessionLock    sync.RWMutex
 	bUdp           bool
 	action         string
-	closed         bool
+	closed         int32
 	encode, decode func([]byte) []byte
 	authed         bool
 	localconn      net.Conn
@@ -1152,6 +1152,9 @@ type Client struct {
 // pipe : client to client
 // local : client to local apps
 func (sc *Client) getSession(sessionId int) *clientSession {
+	if atomic.LoadInt32(&sc.closed) == 1 {
+		return nil
+	}
 	if sessionId < 0 {
 		return nil
 	}
@@ -1195,6 +1198,9 @@ func (sc *Client) removeSession(sessionId int) bool {
 }
 
 func (sc *Client) createSession(sessionId int, session *clientSession) int {
+	if atomic.LoadInt32(&sc.closed) == 1 {
+		return -1
+	}
 	if sessionId == -1 {
 		sessionId = common.GetId("session")
 	}
@@ -1545,7 +1551,10 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 
 					session := &clientSession{pipe: pinfo, localUdpConn: sock, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second), localUdpAddr: udpAddr}
 					timeNow.RUnlock()
-					sc.createSession(sessionId, session)
+					if sc.createSession(sessionId, session) == -1 {
+						sock.Close()
+						return
+					}
 					go func() {
 						arr := make([]byte, WriteBufferSize)
 						for {
@@ -1569,7 +1578,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 			timeNow.RLock()
 			session := &clientSession{pipe: pinfo, dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
 			timeNow.RUnlock()
-			sc.createSession(sessionId, session)
 			if sc.action == "route" {
 				remote = content
 			}
@@ -1579,7 +1587,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					log.Println("connect to local server fail:", err.Error(), remote)
 					msg := "cannot connect to bind addr" + remote
 					go common.WriteCrypt(pipe, sessionId, eTunnel_error, []byte(msg), sc.encode)
-					sc.removeSession(sessionId)
 					return
 				} else {
 					session.connLock.Lock()
@@ -1593,6 +1600,10 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 						session.cacheMsg = ""
 					}
 					session.cacheLock.Unlock()
+					if sc.createSession(sessionId, session) == -1 {
+						s_conn.Close()
+						return
+					}
 					go session.handleLocalPortResponse(sc, sessionId, "")
 				}
 			}()
@@ -1600,7 +1611,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 			timeNow.RLock()
 			session = &clientSession{pipe: pinfo, localConn: nil, status: "init", recvMsg: "", dieT: timeNow.Add(time.Duration(sc.stimeout) * time.Second)}
 			timeNow.RUnlock()
-			sc.createSession(sessionId, session)
 			go func() {
 				var hello reqMsg
 				bOk, _ := hello.read([]byte(content))
@@ -1618,6 +1628,10 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 							return
 						}
 						session.localUdpConn = sock
+						if sc.createSession(sessionId, session) == -1 {
+							sock.Close()
+							return
+						}
 						arr := make([]byte, WriteBufferSize)
 						for {
 							n, _, err := sock.ReadFromUDP(arr)
@@ -1648,20 +1662,23 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					url = net.JoinHostPort(res.ip.String(), fmt.Sprintf("%d", hello.dst_port2))
 				}
 				if err == nil {
-					//log.Println("try dial", url)
+					//log.Println("try dial", url, sessionId)
 					s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
-					//log.Println("try dial", url, "ok")
+					//log.Println("try dial", url, "ok", sessionId)
 				}
 				if err != nil {
 					log.Println("connect to local server fail:", err.Error(), url)
 					ansmsg.gen(&hello, 4, "")
 					go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s_head, ansmsg.buf[:ansmsg.mlen], sc.encode)
-					sc.removeSession(sessionId)
 				} else {
 					session.connLock.Lock()
 					session.localConn = s_conn
 					session.connLock.Unlock()
 
+					if sc.createSession(sessionId, session) == -1 {
+						s_conn.Close()
+						return
+					}
 					session.cacheLock.Lock()
 					if session.cacheMsg != "" {
 						if session.localConn != nil {
@@ -1738,12 +1755,11 @@ func (sc *Client) Quit() {
 }
 
 func (sc *Client) _Quit() {
-	if !sc.closed {
-		sc.closed = true
-	} else {
+	if !atomic.CompareAndSwapInt32(&sc.closed, 0, 1) {
 		return
 	}
 	close(sc.quit)
+	sc.sessionLock.RLock()
 	for _, session := range sc.sessions {
 		session.connLock.RLock()
 		if session.localConn != nil {
@@ -1756,7 +1772,8 @@ func (sc *Client) _Quit() {
 		}
 		session.udpConnLock.RUnlock()
 	}
-	log.Println("client quit", sc.id)
+	sc.sessionLock.RUnlock()
+	log.Println("client quit", sc.id, len(sc.sessions))
 	g_ClientMapLock.Lock()
 	delete(g_ClientMap, sc.id)
 	g_ClientMapLock.Unlock()
