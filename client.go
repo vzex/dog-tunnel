@@ -1151,6 +1151,46 @@ type Client struct {
 
 // pipe : client to client
 // local : client to local apps
+
+func (sc *Client) setSessionUdpConn(sessionId int, conn *net.UDPConn) *clientSession {
+	if atomic.LoadInt32(&sc.closed) == 1 {
+		return nil
+	}
+	if sessionId < 0 {
+		return nil
+	}
+	sc.sessionLock.RLock()
+	defer sc.sessionLock.RUnlock()
+	session, bHave := sc.sessions[sessionId]
+	if bHave {
+		session.udpConnLock.Lock()
+		session.localUdpConn = conn
+		session.udpConnLock.Unlock()
+		return session
+	} else {
+		return nil
+	}
+}
+func (sc *Client) setSessionConn(sessionId int, conn net.Conn) *clientSession {
+	if atomic.LoadInt32(&sc.closed) == 1 {
+		return nil
+	}
+	if sessionId < 0 {
+		return nil
+	}
+	sc.sessionLock.RLock()
+	defer sc.sessionLock.RUnlock()
+	session, bHave := sc.sessions[sessionId]
+	if bHave {
+		session.connLock.Lock()
+		session.localConn = conn
+		session.connLock.Unlock()
+		return session
+	} else {
+		return nil
+	}
+}
+
 func (sc *Client) getSession(sessionId int) *clientSession {
 	if atomic.LoadInt32(&sc.closed) == 1 {
 		return nil
@@ -1560,12 +1600,9 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 						sc.removeSession(sessionId)
 						return
 					}
-					session.udpConnLock.Lock()
-					session.localUdpConn = sock
-					session.udpConnLock.Unlock()
-					session.localUdpAddr = udpAddr 
-					if sc.checkDie() {
-						sc.removeSession(sessionId)
+					session.localUdpAddr = udpAddr
+					if sc.setSessionUdpConn(sessionId, sock) == nil {
+						sock.Close()
 						return
 					}
 					go func() {
@@ -1604,9 +1641,10 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					sc.removeSession(sessionId)
 					return
 				} else {
-					session.connLock.Lock()
-					session.localConn = s_conn
-					session.connLock.Unlock()
+					if sc.setSessionConn(sessionId, s_conn) == nil {
+						s_conn.Close()
+						return
+					}
 					session.cacheLock.Lock()
 					if session.cacheMsg != "" {
 						if session.localConn != nil {
@@ -1615,10 +1653,6 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 						session.cacheMsg = ""
 					}
 					session.cacheLock.Unlock()
-					if sc.checkDie() {
-						sc.removeSession(sessionId)
-						return
-					}
 					go session.handleLocalPortResponse(sc, sessionId, "")
 				}
 			}()
@@ -1645,9 +1679,8 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 							sc.removeSession(sessionId)
 							return
 						}
-						session.localUdpConn = sock
-						if sc.checkDie() {
-							sc.removeSession(sessionId)
+						if sc.setSessionUdpConn(sessionId, sock) == nil {
+							sock.Close()
 							return
 						}
 						arr := make([]byte, WriteBufferSize)
@@ -1689,12 +1722,8 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s_head, ansmsg.buf[:ansmsg.mlen], sc.encode)
 					sc.removeSession(sessionId)
 				} else {
-					session.connLock.Lock()
-					session.localConn = s_conn
-					session.connLock.Unlock()
-
-					if sc.checkDie() {
-						sc.removeSession(sessionId)
+					if sc.setSessionConn(sessionId, s_conn) == nil {
+						s_conn.Close()
 						return
 					}
 					session.cacheLock.Lock()
