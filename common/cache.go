@@ -1,9 +1,5 @@
 package common
 
-import (
-	"time"
-)
-
 type cache interface {
 	SetCacheTime(int64) //if arg < 0, just update alive time
 	IsAlive() bool
@@ -56,22 +52,20 @@ var g_CacheMgr map[string]*cacheContainer
 
 func init() {
 	g_CacheMgr = make(map[string]*cacheContainer)
-	go func() {
-		c := time.Tick(time.Second * 30)
-		for _ = range c {
-			for k, cache := range g_CacheMgr {
-				for key, info := range cache.c {
-					if !info.IsAlive() {
-						info.DeInit()
-						delete(cache.c, key)
-					}
-				}
-				if len(cache.c) == 0 {
-					delete(g_CacheMgr, k)
-				}
+}
+
+func UpdateCacheMgr() {
+	for k, cache := range g_CacheMgr {
+		for key, info := range cache.c {
+			if !info.IsAlive() {
+				info.DeInit()
+				delete(cache.c, key)
 			}
 		}
-	}()
+		if len(cache.c) == 0 {
+			delete(g_CacheMgr, k)
+		}
+	}
 }
 
 func GetCacheContainer(key string) *cacheContainer {

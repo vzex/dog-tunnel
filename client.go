@@ -443,18 +443,16 @@ func Listen(bIsTcp bool, addr string) bool {
 		} else {
 			log.Println("add udp session", id)
 		}
-		g_ClientMapLock.RLock()
+		g_ClientMapLock.Lock()
 		client, have := g_ClientMap[id]
-		g_ClientMapLock.RUnlock()
 		if !have {
 			client = &Client{id: id, bUdp: false, sessions: make(map[int]*clientSession), pipes: make(map[int]*pipeInfo), quit: make(chan struct{}), monitorTbl: make(map[int]*smartSession), hostWayTbl: make(map[string]*hostWay), udpAddr2SessionId: make(map[string]int)}
-			g_ClientMapLock.Lock()
 			g_ClientMap[id] = client
-			g_ClientMapLock.Unlock()
 			if *authKey == "" {
 				client.authed = true
 			}
 		}
+		g_ClientMapLock.Unlock()
 
 		maxId := 0
 		f := func(i int) {
@@ -607,8 +605,14 @@ func checkRealAddr() {
 }
 
 func dnsLoop() {
+	t := time.NewTicker(time.Second * 15)
+	defer func() {
+		t.Stop()
+	}()
 	for {
 		select {
+		case <-t.C:
+			common.UpdateCacheMgr()
 		case info := <-checkDns:
 			cache := common.GetCacheContainer("dns")
 			cacheInfo := cache.GetCache(info.host)
@@ -837,13 +841,11 @@ func main() {
 			}
 			log.Println("received signal,shutdown")
 			bForceQuit = true
-			g_ClientMapLock.RLock()
 			_map := g_ClientMap
-			g_ClientMapLock.RUnlock()
 			for _, client := range _map {
 				client.Quit()
-				atomic.StoreInt32(&pipen, 0)
 			}
+			atomic.StoreInt32(&pipen, 0)
 			g_LocalConnLock.RLock()
 			if g_LocalConn != nil {
 				g_LocalConn.Close()
@@ -1580,10 +1582,10 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					sc.removeSession(sessionId)
 					return
 				} else {
-					session.cacheLock.Lock()
 					session.connLock.Lock()
 					session.localConn = s_conn
 					session.connLock.Unlock()
+					session.cacheLock.Lock()
 					if session.cacheMsg != "" {
 						if session.localConn != nil {
 							session.localConn.Write([]byte(session.cacheMsg))
@@ -1656,11 +1658,11 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					go common.WriteCrypt(pipe, sessionId, eTunnel_msg_s_head, ansmsg.buf[:ansmsg.mlen], sc.encode)
 					sc.removeSession(sessionId)
 				} else {
-					session.cacheLock.Lock()
 					session.connLock.Lock()
 					session.localConn = s_conn
 					session.connLock.Unlock()
 
+					session.cacheLock.Lock()
 					if session.cacheMsg != "" {
 						if session.localConn != nil {
 							session.localConn.Write([]byte(session.cacheMsg))
@@ -2049,12 +2051,12 @@ func (st *smartSession) startRoute(remoteAddr string) {
 		log.Println("smart connect to local server fail:", err.Error(), url)
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_error, err.Error(), nil)
 	} else {
-		st.cacheLock.Lock()
 		st.conn = s_conn
+		st.cacheLock.RLock()
 		if st.cacheMsg != "" {
 			s_conn.Write([]byte(st.cacheMsg))
 		}
-		st.cacheLock.Unlock()
+		st.cacheLock.RUnlock()
 		go func() {
 			reader := bufio.NewReader(s_conn)
 			arr := make([]byte, WriteBufferSize)
@@ -2097,12 +2099,12 @@ func (st *smartSession) start(hello reqMsg) {
 		ansmsg.gen(&hello, 4, "")
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_msg_s_head, string(ansmsg.buf[:ansmsg.mlen]), pipe)
 	} else {
-		st.cacheLock.Lock()
 		st.conn = s_conn
+		st.cacheLock.RLock()
 		if st.cacheMsg != "" {
 			s_conn.Write([]byte(st.cacheMsg))
 		}
-		st.cacheLock.Unlock()
+		st.cacheLock.RUnlock()
 		ansmsg.gen(&hello, 0, *localAddr)
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_msg_s_head, string(ansmsg.buf[:ansmsg.mlen]), pipe)
 		go func() {
