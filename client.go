@@ -1164,6 +1164,9 @@ func (sc *Client) setSessionUdpConn(sessionId int, conn *net.UDPConn) *clientSes
 	session, bHave := sc.sessions[sessionId]
 	if bHave {
 		session.udpConnLock.Lock()
+		if session.localUdpConn != nil {
+			session.localUdpConn.Close()
+		}
 		session.localUdpConn = conn
 		session.udpConnLock.Unlock()
 		return session
@@ -1183,6 +1186,9 @@ func (sc *Client) setSessionConn(sessionId int, conn net.Conn) *clientSession {
 	session, bHave := sc.sessions[sessionId]
 	if bHave {
 		session.connLock.Lock()
+		if session.localConn != nil {
+			session.localConn.Close()
+		}
 		session.localConn = conn
 		session.connLock.Unlock()
 		return session
