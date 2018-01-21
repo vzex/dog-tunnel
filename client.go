@@ -2093,6 +2093,7 @@ type smartSession struct {
 	localconn net.Conn
 	cacheLock sync.RWMutex
 	cacheMsg  string
+	status    int32
 }
 
 func (st *smartSession) onRecv(msg []byte) {
@@ -2121,6 +2122,10 @@ func (st *smartSession) startRoute(remoteAddr string) {
 		log.Println("smart connect to local server fail:", err.Error(), url)
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_error, err.Error(), nil)
 	} else {
+		if atomic.LoadInt32(&st.status) == 1 {
+			s_conn.Close()
+			return
+		}
 		st.conn = s_conn
 		st.cacheLock.RLock()
 		if st.cacheMsg != "" {
@@ -2142,6 +2147,16 @@ func (st *smartSession) startRoute(remoteAddr string) {
 		}()
 	}
 }
+
+func (st *smartSession) close() {
+	if !atomic.CompareAndSwapInt32(&st.status, 0, 1) {
+		return
+	}
+	if st.conn != nil {
+		st.conn.Close()
+	}
+}
+
 func (st *smartSession) start(hello reqMsg) {
 	var s_conn net.Conn
 	url := hello.url
@@ -2169,6 +2184,10 @@ func (st *smartSession) start(hello reqMsg) {
 		ansmsg.gen(&hello, 4, "")
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_msg_s_head, string(ansmsg.buf[:ansmsg.mlen]), pipe)
 	} else {
+		if atomic.LoadInt32(&st.status) == 1 {
+			s_conn.Close()
+			return
+		}
 		st.conn = s_conn
 		st.cacheLock.RLock()
 		if st.cacheMsg != "" {
@@ -2529,8 +2548,8 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 		common.WriteCrypt(pipe, sessionId, eTunnel_close, []byte{}, client.encode)
 	}
 	client.removeSession(sessionId)
-	if smartSession != nil && smartSession.conn != nil {
-		smartSession.conn.Close()
+	if smartSession != nil {
+		smartSession.close()
 	}
 	if *bCache && client.action == "socks5" {
 		arr := strings.Split(recv, "\r\n\r\n")
