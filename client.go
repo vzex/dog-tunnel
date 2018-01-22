@@ -1146,6 +1146,8 @@ type Client struct {
 	udpAddrMapLock    sync.RWMutex
 	udpAddr2SessionId map[string]int
 
+	closeLock sync.RWMutex
+
 	smartN int
 }
 
@@ -1153,10 +1155,12 @@ type Client struct {
 // local : client to local apps
 
 func (sc *Client) setSessionUdpConn(sessionId int, conn *net.UDPConn) *clientSession {
-	if atomic.LoadInt32(&sc.closed) == 1 {
+	if sessionId < 0 {
 		return nil
 	}
-	if sessionId < 0 {
+	sc.closeLock.RLock()
+	defer sc.closeLock.RUnlock()
+	if sc.closed == 1 {
 		return nil
 	}
 	sc.sessionLock.RLock()
@@ -1175,10 +1179,12 @@ func (sc *Client) setSessionUdpConn(sessionId int, conn *net.UDPConn) *clientSes
 	}
 }
 func (sc *Client) setSessionConn(sessionId int, conn net.Conn) *clientSession {
-	if atomic.LoadInt32(&sc.closed) == 1 {
+	if sessionId < 0 {
 		return nil
 	}
-	if sessionId < 0 {
+	sc.closeLock.RLock()
+	defer sc.closeLock.RUnlock()
+	if sc.closed == 1 {
 		return nil
 	}
 	sc.sessionLock.RLock()
@@ -1198,9 +1204,6 @@ func (sc *Client) setSessionConn(sessionId int, conn net.Conn) *clientSession {
 }
 
 func (sc *Client) getSession(sessionId int) *clientSession {
-	if atomic.LoadInt32(&sc.closed) == 1 {
-		return nil
-	}
 	if sessionId < 0 {
 		return nil
 	}
@@ -1208,6 +1211,13 @@ func (sc *Client) getSession(sessionId int) *clientSession {
 	defer sc.sessionLock.RUnlock()
 	session, bHave := sc.sessions[sessionId]
 	if bHave {
+		closed := false
+		sc.closeLock.RLock()
+		closed = (sc.closed == 1)
+		sc.closeLock.RUnlock()
+		if closed {
+			return nil
+		}
 		return session
 	} else {
 		return nil
@@ -1246,14 +1256,7 @@ func (sc *Client) removeSession(sessionId int) bool {
 	return bHave
 }
 
-func (sc *Client) checkDie() bool {
-	return atomic.LoadInt32(&sc.closed) == 1
-}
-
 func (sc *Client) createSession(sessionId int, session *clientSession) int {
-	if atomic.LoadInt32(&sc.closed) == 1 {
-		return -1
-	}
 	if sessionId == -1 {
 		sessionId = common.GetId("session")
 	}
@@ -1274,7 +1277,13 @@ func (sc *Client) createSession(sessionId int, session *clientSession) int {
 		}
 		old.udpConnLock.Unlock()
 	}
+	sc.closeLock.RLock()
+	if sc.closed == 1 {
+		sc.closeLock.RUnlock()
+		return -1
+	}
 	sc.sessions[sessionId] = session
+	sc.closeLock.RUnlock()
 	return sessionId
 }
 
@@ -1808,9 +1817,13 @@ func (sc *Client) Quit() {
 }
 
 func (sc *Client) _Quit() {
-	if !atomic.CompareAndSwapInt32(&sc.closed, 0, 1) {
+	sc.closeLock.Lock()
+	if sc.closed == 1 {
+		sc.closeLock.Unlock()
 		return
 	}
+	sc.closed = 1
+	sc.closeLock.Unlock()
 	close(sc.quit)
 	sc.sessionLock.RLock()
 	for _, session := range sc.sessions {
@@ -2086,14 +2099,15 @@ type hostWay struct {
 }
 
 type smartSession struct {
-	way       *hostWay
-	conn      net.Conn
-	client    *Client
-	id        int
-	localconn net.Conn
-	cacheLock sync.RWMutex
-	cacheMsg  string
-	status    int32
+	way        *hostWay
+	conn       net.Conn
+	client     *Client
+	id         int
+	localconn  net.Conn
+	cacheLock  sync.RWMutex
+	cacheMsg   string
+	status     int32
+	statusLock sync.RWMutex
 }
 
 func (st *smartSession) onRecv(msg []byte) {
@@ -2122,11 +2136,14 @@ func (st *smartSession) startRoute(remoteAddr string) {
 		log.Println("smart connect to local server fail:", err.Error(), url)
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_error, err.Error(), nil)
 	} else {
-		if atomic.LoadInt32(&st.status) == 1 {
+		st.statusLock.RLock()
+		if st.status == 1 {
 			s_conn.Close()
+			st.statusLock.RUnlock()
 			return
 		}
 		st.conn = s_conn
+		st.statusLock.RUnlock()
 		st.cacheLock.RLock()
 		if st.cacheMsg != "" {
 			s_conn.Write([]byte(st.cacheMsg))
@@ -2149,9 +2166,13 @@ func (st *smartSession) startRoute(remoteAddr string) {
 }
 
 func (st *smartSession) close() {
-	if !atomic.CompareAndSwapInt32(&st.status, 0, 1) {
+	st.statusLock.Lock()
+	if st.status == 1 {
+		st.statusLock.Unlock()
 		return
 	}
+	st.status = 1
+	st.statusLock.Unlock()
 	if st.conn != nil {
 		st.conn.Close()
 	}
@@ -2184,11 +2205,14 @@ func (st *smartSession) start(hello reqMsg) {
 		ansmsg.gen(&hello, 4, "")
 		st.client.OnTunnelRecv(nil, st.id, eTunnel_msg_s_head, string(ansmsg.buf[:ansmsg.mlen]), pipe)
 	} else {
-		if atomic.LoadInt32(&st.status) == 1 {
+		st.statusLock.RLock()
+		if st.status == 1 {
 			s_conn.Close()
+			st.statusLock.RUnlock()
 			return
 		}
 		st.conn = s_conn
+		st.statusLock.RUnlock()
 		st.cacheLock.RLock()
 		if st.cacheMsg != "" {
 			s_conn.Write([]byte(st.cacheMsg))
