@@ -2230,10 +2230,10 @@ func (st *smartSession) start(hello reqMsg) {
 
 func (session *clientSession) checkDecide(bLocal bool) {
 	_session := session.sm
-	log.Println("check decide", _session)
+	//log.Println("check decide", _session)
 	if _session != nil {
 		way := _session.way
-		log.Println("check decide2", way.host, way.getDecide(), bLocal)
+		//log.Println("check decide2", way.host, way.getDecide(), bLocal)
 		if way.getDecide() == NotDecide {
 			if bLocal {
 				way.setDecide(DecideRemote)
@@ -2248,10 +2248,10 @@ func (session *clientSession) checkDecide(bLocal bool) {
 func (session *clientSession) endSmartMonitor(sc *Client, sessionId int, bLocal bool) {
 	_session := session.sm
 	if _session != nil {
+		way := _session.way
 		if !bLocal {
 			_session.close()
 		}
-		way := _session.way
 		if way.getDecide() == NotDecide {
 			//log.Println("endSmartMonitor", sessionId, bLocal, session.way.host, session.way.times)
 			if bLocal {
@@ -2500,11 +2500,9 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 			if smartSession != nil {
 				smartSession.onRecv(arr[:size])
 			}
-			if sessionDecide == NotDecide {
-				session.decideLock.RLock()
-				sessionDecide = session.decide
-				session.decideLock.RUnlock()
-			}
+			session.decideLock.RLock()
+			sessionDecide = session.decide
+			session.decideLock.RUnlock()
 			if way == nil || sessionDecide != DecideLocal {
 				if common.WriteCrypt(pipe, sessionId, eTunnel_msg_c, arr[0:size], client.encode) != nil {
 					bNeedBreak = true
