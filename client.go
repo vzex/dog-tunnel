@@ -1364,7 +1364,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					if atomic.AddInt32(&session.headSendN, 1) > 1 {
 						return
 					}
-					normalDecide()
+					//normalDecide()
 				}
 			}
 			f := func() {
