@@ -24,7 +24,7 @@ go get -u -d github.com/vzex/dog-tunnel && cd $GOPATH/src/github.com/vzex/dog-tu
 
 dtunnel_s 为服务端 dtunnel 为客户端
 
-dtunnel 的用法参考官网 http://dog-tunnel.tk
+dtunnel 的用法参考官网 http://dog-tunnel.tk(注:官网因为挂在一个不靠谱的vps上到期就停止续费了，所以不再提供官方的p2p服务器了，之后的二进制版本会发布在github中)
 
 dtunnel_s 启动时会监听一个tcp端口，通过-addr设置，如果需要-ssl(默认是false)，那么要指定-cert加载ssl证书，之后客户端连接也要打开-ssl开关(默认是true的)
 -addrudp 是p2p打洞的辅助udp端口，能提高打洞成功率,对应dtunnel参数-buster指定同样的ip和端口
