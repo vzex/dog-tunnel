@@ -85,6 +85,7 @@ var bReverse = flag.Bool("r", false, "c: reverse mode, if true, client 's \"-loc
 var sessionTimeout = flag.Int("session_timeout", 0, "c: if > 0, session will check itself if it's alive, if no msg tranfer for some seconds, socket will be closed, use this to avoid of zombie tcp sockets")
 var bCache = flag.Bool("cache", false, "c: (valid in socks5 mode)if cache is true,save files requested with GET method into cache/ dir,cache request not pass through server side,no support for https")
 var bSrc = flag.Bool("src", false, "c: whether logging src ip, just for tcp redirection")
+var routeN = flag.Int("routen", 1, "c: threads(os-threads) num for route mode to parse real-addr")
 
 var clientType = 1
 var currReadyId int32 = 0
@@ -714,7 +715,6 @@ func main() {
 	checkDnsRes = make(chan *dnsQueryBack)
 	checkRealAddrChan = make(chan *queryRealAddrInfo)
 	go dnsLoop()
-	go checkRealAddr()
 	if *bShowVersion {
 		fmt.Printf("%.2f\n", common.Version)
 		return
@@ -765,6 +765,13 @@ func main() {
 	initAesIV()
 	if *xorData != "" {
 		common.XorSetKey(*xorData)
+	}
+	threadN := *routeN
+	if threadN < 1 {
+		threadN = 1
+	}
+	for i := 0; i < threadN; i++ {
+		go checkRealAddr()
 	}
 	g_ClientMapLock.Lock()
 	g_ClientMap = make(map[string]*Client)
