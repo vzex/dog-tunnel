@@ -26,11 +26,11 @@ import (
 	"github.com/vzex/dog-tunnel/nat"
 )
 
-var accessKey = flag.String("key", "", "please login into dog-tunnel.tk to get accesskey")
+var accessKey = flag.String("key", "", "please get an accesskey")
 var clientKey = flag.String("clientkey", "", "when other client linkt to the reg client, need clientkey, or empty")
 
-var serverAddr = flag.String("remote", "dog-tunnel.tk:8000", "connect remote server")
-var serverBustAddr = flag.String("buster", "dog-tunnel.tk:8018", "MakeHole server")
+var serverAddr = flag.String("remote", "127.0.0.1:8000", "connect remote server")
+var serverBustAddr = flag.String("buster", "127.0.0.1:8018", "MakeHole server")
 
 var addInitAddr = flag.String("addip", "127.0.0.1", "addip for bust,xx.xx.xx.xx;xx.xx.xx.xx;")
 var pipeNum = flag.Int("pipen", 1, "pipe num for transmission")
