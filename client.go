@@ -1564,6 +1564,11 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				url := net.JoinHostPort(host, fmt.Sprintf("%d", dst_port2))
 				_addr, _ = net.ResolveUDPAddr("", url)
 			}
+			session.udpConnLock.RLock()
+			defer session.udpConnLock.RUnlock()
+			if session.localUdpConn == nil {
+				return
+			}
 			session.localUdpConn.WriteTo(data, _addr)
 			//log.Println("write remote sock udp", _addr.String(), len(data), a, b)
 		}()
