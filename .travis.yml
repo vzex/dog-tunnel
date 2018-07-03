@@ -1,0 +1,9 @@
+language: go
+go:
+- 1.10.x
+install:
+ - go get github.com/go-sql-driver/mysql
+ - go get github.com/klauspost/reedsolomon
+ - go get github.com/cznic/zappy
+script:
+ - go get -u -d github.com/vzex/dog-tunnel && cd $GOPATH/src/github.com/vzex/dog-tunnel/ && make
