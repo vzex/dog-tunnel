@@ -7,3 +7,22 @@ install:
  - go get github.com/cznic/zappy
 script:
  - go get -u -d github.com/vzex/dog-tunnel && cd $GOPATH/src/github.com/vzex/dog-tunnel/ && make
+before_deploy:
+ - tar zcvf dtunnel_s_linux_amd64_${TRAVIS_BRANCH}.tgz bin/linux/dtunnel_s
+ - tar zcvf dtunnel_s_linux_arm_${TRAVIS_BRANCH}.tgz bin/pi/dtunnel_s
+ - tar zcvf dtunnel_s_windows_amd64_${TRAVIS_BRANCH}.tgz bin/windows/dtunnel_s.exe
+ - tar zcvf dtunnel_s_macos_amd64_${TRAVIS_BRANCH}.tgz bin/dtunnel_s
+ - tar zcvf dtunnel_linux_amd64_${TRAVIS_BRANCH}.tgz bin/linux/dtunnel
+ - tar zcvf dtunnel_linux_arm_${TRAVIS_BRANCH}.tgz bin/pi/dtunnel
+ - tar zcvf dtunnel_windows_amd64_${TRAVIS_BRANCH}.tgz bin/windows/dtunnel.exe
+ - tar zcvf dtunnel_macos_amd64_${TRAVIS_BRANCH}.tgz bin/dtunnel
+deploy:
+  provider: releases
+  skip_cleanup: true # Important, otherwise the build output would be purged.
+  api_key:
+    secure: $GITHUB_API_TOKEN
+  file_glob: true
+  file: dtunnel_*.tgz
+  on:
+    tags: true
+  overwrite: true
