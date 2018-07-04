@@ -1,6 +1,7 @@
 language: go
 go:
 - 1.10.x
+os: osx
 install:
  - go get github.com/go-sql-driver/mysql
  - go get github.com/klauspost/reedsolomon
