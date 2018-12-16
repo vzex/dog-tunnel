@@ -203,6 +203,7 @@ func (l *Listener) inner_loop() {
 			if bHave {
 				if session.status == "ok" {
 					if session.remote.String() == from.String() && (n >= int(ikcp.IKCP_OVERHEAD) || session.compressCache != nil) {
+						__xor(l.readBuffer, session.xor)
 						var buf []byte
 						if n <= 7 || session.compressCache == nil {
 							buf = make([]byte, n)
@@ -506,9 +507,9 @@ func (session *UDPMakeSession) writeTo(b []byte) {
 			return
 		}
 		//log.Println("compress", len(b), len(enc))
-		session.sock.WriteTo(enc, session.remote)
+		session.sock.WriteTo(__xor(enc, session.xor), session.remote)
 	} else {
-		session.sock.WriteTo(b, session.remote)
+		session.sock.WriteTo(__xor(b, session.xor), session.remote)
 	}
 }
 
@@ -686,6 +687,7 @@ func (session *UDPMakeSession) loop() {
 				if session.remote.String() == from.String() {
 					//log.Println("===", n, len(session.compressCache))
 					if n >= int(ikcp.IKCP_OVERHEAD) || n <= 7 || session.compressCache != nil {
+						__xor(session.readBuffer[:n], session.xor)
 						var buf []byte
 						if n <= 7 || session.compressCache == nil {
 							buf = make([]byte, n)
@@ -826,7 +828,6 @@ func (session *UDPMakeSession) loop() {
 				for {
 					hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
 					if hr > 0 {
-						tmp = __xor(tmp, session.xor)
 						status := tmp[0]
 						if status == Data {
 							n := 1
@@ -981,7 +982,6 @@ func (session *UDPMakeSession) loop() {
 						for {
 							hr := ikcp.Ikcp_recv(session.kcp, tmp, ReadBufferSize)
 							if hr > 0 {
-								tmp = __xor(tmp, session.xor)
 								status := tmp[0]
 								if status == Data {
 									n := 1
@@ -1216,7 +1216,7 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 		//log.Println("try send", len(data), sendL)
 		//copy(data[3+sendL:], b)
 	}
-	ok := session.DoWrite(__xor(data, session.xor))
+	ok := session.DoWrite(data)
 	if !ok {
 		return 0, errors.New("closed")
 	}
@@ -1226,7 +1226,7 @@ func (session *UDPMakeSession) Write(b []byte) (n int, err error) {
 			if n > 10 {
 				d := make([]byte, n)
 				d[0] = Fake
-				session.DoWrite(__xor(d, session.xor))
+				session.DoWrite(d)
 			}
 		}
 	}
