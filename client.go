@@ -1542,27 +1542,35 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 			host = string(dst_addr)
 		}
 
-		//log.Println("???", sessionId, len(host), string(dst_addr), dst_port2)
-		data := buf[2:]
+		//log.Println("...", sessionId, len(host), string(host), atyp, dst_port2)
 		var _addr *net.UDPAddr
+		f := func(data []byte) {
+			session.udpConnLock.RLock()
+			if session.localUdpConn == nil {
+				return
+			}
+			session.localUdpConn.WriteTo(data, _addr)
+			//log.Println("write remote sock udp", sessionId, _addr.String(), len(data))
+			session.udpConnLock.RUnlock()
+		}
+		data := buf[2:]
 		if *dnsCacheNum > 0 && atyp == 3 {
-			_addr = &net.UDPAddr{}
-			resChan := make(chan *dnsQueryRes)
-			checkDns <- &dnsQueryReq{c: resChan, host: host}
-			res := <-resChan
-			_addr.IP = res.ip
-			_addr.Port = int(dst_port2)
+			_data := make([]byte, len(data))
+			copy(_data, data)
+			go func() {
+				_addr = &net.UDPAddr{}
+				resChan := make(chan *dnsQueryRes)
+				checkDns <- &dnsQueryReq{c: resChan, host: host}
+				res := <-resChan
+				_addr.IP = res.ip
+				_addr.Port = int(dst_port2)
+				f(_data)
+			}()
 		} else {
 			url := net.JoinHostPort(host, fmt.Sprintf("%d", dst_port2))
 			_addr, _ = net.ResolveUDPAddr("", url)
+			f(data)
 		}
-		session.udpConnLock.RLock()
-		defer session.udpConnLock.RUnlock()
-		if session.localUdpConn == nil {
-			return
-		}
-		session.localUdpConn.WriteTo(data, _addr)
-		//log.Println("write remote sock udp", sessionId, _addr.String(), len(data))
 	case eTunnel_msg_c_udp:
 		if session != nil && session.localUdpConn != nil {
 			//log.Println("tunnel", (content), sessionId)
@@ -1705,13 +1713,14 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 							copy(arr[4:], addr.IP[len(addr.IP)-4:len(addr.IP)])
 							arr[8] = byte((addr.Port >> 8) & 0xff)
 							arr[9] = byte(addr.Port & 0xff)
-							//log.Println("server udp read from", n, err, sessionId, addr.String(), []byte(addr.IP), arr[4:8], dst_port2)
+							//log.Println("server udp read from", n, err, sessionId, addr.String(), []byte(addr.IP), arr[4:8])
 							if common.WriteCrypt(pipe, sessionId, eTunnel_msg_s_udp_sock, arr[:n+10], sc.encode) != nil {
 								break
 							}
 						}
 					}
 					sc.removeSession(sessionId)
+					common.WriteCrypt(pipe, sessionId, eTunnel_close_s, []byte{}, sc.encode)
 				}()
 				return
 			}
@@ -2430,13 +2439,14 @@ func (session *clientSession) handleLocalServerResponse(client *Client, sessionI
 								time.Sleep(time.Second)
 								continue
 							}
-							//log.Println("wwwww", sessionId, n, len(tmp))
+							//log.Println("wwwww",sessionId, n, len(tmp))
 							if common.WriteCrypt(pipe.conn, sessionId, eTunnel_msg_c_udp_sock, tmp[:n], client.encode) != nil {
 								break
 							}
 						}
 						sock.Close()
 						session.listenerUdp = nil
+						client.removeSession(sessionId)
 					}()
 					var ansmsg ansMsg
 					ansmsg.gen(&hello, 0, session.realUdpAddr.String())
