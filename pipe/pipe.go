@@ -154,7 +154,6 @@ type UDPMakeSession struct {
 	fecWriteId      uint //uint16
 	fecSendC        uint
 	fecSendL        int
-	fecRecvId       uint
 
 	confuseSeed int
 }
@@ -746,9 +745,6 @@ func (session *UDPMakeSession) loop() {
 						for id, info := range session.fecRCacheTbl {
 							if curr >= info.overTime {
 								delete(session.fecRCacheTbl, id)
-								if session.fecRecvId <= id {
-									session.fecRecvId = id + 1
-								}
 								//log.Println("timeout after del", id, len(c.fecRCacheTbl))
 							}
 						}
@@ -881,10 +877,6 @@ func (session *UDPMakeSession) loop() {
 						_len := int(s[0]) | (int(s[1]) << 8)
 
 						//binary.Read(head[:4], binary.LittleEndian, &id)
-						if id < session.fecRecvId {
-							//log.Println("drop id for noneed", id, seq)
-							break
-						}
 						if seq < uint(session.fecDataShards) {
 							ikcp.Ikcp_input(session.kcp, s[7:], _len)
 							//log.Println("direct input udp", id, seq, _len)
@@ -897,7 +889,7 @@ func (session *UDPMakeSession) loop() {
 
 						tbl, have := session.fecRCacheTbl[id]
 						if !have {
-							tbl = &fecInfo{make([][]byte, session.fecDataShards+session.fecParityShards), time.Now().Unix() + 3}
+							tbl = &fecInfo{make([][]byte, session.fecDataShards+session.fecParityShards), time.Now().Unix() + 2}
 							session.fecRCacheTbl[id] = tbl
 						}
 						//log.Println("got", id, seq, n, _len)
@@ -956,9 +948,6 @@ func (session *UDPMakeSession) loop() {
 							}
 							delete(session.fecRCacheTbl, id)
 							//log.Println("after del", id, len(c.fecRCacheTbl))
-							if session.fecRecvId <= id {
-								session.fecRecvId = id + 1
-							}
 						}
 					} else {
 						if n < 7 {
