@@ -159,7 +159,7 @@ func ikcp_segment_new(kcp *Ikcpcb, size int32) *IKCPSEG {
 
 // delete a segment
 
-// write log
+// Ikcp_log writes log
 func Ikcp_log(kcp *Ikcpcb, mask int32, head string, args ...interface{}) {
 	//if ((mask & kcp.logmask) == 0 || kcp.writelog == 0) { return }
 	//fmt.Printf(head, args...)

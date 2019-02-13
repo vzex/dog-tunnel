@@ -518,7 +518,7 @@ func (c *Conn) output(b []byte) {
 	}
 }
 
-// type 0, check, 1 msg
+// Write: type 0, check, 1 msg
 func (c *Conn) Write(b []byte) (int, error) {
 	if c.closed {
 		return 0, errors.New("eof")
