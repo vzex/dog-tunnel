@@ -37,4 +37,7 @@ jobs:
 
     - name: Build server win
       run: GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o bin/win/dtunnel_s server.go
+      
+    - name: Ls files
+      run: ls -lah
 
