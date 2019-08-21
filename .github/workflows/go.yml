@@ -21,23 +21,23 @@ jobs:
         go get -v -t -d ./...
 
     - name: Build client linux
-      run: GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o bin/linux/dtunnel client.go
+      run: GOOS=linux GOARCH=amd64 go build -v -ldflags "-s -w" -o bin/linux/dtunnel client.go
    
     - name: Build client arm
-      run: GOOS=linux GOARCH=arm go build -ldflags "-s -w" -o bin/arm/dtunnel client.go
+      run: GOOS=linux GOARCH=arm go build -v -ldflags "-s -w" -o bin/arm/dtunnel client.go
 
     - name: Build client win
-      run: GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o bin/win/dtunnel client.go
+      run: GOOS=windows GOARCH=amd64 go build -v -ldflags "-s -w" -o bin/win/dtunnel client.go
       
     - name: Build server linux
-      run: GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o bin/linux/dtunnel_s server.go
+      run: GOOS=linux GOARCH=amd64 go build -v -ldflags "-s -w" -o bin/linux/dtunnel_s server.go
    
     - name: Build server arm
-      run: GOOS=linux GOARCH=arm go build -ldflags "-s -w" -o bin/arm/dtunnel_s server.go
+      run: GOOS=linux GOARCH=arm go build -v -ldflags "-s -w" -o bin/arm/dtunnel_s server.go
 
     - name: Build server win
-      run: GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o bin/win/dtunnel_s server.go
+      run: GOOS=windows GOARCH=amd64 go build -v -ldflags "-s -w" -o bin/win/dtunnel_s server.go
       
     - name: Ls files
-      run: ls -lah
+      run: ls -lah bin/
 
