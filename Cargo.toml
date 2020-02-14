@@ -7,3 +7,5 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+tokio = { version = "0.2", features = ["full"] }
+clap = { git = "https://github.com/clap-rs/clap", features = ["wrap_help"] }
