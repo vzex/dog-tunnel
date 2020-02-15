@@ -919,7 +919,7 @@ func (session *UDPMakeSession) loop() {
 							//dup, drop
 							break
 						} else {
-							tbl.bytes[seq] = s
+							tbl.bytes[seq] = s[7:7+_len]
 						}
 						count := 0
 						reaL := 0
@@ -933,26 +933,27 @@ func (session *UDPMakeSession) loop() {
 						}
 						if count >= session.fecDataShards {
 							markTbl := make(map[int]bool, len(tbl.bytes))
+							bNeedRebuild := false
 							for _seq, _b := range tbl.bytes {
 								if _b != nil {
 									markTbl[_seq] = true
-								}
-							}
-							bNeedRebuild := false
-							for i, v := range tbl.bytes {
-								if v != nil {
-									if i >= session.fecDataShards {
-										bNeedRebuild = true
-									}
-									if len(v) < reaL {
-										_b := make([]byte, reaL)
-										copy(_b, v)
-										tbl.bytes[i] = _b
-									}
+								} else if _seq < session.fecDataShards {
+									bNeedRebuild = true
 								}
 							}
 
 							if bNeedRebuild {
+								mapLen := make(map[int]int)
+								for i, v := range tbl.bytes {
+									if v != nil {
+										if len(v) < reaL {
+											mapLen[i]= len(v)
+											_b := make([]byte, reaL)
+											copy(_b, v)
+											tbl.bytes[i] = _b
+										}
+									}
+								}
 								er := (*session.fecR).Reconstruct(tbl.bytes)
 								if er != nil {
 									//log.Println("2Reconstruct fail, close pipe", count, session.fecDataShards, session.fecParityShards, er.Error())
@@ -961,8 +962,8 @@ func (session *UDPMakeSession) loop() {
 									//log.Println("Reconstruct ok, input", id)
 									for i := 0; i < session.fecDataShards; i++ {
 										if _, have := markTbl[i]; !have {
-											_len := int(tbl.bytes[i][0]) | (int(tbl.bytes[i][1]) << 8)
-											ikcp.Ikcp_input(session.kcp, tbl.bytes[i][7:], int(_len))
+											_len := mapLen[i]
+											ikcp.Ikcp_input(session.kcp, tbl.bytes[i][:_len], _len)
 											//log.Println("fec input for mark ok", i, id, _len)
 										}
 									}
