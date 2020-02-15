@@ -464,7 +464,7 @@ func (session *UDPMakeSession) doAndWait(f func(), sec int, readf func(status by
 	t := time.NewTicker(50 * time.Millisecond)
 	currT := time.Now().Unix()
 	f()
-out:
+	out:
 	for {
 		select {
 		case <-t.C:
@@ -522,7 +522,7 @@ func (session *UDPMakeSession) output(b []byte) {
 
 		info := session.fecWCacheTbl
 		if info == nil {
-			info = &fecInfo{make([][]byte, session.fecDataShards+session.fecParityShards), time.Now().Unix() + 15}
+			info = &fecInfo{make([][]byte, session.fecDataShards), time.Now().Unix() + 15}
 			session.fecWCacheTbl = info
 		}
 		_b := make([]byte, len(b)+7)
@@ -536,22 +536,25 @@ func (session *UDPMakeSession) output(b []byte) {
 		_b[6] = byte(session.fecSendC - 1)
 		copy(_b[7:], b)
 		info.bytes[session.fecSendC-1] = _b
-		if session.fecSendL < len(_b) {
-			session.fecSendL = len(_b)
+		if session.fecSendL < len(_b)-7 {
+			session.fecSendL = len(_b)-7
 		}
 		session.writeTo(_b)
 		if session.fecSendC >= uint(session.fecDataShards) {
+			fecData := make([][]byte, session.fecDataShards + session.fecParityShards)
 			for i := 0; i < session.fecDataShards; i++ {
-				if session.fecSendL > len(info.bytes[i]) {
+				if session.fecSendL > len(info.bytes[i])-7 {
 					__b := make([]byte, session.fecSendL)
-					copy(__b, info.bytes[i])
-					info.bytes[i] = __b
+					copy(__b, info.bytes[i][7:])
+					fecData[i] = __b
+				} else {
+					fecData[i] = info.bytes[i][7:]
 				}
 			}
 			for i := 0; i < session.fecParityShards; i++ {
-				info.bytes[i+session.fecDataShards] = make([]byte, session.fecSendL)
+				fecData[i+session.fecDataShards] = make([]byte, session.fecSendL)
 			}
-			er := (*session.fecW).Encode(info.bytes)
+			er := (*session.fecW).Encode(fecData)
 			if er != nil {
 				//log.Println("wocao encode err", er.Error())
 				go session.Close()
@@ -559,8 +562,19 @@ func (session *UDPMakeSession) output(b []byte) {
 			}
 			for i := session.fecDataShards; i < session.fecDataShards+session.fecParityShards; i++ {
 				//if rand.Intn(100) >= 15 {
-				_info := info.bytes[i]
-				session.writeTo(_info)
+				b := fecData[i]
+				_b := make([]byte, len(b)+7)
+				_len := len(b)
+				_b[0] = byte(_len & 0xff)
+				_b[1] = byte((_len >> 8) & 0xff)
+				_b[2] = byte(id & 0xff)
+				_b[3] = byte((id >> 8) & 0xff)
+				_b[4] = byte((id >> 16) & 0xff)
+				_b[5] = byte((id >> 32) & 0xff)
+				_b[6] = byte(i)
+				copy(_b[7:], b)
+				//log.Println("write extra", _b)
+				session.writeTo(_b)
 				//_len := int(_info[0]) | (int(_info[1]) << 8)
 				//log.Println("output udp id", id, i, _len, len(_info))
 				//} else {
@@ -623,9 +637,9 @@ func (session *UDPMakeSession) serverInit(l *Listener, setting *KcpSetting) {
 					if status != SndSYN {
 						log.Println("status != SndSYN, nothing", session.remote, status)
 						/*
-							if status == FirstSYN {
-								session.sock.WriteToUDP(makeEncode(session.encodeBuffer, FirstACK, session.id), session.remote, session.xor)
-							}*/
+						if status == FirstSYN {
+							session.sock.WriteToUDP(makeEncode(session.encodeBuffer, FirstACK, session.id), session.remote, session.xor)
+						}*/
 						return
 					}
 					if arg2 > 0 {
@@ -728,10 +742,10 @@ func (session *UDPMakeSession) loop() {
 	var waitRecvCache *cache
 	var forceWait int64 = 0
 	go func() {
-	out:
+		out:
 		for {
 			select {
-			//session.wait.Done()
+				//session.wait.Done()
 			case <-ping:
 				updateF(50)
 				pingC++
@@ -1026,7 +1040,7 @@ func (session *UDPMakeSession) loop() {
 	case ping <- struct{}{}:
 	case <-session.quitChan:
 	}
-out:
+	out:
 	for {
 		select {
 		case action := <-session.do:
