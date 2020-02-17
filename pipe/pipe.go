@@ -499,6 +499,10 @@ func (session *UDPMakeSession) doAndWait(f func(), sec int, readf func(status by
 }
 
 func (session *UDPMakeSession) writeTo(b []byte) {
+	session._writeTo(b, false)
+}
+
+func (session *UDPMakeSession) _writeTo(b []byte, iscopy bool) {
 	if session.compressCache != nil && len(b) > 7 {
 		enc, er := zappy.Encode(session.compressCache, b)
 		if er != nil {
@@ -507,9 +511,17 @@ func (session *UDPMakeSession) writeTo(b []byte) {
 			return
 		}
 		//log.Println("compress", len(b), len(enc))
-		session.sock.WriteTo(__xor(enc, session.xor), session.remote)
+		if iscopy {
+			session.sock.WriteTo(_xor(enc, session.xor), session.remote)
+		} else {
+			session.sock.WriteTo(__xor(enc, session.xor), session.remote)
+		}
 	} else {
-		session.sock.WriteTo(__xor(b, session.xor), session.remote)
+		if iscopy {
+			session.sock.WriteTo(_xor(b, session.xor), session.remote)
+		} else {
+			session.sock.WriteTo(__xor(b, session.xor), session.remote)
+		}
 	}
 }
 
@@ -527,28 +539,29 @@ func (session *UDPMakeSession) output(b []byte) {
 		}
 		_b := make([]byte, len(b)+7)
 		_len := len(b)
-		_b[0] = byte(_len & 0xff)
-		_b[1] = byte((_len >> 8) & 0xff)
-		_b[2] = byte(id & 0xff)
-		_b[3] = byte((id >> 8) & 0xff)
-		_b[4] = byte((id >> 16) & 0xff)
-		_b[5] = byte((id >> 32) & 0xff)
-		_b[6] = byte(session.fecSendC - 1)
+		_b[0] = byte(id & 0xff)
+		_b[1] = byte((id >> 8) & 0xff)
+		_b[2] = byte((id >> 16) & 0xff)
+		_b[3] = byte((id >> 32) & 0xff)
+		_b[4] = byte(session.fecSendC - 1)
+		_b[5] = byte(_len & 0xff)
+		_b[6] = byte((_len >> 8) & 0xff)
 		copy(_b[7:], b)
 		info.bytes[session.fecSendC-1] = _b
-		if session.fecSendL < len(_b)-7 {
-			session.fecSendL = len(_b)-7
+		if session.fecSendL < len(_b)-5 {
+			session.fecSendL = len(_b)-5
 		}
-		session.writeTo(_b)
+		//log.Println("write normal", id, session.fecSendC-1, _len, _b[5:7])
+		session._writeTo(_b, true)
 		if session.fecSendC >= uint(session.fecDataShards) {
 			fecData := make([][]byte, session.fecDataShards + session.fecParityShards)
 			for i := 0; i < session.fecDataShards; i++ {
-				if session.fecSendL > len(info.bytes[i])-7 {
+				if session.fecSendL > len(info.bytes[i])-5 {
 					__b := make([]byte, session.fecSendL)
-					copy(__b, info.bytes[i][7:])
+					copy(__b, info.bytes[i][5:])
 					fecData[i] = __b
 				} else {
-					fecData[i] = info.bytes[i][7:]
+					fecData[i] = info.bytes[i][5:]
 				}
 			}
 			for i := 0; i < session.fecParityShards; i++ {
@@ -565,15 +578,15 @@ func (session *UDPMakeSession) output(b []byte) {
 				b := fecData[i]
 				_b := make([]byte, len(b)+7)
 				_len := len(b)
-				_b[0] = byte(_len & 0xff)
-				_b[1] = byte((_len >> 8) & 0xff)
-				_b[2] = byte(id & 0xff)
-				_b[3] = byte((id >> 8) & 0xff)
-				_b[4] = byte((id >> 16) & 0xff)
-				_b[5] = byte((id >> 32) & 0xff)
-				_b[6] = byte(i)
+				_b[0] = byte(id & 0xff)
+				_b[1] = byte((id >> 8) & 0xff)
+				_b[2] = byte((id >> 16) & 0xff)
+				_b[3] = byte((id >> 32) & 0xff)
+				_b[4] = byte(i)
+				_b[5] = byte(_len & 0xff)
+				_b[6] = byte((_len >> 8) & 0xff)
 				copy(_b[7:], b)
-				//log.Println("write extra", _b)
+				//log.Println("write extra", id, i, _len, _b[7:9])
 				session.writeTo(_b)
 				//_len := int(_info[0]) | (int(_info[1]) << 8)
 				//log.Println("output udp id", id, i, _len, len(_info))
@@ -887,9 +900,9 @@ func (session *UDPMakeSession) loop() {
 							}
 							break
 						}
-						id := uint(int(s[2]) | (int(s[3]) << 8) | (int(s[4]) << 16) | (int(s[5]) << 24))
-						var seq uint = uint(s[6])
-						_len := int(s[0]) | (int(s[1]) << 8)
+						id := uint(int(s[0]) | (int(s[1]) << 8) | (int(s[2]) << 16) | (int(s[3]) << 24))
+						var seq uint = uint(s[4])
+						_len := int(s[5]) | (int(s[6]) << 8)
 
 						//binary.Read(head[:4], binary.LittleEndian, &id)
 						if seq < uint(session.fecDataShards) {
@@ -904,15 +917,19 @@ func (session *UDPMakeSession) loop() {
 
 						tbl, have := session.fecRCacheTbl[id]
 						if !have {
-							tbl = &fecInfo{make([][]byte, session.fecDataShards+session.fecParityShards), time.Now().Unix() + 3}
+							tbl = &fecInfo{make([][]byte, session.fecDataShards+session.fecParityShards), time.Now().Unix() + 15}
 							session.fecRCacheTbl[id] = tbl
 						}
-						//log.Println("got", id, seq, n, _len)
+						//log.Println("got", id, seq, n, _len, s[:7])
 						if tbl.bytes[seq] != nil {
 							//dup, drop
 							break
 						} else {
-							tbl.bytes[seq] = s[7:7+_len]
+							if seq < uint(session.fecDataShards) {
+								tbl.bytes[seq] = s[5:7+_len]
+							} else {
+								tbl.bytes[seq] = s[7:7+_len]
+							}
 						}
 						count := 0
 						reaL := 0
@@ -936,11 +953,9 @@ func (session *UDPMakeSession) loop() {
 							}
 
 							if bNeedRebuild {
-								mapLen := make(map[int]int)
 								for i, v := range tbl.bytes {
 									if v != nil {
 										if len(v) < reaL {
-											mapLen[i]= len(v)
 											_b := make([]byte, reaL)
 											copy(_b, v)
 											tbl.bytes[i] = _b
@@ -955,8 +970,9 @@ func (session *UDPMakeSession) loop() {
 									//log.Println("Reconstruct ok, input", id)
 									for i := 0; i < session.fecDataShards; i++ {
 										if _, have := markTbl[i]; !have {
-											_len := mapLen[i]
-											ikcp.Ikcp_input(session.kcp, tbl.bytes[i][:_len], _len)
+											_data := tbl.bytes[i]
+											_len := int(_data[0]) | (int(_data[1]) << 8)
+											ikcp.Ikcp_input(session.kcp, _data[2:2+_len], _len)
 											//log.Println("fec input for mark ok", i, id, _len)
 										}
 									}
