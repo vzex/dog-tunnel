@@ -1,5 +1,9 @@
+
+# 切换到 udpVersion 分支，就是 Lite 版本
+
 # Dog Tunnel(狗洞)
 [README in English](https://github.com/f06ybeast/dog-tunnel/blob/master/README.en.md) 
+
 ## Introduction
 
 基于kcp的p2p端口映射工具，同时支持socks5代理
