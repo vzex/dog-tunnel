@@ -1,21 +1,22 @@
 package nat
 
 import (
-	"./stun"
 	"errors"
 	"net"
 	"strings"
 	"time"
+
+	"github.com/vzex/dog-tunnel/nat/stun"
 )
 
-func Init(outIpList string, buster bool, id int) (*AttemptEngine, error) {
+func Init(outIpList string, buster bool, id int, udpAddr string) (*AttemptEngine, error) {
 	sock, err := net.ListenUDP("udp", &net.UDPAddr{})
 	if err != nil {
 		return nil, err
 	}
 
-        engine := &AttemptEngine{sock: sock, buster: buster, id : id}
-	if err := engine.init(outIpList); err != nil {
+	engine := &AttemptEngine{sock: sock, buster: buster, id: id}
+	if err := engine.init(outIpList, udpAddr); err != nil {
 		return nil, err
 	}
 	return engine, nil
@@ -31,7 +32,7 @@ type attempt struct {
 }
 
 type AttemptEngine struct {
-        id             int
+	id             int
 	buster         bool
 	sock           *net.UDPConn
 	attempts       []attempt
@@ -39,6 +40,8 @@ type AttemptEngine struct {
 	p2pconn        net.Conn
 	otherReady     bool
 	status         string
+	Kcp            *KcpSetting
+	D, P           int
 }
 
 const probeTimeout = 500 * time.Millisecond
@@ -76,7 +79,7 @@ func (e *AttemptEngine) Fail() {
 	}
 }
 
-func (e *AttemptEngine) GetConn(f func(), encode, decode func([]byte)[]byte) (net.Conn, error) {
+func (e *AttemptEngine) GetConn(f func(), encode, decode func([]byte) []byte) (net.Conn, error) {
 	var conn net.Conn
 	var err error
 	if conn, err = e.run(f, encode, decode); err != nil {
@@ -85,8 +88,8 @@ func (e *AttemptEngine) GetConn(f func(), encode, decode func([]byte)[]byte) (ne
 	return conn, nil
 }
 
-func (e *AttemptEngine) init(outIpList string) error {
-	candidates, err := GatherCandidates(e.sock, outIpList)
+func (e *AttemptEngine) init(outIpList string, udpAddr string) error {
+	candidates, err := GatherCandidates(e.sock, outIpList, udpAddr)
 	if err != nil {
 		return err
 	}
@@ -204,6 +207,12 @@ func (e *AttemptEngine) read() error {
 				if e.p2pconn == nil {
 					debug("make conn success", from.String(), e.local_attempts[i].localaddr.String())
 					e.p2pconn = newConn(e.sock, e.local_attempts[i].Addr, e.local_attempts[i].localaddr, e.id)
+					if e.Kcp != nil {
+						e.p2pconn.(*Conn).SetKcp(e.Kcp)
+					}
+					if e.D > 0 && e.P > 0 {
+						e.p2pconn.(*Conn).SetFec(e.D, e.P)
+					}
 					for j := range e.attempts {
 						my_remote_addr := e.attempts[j].Addr
 						response, err := stun.InformReady(packet.Tid[:], my_remote_addr, nil)
@@ -230,7 +239,7 @@ func (e *AttemptEngine) read() error {
 	return nil
 }
 
-func (e *AttemptEngine) run(f func(), encode, decode func([]byte)[]byte) (net.Conn, error) {
+func (e *AttemptEngine) run(f func(), encode, decode func([]byte) []byte) (net.Conn, error) {
 	bInform := false
 	beginTime := time.Now().Unix()
 	for {
@@ -263,7 +272,8 @@ func (e *AttemptEngine) run(f func(), encode, decode func([]byte)[]byte) (net.Co
 			}
 		}
 		if e.status == "over" {
-                        e.p2pconn.(*Conn).SetCrypt(encode, decode)
+			e.p2pconn.(*Conn).SetCrypt(encode, decode)
+			e.p2pconn.(*Conn).Run()
 			return e.p2pconn, nil
 		}
 	}

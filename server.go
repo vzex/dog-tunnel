@@ -1,9 +1,6 @@
 package main
 
 import (
-	"./admin"
-	"./auth"
-	"./common"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -16,9 +13,14 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/vzex/dog-tunnel/admin"
+	"github.com/vzex/dog-tunnel/auth"
+	"github.com/vzex/dog-tunnel/common"
 )
 
 var listenAddr = flag.String("addr", "0.0.0.0:8000", "server addr")
+var listenAddrUDP = flag.String("addrudp", "0.0.0.0:8018", "udp server addr")
 var bUseSSL = flag.Bool("ssl", false, "use ssl")
 var bUseHttps = flag.Bool("https", false, "use https")
 var certFile = flag.String("cert", "", "cert file")
@@ -26,6 +28,7 @@ var keyFile = flag.String("key", "", "key file")
 
 var adminAddr = flag.String("admin", "", "admin addr")
 var bShowVersion = flag.Bool("version", false, "show version")
+var bReplaceReg = flag.Bool("replace", false, "if dup name registered, kick out the previous one, default is false")
 
 var db_user = flag.String("dbuser", "", "db user")
 var db_pass = flag.String("dbpass", "", "db password")
@@ -67,6 +70,22 @@ func handleClient(conn net.Conn) {
 	log.Println("client disconnected", conn.RemoteAddr().String())
 }
 
+func udphandleClient(conn *net.UDPConn) {
+
+	for {
+
+		data := make([]byte, 1024)
+
+		_, remoteAddr, err := conn.ReadFromUDP(data)
+		if err != nil {
+			log.Println("failed to read UDP msg because of ", err.Error())
+			break
+		}
+
+		conn.WriteToUDP([]byte(remoteAddr.String()), remoteAddr)
+	}
+}
+
 func handleResponse(conn net.Conn, id string, action string, content string) {
 	//log.Println("got", id, action, content)
 	common.GetClientInfoByConn(conn, func(client *common.ClientInfo) {
@@ -92,7 +111,6 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 		}
 		ServerName := clientInfo.Name
 		if clientInfo.ClientType == "reg" {
-			log.Println("nima")
 			var user *auth.User
 			if bUseDB {
 				if clientInfo.AccessKey == "" {
@@ -116,9 +134,7 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 				common.Write(conn, "0", "showandquit", "ip limit service num cannot overstep "+strconv.Itoa(user.MaxSameIPServers))
 				return
 			}
-			common.GetClientInfoByName(ServerName, func(server *common.ClientInfo) {
-				common.Write(conn, "0", "showandretry", "already have the ServerName!")
-			}, func() {
+			f := func() {
 				common.ServerName2Conn[ServerName] = conn
 				common.GetClientInfoByConn(conn, func(info *common.ClientInfo) {
 					info.ServerName = ServerName
@@ -129,7 +145,31 @@ func handleResponse(conn net.Conn, id string, action string, content string) {
 				}, func() {})
 				log.Println("client reg service success", conn.RemoteAddr().String(), user.UserName, ServerName)
 				common.Write(conn, "0", "show", "register service ok, user:"+user.UserName)
-			})
+			}
+			common.GetClientInfoByName(ServerName, func(server *common.ClientInfo) {
+				if *bReplaceReg {
+					_conn := server.Conn
+					close(server.Quit)
+					for conn, session := range server.ClientMap {
+						conn.Close()
+						common.RmId(server.ServerName, session.Id)
+					}
+					delete(common.ServerName2Conn, server.ServerName)
+					log.Println("force unregister service Name", server.ServerName)
+					if bUseDB {
+						user, _ := auth.GetUser(server.UserName)
+						if user != nil {
+							user.OnLogout()
+						}
+					}
+					delete(common.Conn2ClientInfo, _conn)
+					common.Write(_conn, "0", "showandquit", "some one kick you out")
+					_conn.Close()
+					f()
+				} else {
+					common.Write(conn, "0", "showandretry", "already have the ServerName!")
+				}
+			}, f)
 		} else if clientInfo.ClientType == "link" {
 			if clientInfo.Mode < 0 || clientInfo.Mode > 2 {
 				clientInfo.Mode = 0
@@ -395,6 +435,24 @@ func main() {
 			go handleClient(conn)
 		}
 	}()
+
+	udpaddr, err := net.ResolveUDPAddr("udp", *listenAddrUDP)
+	if err != nil {
+		log.Println("Can't resolve address: ", err)
+		return
+	}
+
+	udpconn, err := net.ListenUDP("udp", udpaddr)
+	if err != nil {
+		log.Println("Error UDP listening:", err)
+		return
+	}
+
+	log.Println("listenAdd: ", *listenAddrUDP)
+
+	defer udpconn.Close()
+
+	go udphandleClient(udpconn)
 	if *db_host != "" {
 		err = auth.Init(*db_user, *db_pass, *db_host)
 		if err != nil {
