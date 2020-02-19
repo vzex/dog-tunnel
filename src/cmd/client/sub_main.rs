@@ -1,7 +1,7 @@
 use tokio::net::TcpStream;
 use tokio::prelude::*;
 
-use super::super::super::common::flags_info;
+use crate::common::flags_info;
 pub async fn sub_main(cmd: &flags_info::ClientOpts, opts: &flags_info::Opts) {
     println!("connect to {}", cmd.service);
     println!("local admin addr is {}", cmd.admin_addr);

@@ -12,7 +12,7 @@ async fn main() {
             client::sub_main(t, &opts).await;
         }
         flags_info::SubCommand::Server(t) => {
-            server::sub_main().await;
+            server::sub_main(t, &opts).await;
         }
         _ => {
             println!("not support yet");
