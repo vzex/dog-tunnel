@@ -1,3 +1,4 @@
+pub struct udp_pipe {}
 #[cfg(test)]
 mod test {
     #[test]
