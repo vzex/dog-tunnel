@@ -1,5 +1,4 @@
 use clap::Clap;
-
 #[derive(Clap)]
 #[clap(version = "0.1", author = "vzex")]
 pub struct Opts {

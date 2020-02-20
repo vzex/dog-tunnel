@@ -1,9 +1,13 @@
 [package]
-name = "dog-tunnel2"
+name = "dogtunnel"
 version = "0.1.0"
 authors = ["vzex <vzex@163.com>"]
 edition = "2018"
 
+[features]
+nowarnings = []
+
 [dependencies]
 tokio = { version = "0.2", features = ["full"] }
 clap = { git = "https://github.com/clap-rs/clap", features = ["wrap_help"]}
+kcp = "0.4.10"

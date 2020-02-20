@@ -1,8 +1,10 @@
-mod cmd;
-use cmd::{cli, client, punch_server, server};
+#![cfg_attr(feature = "nowarnings", allow(dead_code))]
+#![cfg_attr(feature = "nowarnings", allow(unused_variables))]
+#![cfg_attr(feature = "nowarnings", allow(unused_imports))]
+//use crate::cmd;
+use dogtunnel::cmd::{cli, client, punch_server, server};
 
-mod common;
-use common::flags_info;
+use dogtunnel::common::flags_info;
 
 #[tokio::main]
 async fn main() {
