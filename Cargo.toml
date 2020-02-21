@@ -11,3 +11,4 @@ nowarnings = []
 tokio = { version = "0.2", features = ["full"] }
 clap = { git = "https://github.com/clap-rs/clap", features = ["wrap_help"]}
 kcp = "0.4.10"
+igd = "0.10.0"
