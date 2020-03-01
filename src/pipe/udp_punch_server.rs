@@ -14,7 +14,7 @@ impl udp_punch_server {
 
         loop {
             tokio::select! {
-                _ = &mut delay, if !delay.is_elapsed() => {
+                _ = &mut delay => {
                     panic!("timeout");
                 }
                 res = listener.accept() => {
