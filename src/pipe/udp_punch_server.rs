@@ -2,7 +2,6 @@ use std::io;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::prelude::*;
-use tokio::time::timeout;
 
 pub struct udp_punch_server;
 impl udp_punch_server {
@@ -50,18 +49,9 @@ impl udp_punch_server {
 #[cfg(test)]
 mod tests {
     use super::udp_punch_server;
-    use std::time::Duration;
-    use tokio::runtime::Runtime;
-    use tokio::time::timeout;
-
     #[tokio::test]
     async fn test_listen() {
         let s = udp_punch_server;
-        println!("begin listen");
-        let mut rt = Runtime::new().unwrap();
-        let f = s.listen("127.0.0.1:1234");
-
-        //let g = timeout(127.0.0.1:from_secs(5), f);
-        f.await;
+        s.listen("127.0.0.1:1234").await;
     }
 }
