@@ -905,6 +905,7 @@ type clientSession struct {
 	decide          decideStatus
 	decideLock      sync.RWMutex
 	cacheMsg        string
+	udpCacheMsg     []string
 	cacheLock       sync.RWMutex
 	headSendN       int32
 	headFailN       int32
@@ -1572,13 +1573,21 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 			f(data)
 		}
 	case eTunnel_msg_c_udp:
-		if session != nil && session.localUdpConn != nil {
-			//log.Println("tunnel", (content), sessionId)
-			if sc.stimeout > 0 {
-				session.dieT = timeNow.now().Add(time.Duration(sc.stimeout) * time.Second)
+		if session != nil {
+			if session.localUdpConn != nil {
+				//log.Println("tunnel", (content), sessionId)
+				if sc.stimeout > 0 {
+					session.dieT = timeNow.now().Add(time.Duration(sc.stimeout) * time.Second)
+				}
+				pinfo.Add(int64(len(content)), timeNow.now().Unix())
+				//log.Println("write conn data", len(content), sessionId)
+				session.localUdpConn.WriteToUDP([]byte(content), session.localUdpAddr)
+			} else {
+				if session.udpCacheMsg == nil {
+					session.udpCacheMsg = []string{}
+				}
+				session.udpCacheMsg = append(session.udpCacheMsg, content)
 			}
-			pinfo.Add(int64(len(content)), timeNow.now().Unix())
-			session.localUdpConn.WriteToUDP([]byte(content), session.localUdpAddr)
 		}
 	case eTunnel_msg_c:
 		if conn != nil {
@@ -1625,6 +1634,11 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					if sc.setSessionUdpConn(sessionId, sock) == nil {
 						sock.Close()
 						return
+					}
+					if session.udpCacheMsg != nil {
+						for _, c := range session.udpCacheMsg {
+							session.localUdpConn.WriteToUDP([]byte(c), session.localUdpAddr)
+						}
 					}
 					go func() {
 						arr := make([]byte, WriteBufferSize)
