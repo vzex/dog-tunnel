@@ -1,7 +1,11 @@
 use std::error::Error;
+use std::io;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
-pub struct udp_pipe {}
+pub struct udp_pipe {
+    socket: UdpSocket,
+    dst_addr: SocketAddr,
+}
 impl udp_pipe {
     #[allow(dead_code)]
     async fn dial<'a>(
@@ -11,16 +15,24 @@ impl udp_pipe {
     ) -> Result<udp_pipe, Box<dyn Error>> {
         let mut socket = UdpSocket::bind("0.0.0.0:0").await?;
         let addr = addr.parse::<SocketAddr>()?;
-        let content = "test".as_bytes();
-        socket.send_to(content as &[u8], addr).await?;
+        println!("begin connect {}", addr);
+        socket.connect(addr).await?; //udp bind
+        println!("connect ok");
         let mut buf = vec![0; 1024];
-        socket
-            .recv_from(&mut buf)
-            .await
-            .map(|(n, src)| println!("recv {:?}", buf.get(0..n)));
-        Ok(udp_pipe {})
+        Ok(udp_pipe {
+            socket: socket,
+            dst_addr: addr,
+        })
     }
-    async fn close(self) {}
+    async fn send(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.socket.send(buf).await
+    }
+    async fn recv(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.socket.recv(buf).await
+    }
+    async fn close(self) {
+        let _ = self;
+    }
 }
 #[cfg(test)]
 mod test {
@@ -28,8 +40,21 @@ mod test {
     #[tokio::test]
     async fn udp_dial_test() {
         println!("this is a test");
-        udp_pipe::dial(0, "127.0.0.1:1234", "")
-            .await
-            .map_err(|e| println!("error:{}", e));
+        let c = udp_pipe::dial(0, "127.0.0.1:1234", "").await;
+        if let Ok(mut sock) = c {
+            println!("send/recv 0");
+            sock.send(b"test").await;
+            let mut buf = [0u8; 1024];
+            sock.recv(&mut buf).await.map(|l| {
+                println!("send/recv 1, {:?}", l);
+            });
+            sock.send(b"test222222222").await;
+            sock.recv(&mut buf).await.map(|l| {
+                println!("send/recv 2, {:?}", l);
+            });
+            sock.close();
+        } else {
+            println!("dial error");
+        }
     }
 }
