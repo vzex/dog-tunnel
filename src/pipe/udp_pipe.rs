@@ -20,9 +20,9 @@ pub struct UdpClientPipe {
     send_handler: Option<tokio::task::JoinHandle<()>>,
     server_pipe: bool,
 }
-impl<'a> UdpServerPipe<'a> {
+impl UdpServerPipe {
     #[allow(dead_code)]
-    async fn listen(addr: &str) -> Result<Arc<UdpServerPipe<'a>>, Box<dyn std::error::Error>> {
+    async fn listen(addr: &str) -> Result<Arc<UdpServerPipe>, Box<dyn std::error::Error>> {
         let mut socket = UdpSocket::bind(addr).await?;
         let (tx_send, rx_send) = mpsc::channel::<Vec<u8>>(100);
         let (tx_recv, rx_recv) = mpsc::channel::<Vec<u8>>(100);
@@ -41,7 +41,7 @@ impl<'a> UdpServerPipe<'a> {
         Ok(pipe)
     }
     async fn recv_event_loop(
-        self,
+        &self,
         rs: tokio::net::udp::RecvHalf,
         ws: tokio::net::udp::SendHalf,
         rx_recv: mpsc::Receiver<Vec<u8>>,
@@ -98,7 +98,7 @@ impl UdpClientPipe {
         local_addr: Option<&str>,
         addr: &str,
         punch_server: &str,
-    ) -> Result<UdpClientPipe, Box<dyn Error>> {
+    ) -> Result<UdpClientPipe, Box<dyn std::error::Error>> {
         let mut socket = UdpSocket::bind(local_addr.unwrap_or("0.0.0.0:0")).await?;
         let addr = addr.parse::<SocketAddr>()?;
         println!("begin connect {}", addr);
