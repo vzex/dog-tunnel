@@ -50,7 +50,7 @@ impl udp_punch_server {
 mod tests {
     use super::udp_punch_server;
     #[tokio::test]
-    async fn udp_listen_test() {
+    async fn udp_punch_listen_test() {
         let s = udp_punch_server;
         s.listen("127.0.0.1:1234").await;
     }

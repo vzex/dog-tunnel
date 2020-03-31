@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use std::io;
 use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 
 pub struct UdpServerPipe {
     socket: Arc<Mutex<UdpSocket>>,
@@ -20,8 +21,8 @@ pub struct UdpServerPipe {
 type UdpClientSendSocket = Arc<Mutex<UdpSocket>>;
 pub struct UdpClientPipe {
     socket: UdpClientSendSocket,
-    r_main_send_channel: mpsc::Sender<Vec<u8>>,
-    r_main_recv_channel: mpsc::Receiver<Vec<u8>>,
+    r_main_send_channel: Option<mpsc::Sender<Vec<u8>>>,
+    r_main_recv_channel: Option<mpsc::Receiver<Vec<u8>>>,
     dst_addr: SocketAddr,
     send_handler: Option<tokio::task::JoinHandle<()>>,
     is_server: bool,
@@ -40,25 +41,29 @@ impl UdpServerPipe {
             client_pipes: Arc::new(Mutex::new(HashMap::new())),
         };
         //let pipe = Arc::new(server_pipe);
-        let mut recv_pipe = server_pipe.socket.clone();
-        tokio::spawn(server_pipe.read_loop());
+        let recv_pipe = server_pipe.socket.clone();
+        let cpipes = server_pipe.client_pipes.clone();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 1024];
+            while let Ok((l, addr)) = recv_pipe.lock().await.recv_from(&mut buf).await {
+                println!("recv from {:?}, {:?}", l, addr);
+                let mut clients = cpipes.lock().await;
+
+                let pipe = clients
+                    .entry(addr)
+                    .or_insert(UdpClientPipe::new_server_side(recv_pipe.clone(), addr).unwrap());
+                if let Some(ref mut c) = pipe.r_main_send_channel {
+                    println!("recv inform to my client {}", l);
+                    c.send(buf[0..l].to_vec()).await;
+                }
+            }
+        });
         //let custom_error = Error::new(ErrorKind::Other, "oh no!");
 
         //Err(Box::new(custom_error))
         Ok(server_pipe)
     }
-    async fn read_loop(&mut self) {
-        let mut buf = vec![0u8; 1024];
-        while let Ok((l, addr)) = self.socket.lock().unwrap().recv_from(&mut buf).await {
-            let pipe = self
-                .client_pipes
-                .lock()
-                .unwrap()
-                .entry(addr)
-                .or_insert(UdpClientPipe::new_server_side(self.socket.clone(), addr).unwrap());
-            pipe.r_main_send_channel.send(buf[0..l].to_vec());
-        }
-    }
+    async fn read_loop(&mut self) {}
 }
 impl UdpClientPipe {
     async fn new_client_side(
@@ -68,27 +73,32 @@ impl UdpClientPipe {
         let mut socket = UdpSocket::bind(local_addr.unwrap_or("0.0.0.0:0")).await?;
         println!("begin connect {}", addr);
         socket.connect(addr).await?; //udp bind
-        let (tx_main_recv, rx_main_recv) = mpsc::channel::<Vec<u8>>(100);
+        let (mut tx_main_recv, rx_main_recv) = mpsc::channel::<Vec<u8>>(100);
 
-        let socket_pipe = Arc::new(Mutex::new(socket));
+        //let socket_pipe = Arc::new(Mutex::new(socket));
         let mut pipe = UdpClientPipe {
             is_server: false,
-            socket: socket_pipe,
-            r_main_send_channel: tx_main_recv,
-            r_main_recv_channel: rx_main_recv,
+            socket: Arc::new(Mutex::new(socket)),
+            r_main_send_channel: None,
+            r_main_recv_channel: Some(rx_main_recv),
             dst_addr: addr,
             send_handler: None,
         };
 
-        let recv_pipe = socket_pipe.clone();
+        let recv_pipe = pipe.socket.clone();
 
-        pipe.send_handler = Some(tokio::spawn(async move {
+        //pipe.send_handler
+        let mut handler = Some(tokio::spawn(async move {
             let mut buf = vec![0u8; 1024];
-            while let Ok(l) = recv_pipe.lock().unwrap().recv(&mut buf).await {
-                pipe.r_main_send_channel.send(buf[0..l].to_vec());
+            println!("try begin recv");
+            while let Ok(l) = recv_pipe.lock().await.recv(&mut buf).await {
+                println!("client recv {}", l);
+                tx_main_recv.send(buf[0..l].to_vec());
             }
-            pipe.r_main_send_channel.send(vec![]);
+            println!("try end recv");
+            tx_main_recv.send(vec![]);
         }));
+        pipe.send_handler = handler;
         Ok(pipe)
     }
     fn new_server_side(
@@ -98,28 +108,58 @@ impl UdpClientPipe {
         let (tx_main_recv, rx_main_recv) = mpsc::channel::<Vec<u8>>(100);
         let mut pipe = UdpClientPipe {
             is_server: true,
-            socket: shared_socket,
-            r_main_send_channel: tx_main_recv,
-            r_main_recv_channel: rx_main_recv,
+            socket: shared_socket.clone(),
+            r_main_send_channel: Some(tx_main_recv),
+            r_main_recv_channel: None,
             dst_addr: addr,
             send_handler: None,
         };
+        //do test
+        //if let Some(mut f) = pipe.r_main_send_channel {
+        //    //f.send(b"asassa".to_vec());
+        //    pipe.r_main_send_channel = None;
+        //    tokio::spawn(async move {
+        //        f.send(b"hello".to_vec()).await;
+        //    });
+        //}
+        //test server client!!!!!! will remove
+        let ss = shared_socket.clone();
+        let dst = addr;
+        tokio::spawn(async move {
+            let mut rec = rx_main_recv;
+            use std::time::Duration;
+            use tokio::time::delay_for;
+            let mut buf = vec![0u8; 1024];
+            let mut i = 0;
+            loop {
+                println!("begin wait");
+                let c = rec.recv().await;
+                println!("begin recv {:?}:{}", c, dst);
+                ss.lock().await.send_to(b"sbsbs", &dst).await;
+
+                println!("send wocao");
+                i += 1;
+                if i > 4 {
+                    break;
+                }
+            }
+        });
         Ok(pipe)
     }
     async fn recv_event_loop(recv: &mut RecvHalf) {}
     async fn send(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.is_server {
-            self.socket
-                .lock()
-                .unwrap()
-                .send_to(buf, &self.dst_addr)
-                .await
+            self.socket.lock().await.send_to(buf, &self.dst_addr).await
         } else {
-            self.socket.lock().unwrap().send(buf).await
+            self.socket.lock().await.send(buf).await
         }
     }
     async fn recv(&mut self) -> Option<Vec<u8>> {
-        self.r_main_recv_channel.recv().await
+        if let Some(ref mut c) = self.r_main_recv_channel {
+            c.recv().await
+        } else {
+            None
+        }
     }
     async fn close(self) {
         let _ = self;
@@ -142,7 +182,6 @@ mod test {
         if let Ok(ref mut sock) = c {
             println!("send/recv 0");
             sock.send(b"test").await;
-            let mut buf = [0u8; 1024];
             sock.recv().await.map(|v| {
                 println!("send/recv 1, {:?}", v);
             });
@@ -171,8 +210,8 @@ mod test {
     async fn udp_listen_test() {
         println!("this is a test");
         let c = UdpServerPipe::listen("127.0.0.1:1234").await;
-        if let Ok(s) = c {
-            //s.read_event_loop().await;
-        }
+        if let Ok(s) = c {}
+        delay_for(Duration::from_millis(10000)).await;
+        println!("this is a test end");
     }
 }
