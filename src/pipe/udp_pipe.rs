@@ -34,10 +34,15 @@ impl UdpServerPipe {
     async fn listen(
         addr: &str,
         on_accept: fn(UdpClientPipe),
+        channel_size: usize,
     ) -> Result<UdpServerPipe, Box<dyn std::error::Error>> {
         let mut socket = UdpSocket::bind(addr).await?;
-        let (tx_send, rx_send) = mpsc::channel::<Vec<u8>>(100);
-        let (tx_recv, rx_recv) = mpsc::channel::<Vec<u8>>(100);
+        let mut csize = channel_size;
+        if (channel_size == 0) {
+            csize = 100;
+        }
+        let (tx_send, rx_send) = mpsc::channel::<Vec<u8>>(csize);
+        let (tx_recv, rx_recv) = mpsc::channel::<Vec<u8>>(csize);
         //let shared_socket = Arc::new(socket);
         //let recv_socket = tokio::net::udp::RecvHalf(shared_socket.clone());
         let (recv_socket, send_socket) = socket.split();
@@ -58,9 +63,13 @@ impl UdpServerPipe {
                 let mut clients = cpipes.lock().await;
 
                 let pipe = clients.entry(addr).or_insert_with(|| {
-                    let mut p =
-                        UdpClientPipe::new_server_side(recv_pipe.clone(), send_pipe.clone(), addr)
-                            .unwrap();
+                    let mut p = UdpClientPipe::new_server_side(
+                        recv_pipe.clone(),
+                        send_pipe.clone(),
+                        addr,
+                        0,
+                    )
+                    .unwrap();
                     let c = p.r_main_send_channel;
                     p.r_main_send_channel = None;
                     on_accept(p);
@@ -83,11 +92,16 @@ impl UdpClientPipe {
     async fn new_client_side(
         local_addr: Option<&str>,
         addr: SocketAddr,
+        channel_size: usize,
     ) -> Result<UdpClientPipe, Box<dyn std::error::Error>> {
         let mut socket = UdpSocket::bind(local_addr.unwrap_or("0.0.0.0:0")).await?;
         println!("begin connect {}", addr);
         socket.connect(addr).await?; //udp bind
-        let (mut tx_main_recv, rx_main_recv) = mpsc::channel::<Vec<u8>>(100);
+        let mut csize = channel_size;
+        if channel_size == 0 {
+            csize = 100;
+        }
+        let (mut tx_main_recv, rx_main_recv) = mpsc::channel::<Vec<u8>>(csize);
 
         //let socket_pipe = Arc::new(Mutex::new(socket));
         let (recv_socket, send_socket) = socket.split();
@@ -121,8 +135,13 @@ impl UdpClientPipe {
         recv_socket: Arc<Mutex<RecvHalf>>,
         send_socket: Arc<Mutex<SendHalf>>,
         addr: SocketAddr,
+        channel_size: usize,
     ) -> Result<UdpClientPipe, Box<dyn std::error::Error>> {
-        let (tx_main_recv, rx_main_recv) = mpsc::channel::<Vec<u8>>(100);
+        let mut csize = channel_size;
+        if (channel_size == 0) {
+            csize = 100;
+        }
+        let (tx_main_recv, rx_main_recv) = mpsc::channel::<Vec<u8>>(csize);
         let mut pipe = UdpClientPipe {
             is_server: true,
             recv_socket: recv_socket,
@@ -174,7 +193,7 @@ mod test {
     async fn udp_dial_test() {
         println!("this is a test");
         let dest = "127.0.0.1:1234".parse::<SocketAddr>().unwrap();
-        let mut c = UdpClientPipe::new_client_side(None, dest).await;
+        let mut c = UdpClientPipe::new_client_side(None, dest, 0).await;
         if let Ok(ref mut sock) = c {
             println!("send/recv 0");
             sock.send(b"test").await;
@@ -205,21 +224,25 @@ mod test {
     #[tokio::test]
     async fn udp_listen_test() {
         println!("this is a test");
-        let c = UdpServerPipe::listen("127.0.0.1:1234", |cc| {
-            println!("on accept {:?}", cc.dst_addr);
-            tokio::spawn(async move {
-                let mut ccc = cc;
-                loop {
-                    let d = ccc.recv().await;
-                    if let Some(dd) = d {
-                        if dd.len() == 0 {
-                            break;
+        let c = UdpServerPipe::listen(
+            "127.0.0.1:1234",
+            |cc| {
+                println!("on accept {:?}", cc.dst_addr);
+                tokio::spawn(async move {
+                    let mut ccc = cc;
+                    loop {
+                        let d = ccc.recv().await;
+                        if let Some(dd) = d {
+                            if dd.len() == 0 {
+                                break;
+                            }
+                            println!("send back {:?}", ccc.send(&dd[0..]).await);
                         }
-                        println!("send back {:?}", ccc.send(&dd[0..]).await);
                     }
-                }
-            });
-        })
+                });
+            },
+            0,
+        )
         .await;
         //if let Ok(s) = c {}
         delay_for(Duration::from_millis(10000)).await;
