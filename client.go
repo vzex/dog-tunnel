@@ -1637,7 +1637,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 					}
 					if session.udpCacheMsg != nil {
 						for _, c := range session.udpCacheMsg {
-							session.localUdpConn.WriteToUDP([]byte(c), session.localUdpAddr)
+							sock.WriteToUDP([]byte(c), session.localUdpAddr)
 						}
 					}
 					go func() {
