@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 //use std::error::Error;
 use std::io;
-use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::udp::{RecvHalf, SendHalf};

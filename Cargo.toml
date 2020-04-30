@@ -15,3 +15,4 @@ igd = "0.10.0"
 
 futures = "" 
 futures-locks = ""
+async-trait = "0.1.30"
