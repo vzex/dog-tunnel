@@ -35,6 +35,7 @@ impl UdpServerPipe {
     ) -> Result<UdpServerPipe, Box<dyn std::error::Error>> {
         let mut socket = UdpSocket::bind(addr).await?;
         let mut csize = channel_size;
+        socket.connect("asdasd");
         if (channel_size == 0) {
             csize = 100;
         }
