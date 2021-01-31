@@ -86,6 +86,8 @@ var sessionTimeout = flag.Int("session_timeout", 0, "c: if > 0, session will che
 var bCache = flag.Bool("cache", false, "c: (valid in socks5 mode)if cache is true,save files requested with GET method into cache/ dir,cache request not pass through server side,no support for https")
 var bSrc = flag.Bool("src", false, "c: whether logging src ip, just for tcp redirection")
 var routeN = flag.Int("routen", 1, "c: threads(os-threads) num for route mode to parse real-addr")
+var socks5Bind = flag.String("s5bind", "", "c: bind socks5 outbound socket to ADDRESS(interface/ip/hostname)")
+var socks5BindIP net.IP // empty byte array
 
 var clientType = 1
 var currReadyId int32 = 0
@@ -740,6 +742,14 @@ func main() {
 	if *remoteAction == "" && clientType == 1 {
 		*remoteAction = "socks5"
 	}
+	if *socks5Bind != "" && *remoteAction == "socks5" {
+		socks5BindIP = common.ParseIP(*socks5Bind)
+		if socks5BindIP != nil {
+			log.Println("socks5 bind to ip:", socks5BindIP.String())
+		}
+	} else {
+		*socks5Bind = ""
+	}
 	if *smartCount > 0 {
 		if *remoteAction == "socks5" || *remoteAction == "route" {
 			*remoteAction += "_smart"
@@ -1286,6 +1296,26 @@ func (sc *Client) createSession(sessionId int, session *clientSession) int {
 	return sessionId
 }
 
+func DialTimeoutBind(network, address string, timeout time.Duration, bindIP net.IP) (net.Conn, error) {
+	if len(bindIP) == 0 {
+		return net.DialTimeout(network, address, timeout)
+	}
+
+	var d *net.Dialer
+	switch network {
+	case "tcp":
+		a := &net.TCPAddr{IP: bindIP}
+		d = &net.Dialer{Timeout: timeout, LocalAddr: a}
+	case "udp":
+		a := &net.UDPAddr{IP: bindIP}
+		d = &net.Dialer{Timeout: timeout, LocalAddr: a}
+	default:
+		a := &net.IPAddr{IP: bindIP}
+		d = &net.Dialer{Timeout: timeout, LocalAddr: a}
+	}
+	return d.Dial(network, address)
+}
+
 func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, content string, pinfo *pipeInfo) {
 	debug("recv p2p tunnel", sessionId, action, len(content))
 	session := sc.getSession(sessionId)
@@ -1753,7 +1783,7 @@ func (sc *Client) OnTunnelRecv(pipe net.Conn, sessionId int, action byte, conten
 				}
 				if err == nil {
 					//log.Println("try dial", url, sessionId)
-					s_conn, err = net.DialTimeout(hello.reqtype, url, 30*time.Second)
+					s_conn, err = DialTimeoutBind(hello.reqtype, url, 30*time.Second, socks5BindIP)
 					//log.Println("try dial", url, "ok", sessionId)
 				}
 				if err != nil {
