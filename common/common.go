@@ -213,3 +213,23 @@ func Id_test(name string) {
 	println(GetId(name))
 	println(GetId(name))
 }
+
+func ParseIP(address string) net.IP {
+	var addrs []net.Addr
+	itf, err := net.InterfaceByName(address)
+	if err != nil {
+		goto End
+	}
+	addrs, err = itf.Addrs()
+	if err != nil {
+		goto End
+	}
+	return addrs[0].(*net.IPNet).IP
+
+End:
+	ipaddr, err := net.ResolveIPAddr("ip", address)
+	if err != nil {
+		return net.ParseIP(address)
+	}
+	return ipaddr.IP
+}

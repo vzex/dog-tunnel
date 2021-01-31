@@ -16,6 +16,7 @@
 -v 更多输出信息
 -version 版本信息
 -src 记录来源ip和访问目的ip
+-s5bind Bind socks5 server's outbound socket to a particular interface(@ADDRESS can be interface name, ip address or hostname). This is particularly useful when you want your outbound traffic to go through a vpn's tun/tap interface.
 
 -xor 两端须一致，用于udp模式握手加密,内容为任意字符串(主要用于隐藏通讯协议特征，建议设置)
 -session_timeout 指定连接会话在不活跃状态时多久（秒）后被销毁，防止被动连接的情况下产生僵尸socket，默认0不自动销毁
